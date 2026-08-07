@@ -11,6 +11,10 @@ const challengeAdmin = read(
   "../src/features/claim-guard/screens-challenge-admin.tsx"
 )
 const app = read("../src/App.tsx")
+const benchmarkDashboard = read(
+  "../src/features/claim-guard/screens-benchmark-dashboard.tsx"
+)
+const appShell = read("../src/features/claim-guard/app-shell.tsx")
 
 test("primary workflow distinguishes payable price from challenge amount", () => {
   const primaryWorkflow = [
@@ -50,4 +54,35 @@ test("successful batch processing refreshes ontology mapping and price compariso
     app,
     /onProcessed=\{async \(\) => \{[\s\S]*await refreshComparison\(\)[\s\S]*\}\}/
   )
+})
+
+test("benchmark summary totals and sorts the same challenged invoice rows", () => {
+  assert.match(
+    benchmarkDashboard,
+    /item\.exceptions\.reduce\(\(sum, row\) => sum \+ row\.difference, 0\)/
+  )
+  assert.match(
+    benchmarkDashboard,
+    /sortHeader\("Total challenge", "totalChallenge"\)/
+  )
+  assert.match(benchmarkDashboard, /sortedBenchmarks\.map\(\(item\) =>/)
+  assert.match(
+    benchmarkDashboard,
+    /preciseMoney\(totalChallengeAmount\(item\)\)/
+  )
+})
+
+test("challenge decision is retained under advanced tools only", () => {
+  const primaryBlock = appShell.match(
+    /const primaryNavigation = \[[\s\S]*?\] satisfies/
+  )?.[0]
+  const advancedBlock = appShell.match(
+    /const administration = \[[\s\S]*?\] satisfies/
+  )?.[0]
+
+  assert.ok(primaryBlock)
+  assert.ok(advancedBlock)
+  assert.doesNotMatch(primaryBlock, /challenge-review/)
+  assert.match(advancedBlock, /challenge-review/)
+  assert.match(appShell, /open=\{administrationOpen \|\| advancedToolActive\}/)
 })

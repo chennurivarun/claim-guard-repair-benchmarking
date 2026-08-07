@@ -1,5 +1,8 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import {
+  ArrowDownIcon,
+  ArrowUpDownIcon,
+  ArrowUpIcon,
   DatabaseIcon,
   EyeIcon,
   Share2Icon,
@@ -24,11 +27,7 @@ import type {
 } from "@/lib/api"
 import { fetchBenchmarkDashboard, fetchBenchmarkObservations } from "@/lib/api"
 
-import {
-  DataCard,
-  MINIMUM_CHALLENGE_AMOUNT,
-  ScreenHeading,
-} from "./shared"
+import { DataCard, MINIMUM_CHALLENGE_AMOUNT, ScreenHeading } from "./shared"
 import type { ClaimWorkspace } from "./types"
 
 const demoDashboard: BenchmarkDashboardPayload = {
@@ -247,6 +246,47 @@ function signedMoney(value: number) {
   return `${value > 0 ? "+" : "−"}${preciseMoney(Math.abs(value))}`
 }
 
+type BenchmarkSortKey =
+  | "item"
+  | "vehicleClass"
+  | "invoiceCount"
+  | "min"
+  | "max"
+  | "median"
+  | "p90"
+  | "exceptionInvoiceCount"
+  | "totalChallenge"
+
+type BenchmarkRow = BenchmarkDashboardPayload["benchmarks"][number]
+
+function totalChallengeAmount(item: BenchmarkRow) {
+  const total = item.exceptions.reduce((sum, row) => sum + row.difference, 0)
+  return Math.round(total * 100) / 100
+}
+
+function benchmarkSortValue(item: BenchmarkRow, key: BenchmarkSortKey) {
+  switch (key) {
+    case "item":
+      return item.item
+    case "vehicleClass":
+      return item.vehicleClass
+    case "invoiceCount":
+      return item.invoiceCount
+    case "min":
+      return item.statistics.min ?? Number.NEGATIVE_INFINITY
+    case "max":
+      return item.statistics.max ?? Number.NEGATIVE_INFINITY
+    case "median":
+      return item.statistics.median ?? Number.NEGATIVE_INFINITY
+    case "p90":
+      return item.statistics.p90 ?? Number.NEGATIVE_INFINITY
+    case "exceptionInvoiceCount":
+      return item.exceptionInvoiceCount
+    case "totalChallenge":
+      return totalChallengeAmount(item)
+  }
+}
+
 export function BenchmarkDashboardScreen({
   apiMode,
   workspace,
@@ -266,12 +306,14 @@ export function BenchmarkDashboardScreen({
   const [vehicleClass, setVehicleClass] = useState("all")
   const [repairItem, setRepairItem] = useState("all")
   const [minimumCount, setMinimumCount] = useState("1")
+  const [sortKey, setSortKey] = useState<BenchmarkSortKey>("item")
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc")
   const [sourceRows, setSourceRows] = useState<BenchmarkObservationPayload[]>(
     []
   )
-  const [exceptionRows, setExceptionRows] = useState<BenchmarkExceptionPayload[]>(
-    []
-  )
+  const [exceptionRows, setExceptionRows] = useState<
+    BenchmarkExceptionPayload[]
+  >([])
   const [evidenceMode, setEvidenceMode] = useState<"sources" | "exceptions">(
     "sources"
   )
@@ -309,6 +351,68 @@ export function BenchmarkDashboardScreen({
   const selectedInvoiceBenchmarks = workspace.lines.filter(
     (line) => line.p90Benchmark
   )
+  const sortedBenchmarks = useMemo(
+    () =>
+      [...dashboard.benchmarks].sort((left, right) => {
+        const leftValue = benchmarkSortValue(left, sortKey)
+        const rightValue = benchmarkSortValue(right, sortKey)
+        const comparison =
+          typeof leftValue === "string" && typeof rightValue === "string"
+            ? leftValue.localeCompare(rightValue, "en-GB", {
+                sensitivity: "base",
+              })
+            : Number(leftValue) - Number(rightValue)
+        if (comparison !== 0)
+          return sortDirection === "asc" ? comparison : -comparison
+        return left.item.localeCompare(right.item, "en-GB", {
+          sensitivity: "base",
+        })
+      }),
+    [dashboard.benchmarks, sortDirection, sortKey]
+  )
+
+  function changeSort(key: BenchmarkSortKey) {
+    if (sortKey === key) {
+      setSortDirection((current) => (current === "asc" ? "desc" : "asc"))
+      return
+    }
+    setSortKey(key)
+    setSortDirection(key === "item" || key === "vehicleClass" ? "asc" : "desc")
+  }
+
+  function sortHeader(
+    label: string,
+    key: BenchmarkSortKey,
+    alignment: "left" | "right" = "right"
+  ) {
+    const active = sortKey === key
+    const SortIcon = active
+      ? sortDirection === "asc"
+        ? ArrowUpIcon
+        : ArrowDownIcon
+      : ArrowUpDownIcon
+    return (
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className={`h-auto w-full gap-1 px-0 py-0 text-xs font-medium hover:bg-transparent ${
+          alignment === "right" ? "justify-end" : "justify-start"
+        } ${active ? "text-foreground" : "text-muted-foreground"}`}
+        onClick={() => changeSort(key)}
+        aria-label={`Sort by ${label}, ${
+          active
+            ? sortDirection === "asc"
+              ? "ascending"
+              : "descending"
+            : "not selected"
+        }`}
+      >
+        {label}
+        <SortIcon className="size-3.5" aria-hidden />
+      </Button>
+    )
+  }
 
   function revealEvidencePanel() {
     window.requestAnimationFrame(() => {
@@ -360,7 +464,9 @@ export function BenchmarkDashboardScreen({
       .finally(() => setSourceLoading(false))
   }
 
-  function showExceptions(item: BenchmarkDashboardPayload["benchmarks"][number]) {
+  function showExceptions(
+    item: BenchmarkDashboardPayload["benchmarks"][number]
+  ) {
     setSourceTitle(`${item.item} · ${item.vehicleClass}`)
     setEvidenceMode("exceptions")
     setSourceRows([])
@@ -375,7 +481,11 @@ export function BenchmarkDashboardScreen({
         title="Repair benchmarks"
         description="Compare every uploaded invoice line with earlier mapped lines from the same batch."
         action={
-          <Button type="button" variant="outline" onClick={onOpenKnowledgeGraph}>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onOpenKnowledgeGraph}
+          >
             <Share2Icon aria-hidden />
             Open knowledge graph
           </Button>
@@ -463,26 +573,43 @@ export function BenchmarkDashboardScreen({
         action={<Badge variant="outline">P90 · interpolated</Badge>}
       >
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[900px] text-left text-sm">
+          <table className="w-full min-w-[1120px] text-left text-sm">
             <thead className="border-b bg-muted/50 text-xs text-muted-foreground">
               <tr>
-                <th className="px-3 py-3 font-medium">Repair item</th>
-                <th className="px-3 py-3 font-medium">Vehicle category</th>
-                <th className="px-3 py-3 text-right font-medium">Invoices</th>
-                <th className="px-3 py-3 text-right font-medium">Min</th>
-                <th className="px-3 py-3 text-right font-medium">Max</th>
-                <th className="px-3 py-3 text-right font-medium">Median</th>
-                <th className="bg-primary/5 px-3 py-3 text-right font-semibold text-foreground">
-                  P90
+                <th className="px-3 py-3">
+                  {sortHeader("Repair item", "item", "left")}
+                </th>
+                <th className="px-3 py-3">
+                  {sortHeader("Vehicle category", "vehicleClass", "left")}
+                </th>
+                <th className="px-3 py-3 text-right">
+                  {sortHeader("Invoices", "invoiceCount")}
+                </th>
+                <th className="px-3 py-3 text-right">
+                  {sortHeader("Min", "min")}
+                </th>
+                <th className="px-3 py-3 text-right">
+                  {sortHeader("Max", "max")}
+                </th>
+                <th className="px-3 py-3 text-right">
+                  {sortHeader("Median", "median")}
                 </th>
                 <th className="bg-primary/5 px-3 py-3 text-right font-semibold text-foreground">
-                  Challenged invoices
+                  {sortHeader("P90", "p90")}
                 </th>
-                <th className="px-3 py-3 text-right font-medium">Invoices used</th>
+                <th className="bg-primary/5 px-3 py-3 text-right font-semibold text-foreground">
+                  {sortHeader("Challenged invoices", "exceptionInvoiceCount")}
+                </th>
+                <th className="bg-destructive/5 px-3 py-3 text-right font-semibold text-foreground">
+                  {sortHeader("Total challenge", "totalChallenge")}
+                </th>
+                <th className="px-3 py-3 text-right font-medium">
+                  Invoices used
+                </th>
               </tr>
             </thead>
             <tbody>
-              {dashboard.benchmarks.map((item) => (
+              {sortedBenchmarks.map((item) => (
                 <tr
                   key={`${item.ontologyItemId}-${item.vehicleClass}`}
                   className="border-b last:border-0"
@@ -495,17 +622,29 @@ export function BenchmarkDashboardScreen({
                       </summary>
                       <div className="mt-2 grid min-w-[250px] grid-cols-2 gap-x-4 gap-y-1 rounded-md border bg-muted/30 p-2">
                         <span>Mean</span>
-                        <span className="text-right tabular-nums">{money(item.statistics.mean)}</span>
+                        <span className="text-right tabular-nums">
+                          {money(item.statistics.mean)}
+                        </span>
                         <span>Mode</span>
-                        <span className="text-right tabular-nums">{money(item.statistics.mode)}</span>
+                        <span className="text-right tabular-nums">
+                          {money(item.statistics.mode)}
+                        </span>
                         <span>Observations</span>
-                        <span className="text-right tabular-nums">{item.statistics.count}</span>
+                        <span className="text-right tabular-nums">
+                          {item.statistics.count}
+                        </span>
                         <span>Labour mean</span>
-                        <span className="text-right tabular-nums">{money(item.labourStatistics.mean)}</span>
+                        <span className="text-right tabular-nums">
+                          {money(item.labourStatistics.mean)}
+                        </span>
                         <span>Labour median</span>
-                        <span className="text-right tabular-nums">{money(item.labourStatistics.median)}</span>
+                        <span className="text-right tabular-nums">
+                          {money(item.labourStatistics.median)}
+                        </span>
                         <span>Labour observations</span>
-                        <span className="text-right tabular-nums">{item.labourStatistics.count}</span>
+                        <span className="text-right tabular-nums">
+                          {item.labourStatistics.count}
+                        </span>
                       </div>
                     </details>
                   </td>
@@ -545,6 +684,15 @@ export function BenchmarkDashboardScreen({
                     ) : (
                       <Badge variant="outline">0</Badge>
                     )}
+                  </td>
+                  <td
+                    className={`bg-destructive/5 px-3 py-3 text-right font-semibold tabular-nums ${
+                      item.exceptionCount > 0
+                        ? "text-destructive"
+                        : "text-muted-foreground"
+                    }`}
+                  >
+                    {preciseMoney(totalChallengeAmount(item))}
                   </td>
                   <td className="px-3 py-3 text-right">
                     <Button
@@ -586,21 +734,44 @@ export function BenchmarkDashboardScreen({
                       <tr>
                         <th className="px-3 py-3 font-medium">Invoice</th>
                         <th className="px-3 py-3 font-medium">Repairer</th>
-                        <th className="px-3 py-3 font-medium">Original description</th>
-                        <th className="px-3 py-3 text-right font-medium">Charged</th>
-                        <th className="px-3 py-3 text-right font-medium">Earlier P90</th>
-                        <th className="px-3 py-3 text-right font-medium">Difference</th>
-                        <th className="px-3 py-3 text-right font-medium">Above P90</th>
+                        <th className="px-3 py-3 font-medium">
+                          Original description
+                        </th>
+                        <th className="px-3 py-3 text-right font-medium">
+                          Charged
+                        </th>
+                        <th className="px-3 py-3 text-right font-medium">
+                          Earlier P90
+                        </th>
+                        <th className="px-3 py-3 text-right font-medium">
+                          Difference
+                        </th>
+                        <th className="px-3 py-3 text-right font-medium">
+                          Above P90
+                        </th>
                       </tr>
                     </thead>
                     <tbody>
                       {exceptionRows.map((row) => (
-                        <tr key={row.observationId} className="border-b last:border-0">
-                          <td className="px-3 py-3 font-medium">{row.invoiceNumber}</td>
-                          <td className="px-3 py-3 text-muted-foreground">{row.repairer}</td>
-                          <td className="px-3 py-3 text-muted-foreground">{row.description ?? "—"}</td>
-                          <td className="px-3 py-3 text-right tabular-nums">{preciseMoney(row.amount)}</td>
-                          <td className="px-3 py-3 text-right tabular-nums">{preciseMoney(row.p90)}</td>
+                        <tr
+                          key={row.observationId}
+                          className="border-b last:border-0"
+                        >
+                          <td className="px-3 py-3 font-medium">
+                            {row.invoiceNumber}
+                          </td>
+                          <td className="px-3 py-3 text-muted-foreground">
+                            {row.repairer}
+                          </td>
+                          <td className="px-3 py-3 text-muted-foreground">
+                            {row.description ?? "—"}
+                          </td>
+                          <td className="px-3 py-3 text-right tabular-nums">
+                            {preciseMoney(row.amount)}
+                          </td>
+                          <td className="px-3 py-3 text-right tabular-nums">
+                            {preciseMoney(row.p90)}
+                          </td>
                           <td className="px-3 py-3 text-right font-medium text-destructive tabular-nums">
                             +{preciseMoney(row.difference)}
                           </td>
@@ -627,7 +798,9 @@ export function BenchmarkDashboardScreen({
                   <thead className="border-b bg-muted/50 text-xs text-muted-foreground">
                     <tr>
                       <th className="px-3 py-3 font-medium">Invoice date</th>
-                      <th className="px-3 py-3 font-medium">Source reference</th>
+                      <th className="px-3 py-3 font-medium">
+                        Source reference
+                      </th>
                       <th className="px-3 py-3 font-medium">
                         Original description
                       </th>
@@ -687,7 +860,9 @@ export function BenchmarkDashboardScreen({
                   <th className="px-3 py-3 font-medium">Standard category</th>
                   <th className="px-3 py-3 text-right font-medium">Current</th>
                   <th className="px-3 py-3 text-right font-medium">P90</th>
-                  <th className="px-3 py-3 text-right font-medium">Difference</th>
+                  <th className="px-3 py-3 text-right font-medium">
+                    Difference
+                  </th>
                   <th className="px-3 py-3 font-medium">Decision</th>
                   <th className="px-3 py-3 text-right font-medium">Evidence</th>
                 </tr>
@@ -699,8 +874,13 @@ export function BenchmarkDashboardScreen({
                     benchmark.percentageDifference > challengeThreshold &&
                     benchmark.difference >= MINIMUM_CHALLENGE_AMOUNT
                   return (
-                    <tr key={line.id} className="border-b align-top last:border-0">
-                      <td className="px-3 py-3 font-medium">{line.description}</td>
+                    <tr
+                      key={line.id}
+                      className="border-b align-top last:border-0"
+                    >
+                      <td className="px-3 py-3 font-medium">
+                        {line.description}
+                      </td>
                       <td className="px-3 py-3 text-muted-foreground">
                         {benchmark.category}
                       </td>
@@ -719,7 +899,9 @@ export function BenchmarkDashboardScreen({
                       </td>
                       <td className="px-3 py-3">
                         <Badge
-                          variant={exceedsThreshold ? "destructive" : "secondary"}
+                          variant={
+                            exceedsThreshold ? "destructive" : "secondary"
+                          }
                         >
                           {exceedsThreshold ? "Challenge" : "Within threshold"}
                         </Badge>
@@ -736,14 +918,23 @@ export function BenchmarkDashboardScreen({
                             <table className="w-full text-xs">
                               <thead className="text-muted-foreground">
                                 <tr>
-                                  <th className="py-1 text-left font-medium">Invoice</th>
-                                  <th className="py-1 text-left font-medium">Description</th>
-                                  <th className="py-1 text-right font-medium">Price</th>
+                                  <th className="py-1 text-left font-medium">
+                                    Invoice
+                                  </th>
+                                  <th className="py-1 text-left font-medium">
+                                    Description
+                                  </th>
+                                  <th className="py-1 text-right font-medium">
+                                    Price
+                                  </th>
                                 </tr>
                               </thead>
                               <tbody>
                                 {benchmark.observations.map((observation) => (
-                                  <tr key={observation.lineId} className="border-t">
+                                  <tr
+                                    key={observation.lineId}
+                                    className="border-t"
+                                  >
                                     <td className="py-1.5 pr-2 font-medium">
                                       {observation.invoiceNumber}
                                     </td>
@@ -772,9 +963,9 @@ export function BenchmarkDashboardScreen({
             <AlertTitle>Not enough earlier matching prices yet</AlertTitle>
             <AlertDescription>
               P90 appears from the fourth relevant invoice because three earlier
-              matching prices are required. Uploading or selecting later invoices
-              does not change earlier decisions, and an invoice never benchmarks
-              itself.
+              matching prices are required. Uploading or selecting later
+              invoices does not change earlier decisions, and an invoice never
+              benchmarks itself.
             </AlertDescription>
           </Alert>
         )}

@@ -52,11 +52,6 @@ const primaryNavigation = [
     icon: BarChart3Icon,
   },
   { id: "price-comparison", label: "Review findings", icon: SearchCheckIcon },
-  {
-    id: "challenge-review",
-    label: "Challenge decision",
-    icon: ClipboardCheckIcon,
-  },
   { id: "claim-liability", label: "Summary", icon: LayoutDashboardIcon },
 ] satisfies Array<{
   id: ScreenId
@@ -84,6 +79,11 @@ const administration = [
   { id: "missing-items", label: "Unmatched items", icon: GaugeIcon },
   { id: "ontology-bank", label: "Repair item library", icon: LibraryBigIcon },
   { id: "knowledge-graph", label: "Knowledge graph", icon: Share2Icon },
+  {
+    id: "challenge-review",
+    label: "Challenge decision",
+    icon: ClipboardCheckIcon,
+  },
 ] satisfies Array<{
   id: ScreenId
   label: string
@@ -119,6 +119,9 @@ function AppSidebar({
   apiMode: "api" | "demo"
 }) {
   const { isMobile, setOpenMobile } = useSidebar()
+  const advancedToolActive = administration.some(
+    (item) => item.id === activeScreen
+  )
   const [administrationOpen, setAdministrationOpen] = useState(false)
   const activePrimary = primaryActiveId(activeScreen)
   const navigate = (screen: ScreenId) => {
@@ -198,7 +201,7 @@ function AppSidebar({
         </SidebarGroup>
 
         <Collapsible
-          open={administrationOpen}
+          open={administrationOpen || advancedToolActive}
           onOpenChange={setAdministrationOpen}
         >
           <SidebarGroup>
