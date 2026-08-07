@@ -1,0 +1,34 @@
+version: claimguard-v1.4
+effective_from: 2026-07-17
+currency: GBP
+benchmark:
+  ontology_weight: 0.60
+  historical_weight: 0.40
+  historical_statistic: recency_weighted_median_line_total_net
+  historical_half_life_days: 365.25
+  minimum_historical_observations: 3
+  approved_ontology_only: true
+  allow_history_without_ontology: true
+challenge:
+  basis: net_line_total
+  positive_only: true
+  minimum_amount_gbp: 5.00
+  minimum_percentage: 5.00
+  red_amount_gbp: 25.00
+  red_percentage: 25.00
+  headline_label: Challenge Price
+  payable_subtext: proposed payable
+tax:
+  vat_rules:
+    - jurisdiction: GB
+      rate_percentage: 20.00
+      effective_from: 2011-01-04
+  mot_vat_applicable: false
+governance:
+  auto_research: false
+  two_step_approval: false
+  provisional_evidence_in_issued_letters: false
+  handler_can_approve_research: true
+settlement:
+  invoice_level_amount_required: true
+  line_level_breakdown_required: false

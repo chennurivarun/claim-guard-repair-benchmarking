@@ -1,0 +1,23 @@
+product_name: ClaimGuard
+market: UK third-party motor claims
+database:
+  driver: sqlite
+  wal: true
+  foreign_keys: true
+  busy_timeout_ms: 30000
+processing:
+  auto_research: false
+  vision_fallback_enabled: false
+  max_pdf_pages: 100
+  native_text_first: true
+research:
+  source_allow_list_version: pilot-manual-sources-v1
+  allowed_hosts:
+    - "*.example.test"
+liability:
+  human_confirmation_required: true
+  invoice_may_decide_fault: false
+models:
+  provider: none
+  mapping_model: null
+  research_model: null

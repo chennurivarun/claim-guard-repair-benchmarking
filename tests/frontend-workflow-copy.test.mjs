@@ -1,0 +1,53 @@
+import assert from "node:assert/strict"
+import { readFileSync } from "node:fs"
+import test from "node:test"
+
+const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8")
+
+const overview = read("../src/features/claim-guard/screens-overview.tsx")
+const findings = read("../src/features/claim-guard/screens-review-findings.tsx")
+const approval = read("../src/features/claim-guard/screens-approval.tsx")
+const challengeAdmin = read(
+  "../src/features/claim-guard/screens-challenge-admin.tsx"
+)
+const app = read("../src/App.tsx")
+
+test("primary workflow distinguishes payable price from challenge amount", () => {
+  const primaryWorkflow = [
+    overview,
+    findings,
+    approval,
+    challengeAdmin,
+    app,
+  ].join("\n")
+
+  assert.doesNotMatch(primaryWorkflow, />Challenge Price</)
+  assert.doesNotMatch(primaryWorkflow, /Accept .*Challenge Price/)
+  assert.doesNotMatch(primaryWorkflow, /Edit Challenge Price/)
+  assert.match(overview, /Proposed payable net/)
+  assert.match(findings, /Supported net price/)
+  assert.match(approval, /Challenge amount/)
+})
+
+test("provisional mappings cannot be mistaken for actionable findings", () => {
+  assert.match(
+    findings,
+    /Provisional finding: repair item match needs approval/
+  )
+  assert.match(findings, /Approve repair item match first/)
+  assert.match(findings, /disabled=.*!mappingApproved/s)
+  assert.match(approval, /pendingMappings\.length === 0/)
+  assert.match(approval, /Approve repair item matches first/)
+  assert.match(overview, /Repair item approval required/)
+})
+
+test("successful batch processing refreshes ontology mapping and price comparison", () => {
+  assert.match(
+    app,
+    /async function refreshComparison\(invoiceId\?: string\)[\s\S]*await runClaimComparison\(workspace\.claim\.id\)[\s\S]*return refreshWorkspace\(invoiceId\)/
+  )
+  assert.match(
+    app,
+    /onProcessed=\{async \(\) => \{[\s\S]*await refreshComparison\(\)[\s\S]*\}\}/
+  )
+})

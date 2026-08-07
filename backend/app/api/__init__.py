@@ -1,0 +1,1 @@
+"""FastAPI business routes."""
