@@ -8,11 +8,10 @@ This package contains the complete local-pilot application, database migrations,
 | --- | --- |
 | Install and run the application | `docs/CLIENT_HANDOVER_QUICK_START.md` |
 | Product and workflow explanation | `docs/CLAIMGUARD_BEGINNER_HANDBOOK.md` |
-| Completion and verification record | `docs/COMPLETION_AUDIT.md` |
 | Benchmark formula and evidence rules | `docs/BENCHMARKING_MODEL.md` |
 | Ten PDFs for the P90 and knowledge-graph demo | `output/pdf/p90-demo-invoice-set/` |
-| Detailed changes and output report | `output/pdf/ClaimGuard-Detailed-Changes-and-Outputs-2026-08-05.pdf` |
-| Final regression QA and corrected price rule | `docs/FINAL_QA_2026-08-07.md` |
+| Product decisions and governed rules | `docs/PRODUCT_DECISIONS_V1_4.md` |
+| Security controls and production boundaries | `docs/SECURITY_AND_DPIA.md` |
 
 ## Configuration
 

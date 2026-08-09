@@ -42,9 +42,7 @@ The default P90 percentage gate is 10%; the handler can switch it to 5% on the B
 
 Specialist tools—including page classification, extraction review, calculation checks, ontology mapping, missing-item research and ontology management—remain available under **Advanced tools**. No capability is removed from the simplified handler workflow.
 
-For the complete beginner-friendly handover—including the product, user journey, UI/UX, architecture, database, folder structure, setup, testing and production boundaries—use the [ClaimGuard Beginner Handbook](docs/CLAIMGUARD_BEGINNER_HANDBOOK.md). A polished PDF copy is included at [`output/pdf/ClaimGuard-Beginner-Handover-Handbook.pdf`](output/pdf/ClaimGuard-Beginner-Handover-Handbook.pdf).
-
-If you need to explain how the product was created with AI-assisted development tools, use the ready-to-present [AI-assisted build explanation script](docs/AI_ASSISTED_BUILD_EXPLANATION_SCRIPT.md).
+For the complete beginner-friendly handover—including the product, user journey, UI/UX, architecture, database, folder structure, setup, testing and production boundaries—use the [ClaimGuard Beginner Handbook](docs/CLAIMGUARD_BEGINNER_HANDBOOK.md).
 
 For a shorter plain-English product walkthrough, see [`docs/PRODUCT_OVERVIEW.md`](docs/PRODUCT_OVERVIEW.md).
 
@@ -181,7 +179,6 @@ The bootstrapped case deliberately remains unfinalised: its mappings/evidence re
 | `backend/alembic/`               | Managed SQLite schema migrations.                                              |
 | `backend/tests/`                 | Unit, integration, native-PDF, OCR, rotation, and seed acceptance suites.      |
 | `docs/PRODUCT_DECISIONS_V1_4.md` | Authoritative reconciled product decision record.                              |
-| `docs/COMPLETION_AUDIT.md`       | PRD definition-of-done and AT-001–AT-009 implementation trace.                  |
 | `docs/SECURITY_AND_DPIA.md`      | Pilot security controls, production blockers, and DPIA checklist.              |
 
 ## Governance and finalisation

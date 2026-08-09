@@ -36,3 +36,10 @@ tmp/
 *.sln
 *.sw?
 .gstack/
+.gitnexus/
+
+# Generated presentation and reporting artefacts
+output/imagegen/
+output/presentation/
+output/handbook/
+output/pdf/high-price-challenge-invoices/
