@@ -37,6 +37,7 @@ from app.models import (
     ProcessingRun,
     ResearchItem,
     ResearchTask,
+    SourceProvider,
     Vehicle,
 )
 from app.services.benchmarking import (
@@ -1596,6 +1597,19 @@ def build_claim_workspace(
     for observation in price_observations:
         if observation.ontology_item_id:
             observations_by_item.setdefault(observation.ontology_item_id, []).append(observation)
+    provider_ids = {
+        observation.source_provider_id
+        for observation in price_observations
+        if observation.source_provider_id
+    }
+    source_providers = {
+        provider.id: provider
+        for provider in (
+            session.scalars(select(SourceProvider).where(SourceProvider.id.in_(provider_ids))).all()
+            if provider_ids
+            else []
+        )
+    }
     ontology_versions = {version.id: version for version in graph["versions"]}
     ontology_bank_items = [
         {
@@ -1635,8 +1649,16 @@ def build_claim_workspace(
             ),
             "source": observation.source_type,
             "sourceRef": observation.source_url_or_ref,
+            "providerName": (
+                source_providers[observation.source_provider_id].name
+                if observation.source_provider_id in source_providers
+                else None
+            ),
             "date": observation.effective_from.isoformat(),
             "unit": observation.unit,
+            "priceScope": _enum_value(observation.price_scope),
+            "vatBasis": _enum_value(observation.vat_basis),
+            "originalPrice": _optional_money_float(observation.original_price),
             "priceNet": _money_float(observation.price_net),
             "approvalStatus": _display_status(observation.approval_status),
         }

@@ -41,6 +41,7 @@ dev = [
 [project.scripts]
 claimguard-bootstrap = "app.bootstrap:main"
 claimguard-import-vehicle-lookup = "app.vehicle_lookup_import:main"
+claimguard-import-external-benchmarks = "app.external_benchmark_import:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

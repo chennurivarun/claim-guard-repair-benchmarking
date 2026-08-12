@@ -1,0 +1,10 @@
+source,official_url,access_model,extractable_now,price_granularity,ontology_fit,recommended_use
+GOV.UK MOT fees,https://www.gov.uk/getting-an-mot/mot-test-fees,Public/OGL,Yes,Exact statutory job fee,Direct for MOT Class IV,Stage with attribution
+Honda UK recommended pricing,https://www.honda.co.uk/cars/owners/maintaining-your-honda/repairs/fixed-price-repairs.html,Public manufacturer schedule,Yes,Fixed-price repair jobs,Direct only where ontology scope matches,Stage matched rows; quarantine combined jobs
+Ford Essential repairs,https://www.ford.co.uk/owner/service-and-maintenance/ford-repairs,Public manufacturer schedule,Yes,Fixed-price repair jobs,Mostly combined parts/labour/VAT,Research matrix pending ontology job categories
+Vauxhall fixed-price repairs,https://www.vauxhall.co.uk/owners/parts-and-tyres.html,Public manufacturer schedule,Yes,Fixed-price repair jobs,Mostly combined parts/labour/VAT,Research matrix pending ontology job categories
+Audatex,https://audatex.co.uk/solutions/audabridge/,Licensed integration,No public price rows,Parts/paint/labour breakdowns,High potential but licensed,Request authorised API/export access
+cap hpi,https://developer.cap.co.uk/webservices,Subscriber API,No without credentials,Vehicle valuation/product data,Not a direct repair line benchmark,Use for vehicle context only if licensed
+Glass's Guide,https://glass.co.uk/homepage/,Commercial login,No public price rows,Valuation and repair products,Potential but licensed,Request authorised product access
+FCA motor claims review,https://www.fca.org.uk/publication/multi-firm-reviews/motor-insurance-claims-analysis-multi-firm-review-2025.pdf,Public report,Yes,Aggregate repair and labour metrics,Not line-item comparable,Context and reasonableness only
+DfT transport expenditure,https://www.gov.uk/government/statistical-data-sets/transport-expenditure-tsgb13,Public ODS,Yes,Inflation and expenditure indices,Not line-item comparable,Future time-normalisation only

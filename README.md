@@ -32,6 +32,10 @@ The Documents screen accepts one PDF, several PDFs, or a folder. Every invoice r
 
 The **Benchmarks** screen normalizes equivalent descriptions, combines approved line prices from stored invoices, calculates the interpolated 90th percentile (`PERCENTILE.INC`), and excludes the invoice currently being reviewed from its own benchmark. The selected threshold is shared with Review findings and Challenge decision.
 
+### External UK benchmark research
+
+ClaimGuard also includes a small, governed research import for source-backed UK market observations. The included GOV.UK MOT and Honda UK alignment rows are stored through the existing source-provider/import/price-observation model and shown with direct provenance in **Ontology Bank → Price observations**. They remain **provisional** and do not change P90, supported prices, or challenge decisions until a business owner approves source priority and the runtime rule. See [`docs/UK_EXTERNAL_BENCHMARK_RESEARCH.md`](docs/UK_EXTERNAL_BENCHMARK_RESEARCH.md) for the source-access matrix, scope limitations, exact staged values, and next decision.
+
 | Rule | Result |
 | ---- | ------ |
 | Current line price does not exceed both gates | **Within threshold** — no P90 challenge |

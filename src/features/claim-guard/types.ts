@@ -237,8 +237,12 @@ export interface PriceObservationRecord {
   ontologyCode?: string | null
   source: string
   sourceRef?: string | null
+  providerName?: string | null
   date: string
   unit: string
+  priceScope?: string | null
+  vatBasis?: string | null
+  originalPrice?: number | null
   priceNet: number
   approvalStatus: string
 }

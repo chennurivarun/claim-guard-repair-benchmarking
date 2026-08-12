@@ -34,6 +34,7 @@ from app.models import (
 from app.services.case_result import build_claim_workspace
 from app.services.comparison_workflow import run_case_comparison
 from app.services.document_processing import process_document, store_pdf
+from app.services.external_benchmark_import_service import import_external_uk_benchmarks
 from app.services.seed_import_service import import_seed_workbooks
 
 SAMPLE_DATA = Path(__file__).resolve().parents[2] / "sample-data"
@@ -41,6 +42,7 @@ CASE_REFERENCE = "CG-2026-0048"
 INVOICE_PATH = SAMPLE_DATA / "1643919_doc_16439191.pdf.pdf"
 ONTOLOGY_PATH = SAMPLE_DATA / "ontology_seed.xlsx"
 HISTORY_PATH = SAMPLE_DATA / "historical_claims_seed.xlsx"
+EXTERNAL_BENCHMARK_PATH = SAMPLE_DATA / "uk_external_benchmarks.csv"
 
 
 def _create_case(session) -> Case:
@@ -167,6 +169,7 @@ def bootstrap_pilot() -> dict[str, object]:
     initialize_database()
     with SessionLocal() as session:
         seed_result = import_seed_workbooks(session, ONTOLOGY_PATH, HISTORY_PATH)
+        external_result = import_external_uk_benchmarks(session, EXTERNAL_BENCHMARK_PATH)
         session.commit()
 
         case = session.scalar(select(Case).where(Case.case_reference == CASE_REFERENCE))
@@ -203,6 +206,11 @@ def bootstrap_pilot() -> dict[str, object]:
                     "acceptance_gold_excluded": seed_result.acceptance_gold_excluded,
                 },
                 "documents": document_count,
+                "external_benchmark_import": {
+                    "observations_created": external_result.observations_created,
+                    "rows_skipped": external_result.rows_skipped,
+                    "runtime_rule_enabled": False,
+                },
                 "comparison": {
                     "status": "waiting_for_invoice_upload",
                     "message": (
@@ -241,6 +249,11 @@ def bootstrap_pilot() -> dict[str, object]:
                 "acceptance_gold_excluded": seed_result.acceptance_gold_excluded,
             },
             "documents": document_count,
+            "external_benchmark_import": {
+                "observations_created": external_result.observations_created,
+                "rows_skipped": external_result.rows_skipped,
+                "runtime_rule_enabled": False,
+            },
             "comparison": comparison_result,
             "workspace_summary": workspace["summary"],
         }

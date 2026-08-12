@@ -12,6 +12,7 @@ This package contains the complete local-pilot application, database migrations,
 | Ten PDFs for the P90 and knowledge-graph demo | `output/pdf/p90-demo-invoice-set/` |
 | Product decisions and governed rules | `docs/PRODUCT_DECISIONS_V1_4.md` |
 | Security controls and production boundaries | `docs/SECURITY_AND_DPIA.md` |
+| UK external-source assessment and provenance | `docs/UK_EXTERNAL_BENCHMARK_RESEARCH.md` |
 
 ## Configuration
 

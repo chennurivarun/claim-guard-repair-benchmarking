@@ -2063,7 +2063,7 @@ export function OntologyBankScreen({
     <>
       <ScreenHeading
         title="Ontology Bank"
-        description="Live canonical items, immutable versions and approved price observations from the ClaimGuard database."
+        description="Canonical items, immutable versions, and governed price evidence with source traceability. Provisional external observations do not affect challenge calculations."
         action={<Badge variant="success">{activeVersion} ACTIVE</Badge>}
       />
       <Tabs defaultValue="items">
@@ -2177,13 +2177,15 @@ export function OntologyBankScreen({
             description={`${bank.priceObservations.length} latest persisted observations shown`}
           >
             <div className="max-h-[34rem] overflow-auto">
-              <Table>
+              <Table className="min-w-[72rem]">
                 <TableHeader>
                   <TableRow>
                     <TableHead>Ontology item</TableHead>
-                    <TableHead>Source</TableHead>
+                    <TableHead>Provider</TableHead>
+                    <TableHead>Source evidence</TableHead>
                     <TableHead>Date</TableHead>
-                    <TableHead>Basis</TableHead>
+                    <TableHead>Scope / VAT</TableHead>
+                    <TableHead className="text-right">Published price</TableHead>
                     <TableHead className="text-right">Net price</TableHead>
                     <TableHead className="text-right">Status</TableHead>
                   </TableRow>
@@ -2194,11 +2196,41 @@ export function OntologyBankScreen({
                       <TableCell className="font-mono text-xs">
                         {observation.ontologyCode || observation.ontologyItemId}
                       </TableCell>
-                      <TableCell className="max-w-xs truncate">
-                        {observation.sourceRef || observation.source}
+                      <TableCell className="min-w-64 max-w-xs whitespace-normal">
+                        <p className="font-medium">
+                          {observation.providerName || observation.source}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {observation.source.replaceAll("_", " ")}
+                        </p>
+                      </TableCell>
+                      <TableCell className="min-w-48 max-w-xs whitespace-normal">
+                        {observation.sourceRef?.startsWith("http") ? (
+                          <a
+                            className="inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline"
+                            href={observation.sourceRef}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Open official source
+                            <ExternalLinkIcon className="size-3.5" />
+                          </a>
+                        ) : (
+                          <span className="block max-w-48 break-all text-sm text-muted-foreground">
+                            {observation.sourceRef || "No source reference"}
+                          </span>
+                        )}
                       </TableCell>
                       <TableCell>{observation.date}</TableCell>
-                      <TableCell>{observation.unit}</TableCell>
+                      <TableCell>
+                        {observation.priceScope || observation.unit} /{" "}
+                        {observation.vatBasis || "unknown"}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {observation.originalPrice == null
+                          ? "—"
+                          : formatMoney(observation.originalPrice)}
+                      </TableCell>
                       <TableCell className="text-right font-medium tabular-nums">
                         {formatMoney(observation.priceNet)}
                       </TableCell>
