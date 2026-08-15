@@ -5,6 +5,7 @@ export const DEFAULT_CASE_REFERENCE = "CG-2026-0048"
 
 export const PAGE_TYPES = [
   "invoice",
+  "engineer_assessment",
   "estimate_or_order",
   "credit_note",
   "vehicle_document",
@@ -47,6 +48,8 @@ export interface UploadedDocument {
   status: string
   page_count: number | null
   reprocess_required: boolean
+  kind?: "unknown" | "repair_invoice" | "engineer_assessment" | "supporting_evidence"
+  paired?: boolean
 }
 
 export interface DocumentProcessingResult {
@@ -56,6 +59,7 @@ export interface DocumentProcessingResult {
     page_count: number
     invoice_units: number
     extracted_lines: number
+    engineer_assessments?: number
   }
   document: UploadedDocument
   reprocess_required?: boolean

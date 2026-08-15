@@ -76,6 +76,8 @@ from app.models import (
     ClaimVehicle,
     Document,
     DocumentPage,
+    EngineerAssessment,
+    AssessmentOperation,
     HistoricalObservation,
     Invoice,
     InvoiceLineItem,
@@ -98,6 +100,7 @@ from app.services.case_result import (
 )
 from app.services.comparison_workflow import run_case_comparison
 from app.services.document_processing import process_document, serialise_document, store_pdf
+from app.services.engineer_assessment import engineer_assessment_payload
 from app.services.extraction_review import (
     recalculate_invoice_findings,
     review_extraction_line,
@@ -641,6 +644,8 @@ def run_document_pipeline(
         if force and reprocess_required:
             for invoice in list(document.invoices):
                 db.delete(invoice)
+            if document.engineer_assessment is not None:
+                db.delete(document.engineer_assessment)
             for page in list(document.pages):
                 db.delete(page)
             db.flush()
@@ -681,6 +686,26 @@ def get_pages(case_reference: str, db: DatabaseSession) -> list[dict[str, Any]]:
         .order_by(Document.created_at, DocumentPage.page_number)
     ).all()
     return [_page_payload(page) for page in pages]
+
+
+@router.get("/claims/{case_reference}/engineer-assessments", tags=["documents"])
+def get_engineer_assessments(
+    case_reference: str, db: DatabaseSession
+) -> list[dict[str, Any]]:
+    case = db.scalar(select(Case).where(Case.case_reference == case_reference))
+    if case is None:
+        raise _not_found("Claim not found")
+    assessments = db.scalars(
+        select(EngineerAssessment)
+        .where(EngineerAssessment.case_id == case.id)
+        .options(
+            selectinload(EngineerAssessment.operations).selectinload(
+                AssessmentOperation.variances
+            )
+        )
+        .order_by(EngineerAssessment.created_at)
+    ).all()
+    return [engineer_assessment_payload(assessment) for assessment in assessments]
 
 
 @router.patch("/pages/{page_id}", tags=["documents"])
@@ -730,7 +755,13 @@ def get_page_image(page_id: str, db: DatabaseSession):
     path = Path(page.rendered_image_path)
     if not path.exists():
         raise _not_found("Page image file not found")
-    return FileResponse(path, media_type="image/png", filename=f"page-{page.page_number}.png")
+    filename = f"page-{page.page_number}.png"
+    return FileResponse(
+        path,
+        media_type="image/png",
+        filename=filename,
+        content_disposition_type="inline",
+    )
 
 
 def _line_payload(line: InvoiceLineItem, db: Session) -> dict[str, Any]:

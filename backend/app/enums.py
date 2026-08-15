@@ -32,6 +32,13 @@ class DocumentRole(DomainEnum):
     SUPPORTING = "supporting"
 
 
+class DocumentKind(DomainEnum):
+    UNKNOWN = "unknown"
+    REPAIR_INVOICE = "repair_invoice"
+    ENGINEER_ASSESSMENT = "engineer_assessment"
+    SUPPORTING_EVIDENCE = "supporting_evidence"
+
+
 class UploadStatus(DomainEnum):
     PENDING = "pending"
     STORED = "stored"
@@ -42,6 +49,7 @@ class UploadStatus(DomainEnum):
 
 
 class PageType(DomainEnum):
+    ENGINEER_ASSESSMENT = "engineer_assessment"
     INVOICE = "invoice"
     ESTIMATE_OR_ORDER = "estimate_or_order"
     CREDIT_NOTE = "credit_note"

@@ -135,6 +135,11 @@ def classify_page(text: str, *, image_only: bool) -> tuple[PageType, float, list
     lower = text.lower()
     signals: list[str] = []
     strong_keyword_groups = {
+        PageType.ENGINEER_ASSESSMENT: (
+            "engineer assessment report",
+            "audatex system using manufacturer times",
+            "assessment number",
+        ),
         PageType.CREDIT_NOTE: ("credit note",),
         PageType.ESTIMATE: (
             "estimate/order",
@@ -344,7 +349,10 @@ class PDFPipeline:
             except Exception:
                 # A single malformed invoice unit must not abort the rest of the document.
                 continue
-        if not analysis.invoices:
+        has_engineer_assessment = any(
+            page.page_type == PageType.ENGINEER_ASSESSMENT for page in pages
+        )
+        if not analysis.invoices and not has_engineer_assessment:
             raise ValueError(
                 "No readable invoice was found. Check the PDF and OCR configuration, "
                 "then try again."

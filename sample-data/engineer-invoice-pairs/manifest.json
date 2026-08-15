@@ -1,0 +1,72 @@
+[
+  {
+    "claim_reference": "CLM-UK-001",
+    "assessment_number": "EA-0001",
+    "policy_number": "POL-UK-2026001",
+    "registration": "CG01 UKX",
+    "vin": "TMAJ3813DMJ10001",
+    "created": "02/08/2026",
+    "incident_date": "21/07/2026",
+    "mileage": 12875,
+    "repairer": "UK Demonstration Repair Centre 1",
+    "scenario": "close agreement",
+    "engineer_report": "CLM-UK-001_Engineer_Assessment.pdf",
+    "repair_invoice": "CLM-UK-001_Repair_Invoice.pdf"
+  },
+  {
+    "claim_reference": "CLM-UK-002",
+    "assessment_number": "EA-0002",
+    "policy_number": "POL-UK-2026002",
+    "registration": "CG02 UKX",
+    "vin": "TMAJ3813DMJ10002",
+    "created": "03/08/2026",
+    "incident_date": "22/07/2026",
+    "mileage": 13750,
+    "repairer": "UK Demonstration Repair Centre 2",
+    "scenario": "small differences",
+    "engineer_report": "CLM-UK-002_Engineer_Assessment.pdf",
+    "repair_invoice": "CLM-UK-002_Repair_Invoice.pdf"
+  },
+  {
+    "claim_reference": "CLM-UK-003",
+    "assessment_number": "EA-0003",
+    "policy_number": "POL-UK-2026003",
+    "registration": "CG03 UKX",
+    "vin": "TMAJ3813DMJ10003",
+    "created": "04/08/2026",
+    "incident_date": "23/07/2026",
+    "mileage": 14625,
+    "repairer": "UK Demonstration Repair Centre 3",
+    "scenario": "labour variance",
+    "engineer_report": "CLM-UK-003_Engineer_Assessment.pdf",
+    "repair_invoice": "CLM-UK-003_Repair_Invoice.pdf"
+  },
+  {
+    "claim_reference": "CLM-UK-004",
+    "assessment_number": "EA-0004",
+    "policy_number": "POL-UK-2026004",
+    "registration": "CG04 UKX",
+    "vin": "TMAJ3813DMJ10004",
+    "created": "05/08/2026",
+    "incident_date": "24/07/2026",
+    "mileage": 15500,
+    "repairer": "UK Demonstration Repair Centre 4",
+    "scenario": "parts and paint variance",
+    "engineer_report": "CLM-UK-004_Engineer_Assessment.pdf",
+    "repair_invoice": "CLM-UK-004_Repair_Invoice.pdf"
+  },
+  {
+    "claim_reference": "CLM-UK-005",
+    "assessment_number": "EA-0005",
+    "policy_number": "POL-UK-2026005",
+    "registration": "CG05 UKX",
+    "vin": "TMAJ3813DMJ10005",
+    "created": "06/08/2026",
+    "incident_date": "25/07/2026",
+    "mileage": 16375,
+    "repairer": "UK Demonstration Repair Centre 5",
+    "scenario": "multiple meaningful differences",
+    "engineer_report": "CLM-UK-005_Engineer_Assessment.pdf",
+    "repair_invoice": "CLM-UK-005_Repair_Invoice.pdf"
+  }
+]

@@ -1,9 +1,10 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import {
   ArrowLeftIcon,
   ArrowRightIcon,
   CheckIcon,
   EyeIcon,
+  ExternalLinkIcon,
   InfoIcon,
   PencilLineIcon,
   SearchIcon,
@@ -41,11 +42,135 @@ import {
   LineEvidenceSheet,
 } from "./screens-challenge-admin"
 import { formatMoney } from "./format"
+import { documentImageUrl } from "./document-api"
 import { isMappingApproved } from "./mapping-rules"
 import { StatusBadge } from "./shared"
 import type { ClaimWorkspace, InvoiceLine } from "./types"
+import {
+  fetchEngineerAssessments,
+  type EngineerAssessmentPayload,
+} from "@/lib/api"
 
 type DecisionMode = "approve" | "reject" | "edit"
+
+function EngineerAssessmentCard({
+  assessment,
+}: {
+  assessment: EngineerAssessmentPayload | null
+}) {
+  if (!assessment) return null
+  const variances = assessment.operations.flatMap((operation) =>
+    operation.variances.map((variance) => ({ operation, variance }))
+  )
+  return (
+    <Card className="border-sky-200 bg-sky-50/40 dark:border-sky-950 dark:bg-sky-950/10">
+      <CardHeader>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <CardTitle>Engineer assessment evidence</CardTitle>
+            <CardDescription>
+              {assessment.assessment_number ?? "Assessment"} is paired to this invoice
+              using {assessment.pair_reasons.join(" and ") || "governed identifiers"}.
+            </CardDescription>
+          </div>
+          <Badge variant="outline">
+            {Math.round((assessment.pair_confidence ?? 0) * 100)}% pairing confidence
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div className="rounded-lg border bg-background p-3">
+            <p className="text-xs text-muted-foreground">Assessment total</p>
+            <p className="mt-1 text-lg font-semibold tabular-nums">
+              {formatMoney(Number(assessment.totals.gross_total ?? 0))}
+            </p>
+          </div>
+          <div className="rounded-lg border bg-background p-3">
+            <p className="text-xs text-muted-foreground">Operations extracted</p>
+            <p className="mt-1 text-lg font-semibold">{assessment.operations.length}</p>
+          </div>
+          <div className="rounded-lg border bg-background p-3">
+            <p className="text-xs text-muted-foreground">Comparable lines</p>
+            <p className="mt-1 text-lg font-semibold">{variances.length}</p>
+          </div>
+        </div>
+        <Alert>
+          <InfoIcon />
+          <AlertTitle>Separate evidence stream</AlertTitle>
+          <AlertDescription>
+            Engineer values are shown beside invoice variances only. They are not
+            inserted into the historical invoice P90 population.
+          </AlertDescription>
+        </Alert>
+        {variances.length > 0 ? (
+          <div className="overflow-x-auto rounded-lg border bg-background">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Engineer operation</TableHead>
+                  <TableHead className="text-right">Engineer</TableHead>
+                  <TableHead className="text-right">Invoice</TableHead>
+                  <TableHead className="text-right">Variance</TableHead>
+                  <TableHead>Status</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {variances.map(({ operation, variance }) => (
+                  <TableRow key={`${operation.id}-${variance.invoice_line_item_id}`}>
+                    <TableCell>
+                      <p className="font-medium">{operation.description}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {operation.code ?? operation.category}
+                      </p>
+                      {operation.source_page_id ? (
+                        <a
+                          href={documentImageUrl(
+                            `/api/v1/pages/${operation.source_page_id}/image`
+                          )}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-sky-700 hover:underline dark:text-sky-300"
+                        >
+                          Source page <ExternalLinkIcon className="size-3" />
+                        </a>
+                      ) : null}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatMoney(Number(variance.engineer_amount ?? 0))}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatMoney(Number(variance.invoice_amount ?? 0))}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatMoney(Number(variance.difference_amount ?? 0))}
+                    </TableCell>
+                    <TableCell>
+                      <Badge
+                        variant="outline"
+                        className={
+                          variance.threshold_status === "within_threshold"
+                            ? "border-emerald-300 text-emerald-700"
+                            : "border-red-300 text-red-700"
+                        }
+                      >
+                        {variance.threshold_status === "within_threshold"
+                          ? "Within threshold"
+                          : variance.threshold_status === "above_10_percent"
+                            ? "Above 10% + £5"
+                            : "Above 5% + £5"}
+                      </Badge>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  )
+}
 
 function InvoiceComparisonTable({
   rows,
@@ -180,6 +305,28 @@ export function ReviewFindingsScreen({
   const [evidenceLine, setEvidenceLine] = useState<InvoiceLine | null>(null)
   const [decisionLine, setDecisionLine] = useState<InvoiceLine | null>(null)
   const [decisionMode, setDecisionMode] = useState<DecisionMode | null>(null)
+  const [engineerAssessment, setEngineerAssessment] =
+    useState<EngineerAssessmentPayload | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    fetchEngineerAssessments(workspace.claim.id)
+      .then((assessments) => {
+        if (cancelled) return
+        setEngineerAssessment(
+          assessments.find(
+            (assessment) =>
+              assessment.pair_status === "paired" &&
+              assessment.paired_invoice_id === workspace.invoice.id
+          ) ?? null
+        )
+      })
+      .catch(() => {
+        if (!cancelled) setEngineerAssessment(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [workspace.claim.id, workspace.invoice.id])
   const line =
     challenged[Math.min(activeIndex, Math.max(challenged.length - 1, 0))]
   const unresolved = challenged.filter(
@@ -205,6 +352,7 @@ export function ReviewFindingsScreen({
             Review findings
           </h1>
         </div>
+        <EngineerAssessmentCard assessment={engineerAssessment} />
         <Alert>
           <CheckIcon />
           <AlertTitle>No price challenges found</AlertTitle>
@@ -255,6 +403,8 @@ export function ReviewFindingsScreen({
           <StatusBadge status={line.challengeStatus ?? "review"} />
         </div>
       </div>
+
+      <EngineerAssessmentCard assessment={engineerAssessment} />
 
       {!mappingApproved ? (
         <Alert>

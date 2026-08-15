@@ -22,6 +22,7 @@ from app.enums import (
     ClaimVehicleRole,
     ConsistencyFindingStatus,
     DocumentRole,
+    DocumentKind,
     ExtractionMethod,
     InvoiceDocumentRole,
     LineItemKind,
@@ -36,12 +37,15 @@ from app.enums import (
 from app.extraction.azure_document_intelligence import AzureDocumentIntelligenceOCR
 from app.extraction.calculation_validator import validate_invoice
 from app.extraction.pdf_pipeline import PDFPipeline, PipelineConfig
+from app.extraction.engineer_assessment_parser import parse_engineer_assessment
 from app.models import (
     Case,
     ClaimConsistencyFinding,
     ClaimVehicle,
     Document,
     DocumentPage,
+    EngineerAssessment,
+    AssessmentOperation,
     Invoice,
     InvoiceLineItem,
     MathFinding,
@@ -51,6 +55,7 @@ from app.models import (
     invoice_page_links,
 )
 from app.services.vehicle_category_lookup import apply_lookup_to_vehicle
+from app.services.engineer_assessment import normalise_operation, pair_case_assessments
 from app.services.vehicle_classification import (
     apply_vehicle_classification,
     classification_from_record,
@@ -333,6 +338,60 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
             page_rows[page.page_number] = page_row
         session.flush()
 
+        engineer_pages = [
+            page for page in analysis.pages
+            if page.page_type.value == PageType.ENGINEER_ASSESSMENT.value
+        ]
+        if engineer_pages and not analysis.invoices:
+            document.document_kind = DocumentKind.ENGINEER_ASSESSMENT
+            parsed = parse_engineer_assessment(engineer_pages)
+            assessment_fields = dict(parsed.fields)
+            assessment_fields["damage_areas_json"] = assessment_fields.pop(
+                "damage_areas", None
+            )
+            assessment = EngineerAssessment(
+                case_id=case.id,
+                document_id=document.id,
+                extraction_confidence=parsed.confidence,
+                review_status=(
+                    ReviewStatus.APPROVED
+                    if parsed.confidence > settings.auto_accept_confidence_threshold
+                    else ReviewStatus.PENDING
+                ),
+                extraction_payload_json={
+                    "fields": {
+                        key: value.isoformat() if hasattr(value, "isoformat") else str(value)
+                        for key, value in parsed.fields.items()
+                    },
+                    "operation_count": len(parsed.operations),
+                },
+                **assessment_fields,
+            )
+            session.add(assessment)
+            session.flush()
+            for operation in parsed.operations:
+                page_row = page_rows.get(operation.page_number)
+                session.add(
+                    AssessmentOperation(
+                        assessment_id=assessment.id,
+                        sequence_no=operation.sequence_no,
+                        category=operation.category,
+                        operation_code=operation.code,
+                        raw_description=operation.description,
+                        normalised_description=normalise_operation(operation.description),
+                        work_units=operation.work_units,
+                        hours=operation.hours,
+                        quantity=operation.quantity,
+                        unit_price_net=operation.unit_price,
+                        total_net=operation.total,
+                        source_page_id=page_row.id if page_row else None,
+                        extraction_confidence=parsed.confidence,
+                    )
+                )
+            session.flush()
+        elif analysis.invoices:
+            document.document_kind = DocumentKind.REPAIR_INVOICE
+
         for extracted in analysis.invoices:
             header = extracted.header
             vehicle = Vehicle(
@@ -497,6 +556,8 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
                 invoice_descriptions=tuple(line.raw_description for line in extracted.line_items),
             )
 
+        pair_case_assessments(session, case.id)
+
         document.upload_status = UploadStatus.READY
         if manual_page_corrections:
             document_metadata["reprocess_required"] = False
@@ -513,6 +574,8 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
             "invoice_units": len(analysis.invoices),
             "extracted_lines": sum(len(invoice.line_items) for invoice in analysis.invoices),
         }
+        if engineer_pages and not analysis.invoices:
+            run.metrics_json["engineer_assessments"] = 1
     except Exception as exc:
         document_id = document.id
         case_id = case.id
@@ -541,6 +604,11 @@ def serialise_document(document: Document) -> dict[str, Any]:
         "filename": document.original_filename,
         "sha256": document.sha256,
         "role": document.document_role.value,
+        "kind": document.document_kind.value,
+        "paired": bool(
+            document.engineer_assessment
+            and document.engineer_assessment.paired_invoice_id
+        ),
         "status": document.upload_status.value,
         "page_count": document.page_count,
         "reprocess_required": bool(metadata.get("reprocess_required")),

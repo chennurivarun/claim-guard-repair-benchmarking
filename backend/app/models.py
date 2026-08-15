@@ -58,6 +58,7 @@ from app.enums import (
     ConfigStatus,
     ConsistencyFindingStatus,
     DocumentRole,
+    DocumentKind,
     ExtractionMethod,
     ImportStatus,
     InvoiceDocumentRole,
@@ -449,6 +450,11 @@ class Document(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
         nullable=False,
         default=DocumentRole.CURRENT,
     )
+    document_kind: Mapped[DocumentKind] = mapped_column(
+        enum_type(DocumentKind, "document_kind"),
+        nullable=False,
+        default=DocumentKind.UNKNOWN,
+    )
     original_filename: Mapped[str] = mapped_column(String(500), nullable=False)
     storage_path: Mapped[str] = mapped_column(Text, nullable=False)
     sha256: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -473,6 +479,9 @@ class Document(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
         order_by="DocumentPage.page_number",
     )
     invoices: Mapped[list[Invoice]] = relationship(
+        back_populates="document", cascade="all, delete-orphan", passive_deletes=True
+    )
+    engineer_assessment: Mapped[EngineerAssessment | None] = relationship(
         back_populates="document", cascade="all, delete-orphan", passive_deletes=True
     )
 
@@ -531,6 +540,138 @@ class DocumentPage(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     classification_prompt_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
 
     document: Mapped[Document] = relationship(back_populates="pages")
+
+
+class EngineerAssessment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Structured, non-invoice evidence extracted from an engineer report."""
+
+    __tablename__ = "engineer_assessments"
+    __table_args__ = (
+        UniqueConstraint("document_id", name="uq_engineer_assessment_document"),
+        Index("ix_engineer_assessment_case_claim", "case_id", "claim_reference"),
+        Index("ix_engineer_assessment_registration", "registration"),
+    )
+
+    case_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("cases.id", ondelete="CASCADE"), nullable=False
+    )
+    document_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False
+    )
+    paired_invoice_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("invoices.id", ondelete="SET NULL"), nullable=True
+    )
+    pair_status: Mapped[str] = mapped_column(String(40), nullable=False, default="unpaired")
+    pair_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pair_reasons_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    assessment_number: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    claim_reference: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    policy_number: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    created_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    incident_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    authorisation_status: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    registration: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    vin: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    vehicle_make: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    vehicle_model: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    vehicle_variant: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    mileage: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pre_accident_condition: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    impact_severity: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    roadworthiness: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    damage_areas_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    labour_rate: Mapped[str | None] = mapped_column(MoneyString, nullable=True)
+    paint_rate: Mapped[str | None] = mapped_column(MoneyString, nullable=True)
+    labour_net: Mapped[str | None] = mapped_column(MoneyString, nullable=True)
+    paint_net: Mapped[str | None] = mapped_column(MoneyString, nullable=True)
+    parts_net: Mapped[str | None] = mapped_column(MoneyString, nullable=True)
+    extras_net: Mapped[str | None] = mapped_column(MoneyString, nullable=True)
+    subtotal_net: Mapped[str | None] = mapped_column(MoneyString, nullable=True)
+    vat_rate: Mapped[str | None] = mapped_column(RateString, nullable=True)
+    vat_total: Mapped[str | None] = mapped_column(MoneyString, nullable=True)
+    gross_total: Mapped[str | None] = mapped_column(MoneyString, nullable=True)
+    extraction_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    review_status: Mapped[ReviewStatus] = mapped_column(
+        enum_type(ReviewStatus, "engineer_assessment_review_status"),
+        nullable=False,
+        default=ReviewStatus.PENDING,
+    )
+    extraction_payload_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+    document: Mapped[Document] = relationship(back_populates="engineer_assessment")
+    paired_invoice: Mapped[Invoice | None] = relationship(foreign_keys=[paired_invoice_id])
+    operations: Mapped[list[AssessmentOperation]] = relationship(
+        back_populates="assessment", cascade="all, delete-orphan", passive_deletes=True,
+        order_by="AssessmentOperation.sequence_no",
+    )
+
+
+class AssessmentOperation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "assessment_operations"
+    __table_args__ = (
+        UniqueConstraint("assessment_id", "sequence_no", name="uq_assessment_operation_sequence"),
+        Index("ix_assessment_operation_assessment", "assessment_id"),
+    )
+
+    assessment_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("engineer_assessments.id", ondelete="CASCADE"), nullable=False
+    )
+    sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    category: Mapped[str] = mapped_column(String(40), nullable=False)
+    operation_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    part_number: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    raw_description: Mapped[str] = mapped_column(Text, nullable=False)
+    normalised_description: Mapped[str] = mapped_column(Text, nullable=False)
+    work_units: Mapped[str | None] = mapped_column(QuantityString, nullable=True)
+    hours: Mapped[str | None] = mapped_column(QuantityString, nullable=True)
+    quantity: Mapped[str | None] = mapped_column(QuantityString, nullable=True)
+    unit_price_net: Mapped[str | None] = mapped_column(MoneyString, nullable=True)
+    total_net: Mapped[str | None] = mapped_column(MoneyString, nullable=True)
+    source_page_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("document_pages.id", ondelete="SET NULL"), nullable=True
+    )
+    source_bbox_json: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)
+    extraction_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    assessment: Mapped[EngineerAssessment] = relationship(back_populates="operations")
+    source_page: Mapped[DocumentPage | None] = relationship()
+    variances: Mapped[list[AssessmentInvoiceVariance]] = relationship(
+        back_populates="assessment_operation", cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class AssessmentInvoiceVariance(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "assessment_invoice_variances"
+    __table_args__ = (
+        UniqueConstraint(
+            "assessment_operation_id", "invoice_line_item_id",
+            name="uq_assessment_invoice_variance_pair",
+        ),
+        Index("ix_assessment_invoice_variance_invoice", "invoice_id"),
+    )
+
+    assessment_operation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("assessment_operations.id", ondelete="CASCADE"), nullable=False
+    )
+    invoice_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("invoices.id", ondelete="CASCADE"), nullable=False
+    )
+    invoice_line_item_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("invoice_line_items.id", ondelete="CASCADE"), nullable=False
+    )
+    matching_method: Mapped[str] = mapped_column(String(40), nullable=False)
+    match_confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    engineer_amount: Mapped[str | None] = mapped_column(MoneyString, nullable=True)
+    invoice_amount: Mapped[str | None] = mapped_column(MoneyString, nullable=True)
+    difference_amount: Mapped[str | None] = mapped_column(MoneyString, nullable=True)
+    difference_percentage: Mapped[str | None] = mapped_column(RateString, nullable=True)
+    threshold_status: Mapped[str] = mapped_column(String(40), nullable=False)
+    explanation: Mapped[str] = mapped_column(Text, nullable=False)
+
+    assessment_operation: Mapped[AssessmentOperation] = relationship(back_populates="variances")
+    invoice: Mapped[Invoice] = relationship(foreign_keys=[invoice_id])
+    invoice_line_item: Mapped[InvoiceLineItem] = relationship(foreign_keys=[invoice_line_item_id])
 
 
 class Vehicle(UUIDPrimaryKeyMixin, TimestampMixin, Base):

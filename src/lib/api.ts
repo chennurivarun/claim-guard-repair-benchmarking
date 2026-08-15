@@ -151,6 +151,39 @@ export interface ClaimInvoiceSummary {
   lines: unknown[]
 }
 
+export interface EngineerAssessmentVariancePayload {
+  invoice_id: string
+  invoice_line_item_id: string
+  engineer_amount: number | string | null
+  invoice_amount: number | string | null
+  difference_amount: number | string | null
+  difference_percentage: number | string | null
+  threshold_status: "within_threshold" | "above_5_percent" | "above_10_percent"
+  explanation: string
+}
+
+export interface EngineerAssessmentPayload {
+  id: string
+  document_id: string
+  assessment_number: string | null
+  claim_reference: string | null
+  registration: string | null
+  pair_status: "paired" | "unpaired"
+  pair_confidence: number | null
+  pair_reasons: string[]
+  paired_invoice_id: string | null
+  totals: Record<string, number | string | null>
+  operations: Array<{
+    id: string
+    category: string
+    code: string | null
+    description: string
+    total_net: number | string | null
+    source_page_id: string | null
+    variances: EngineerAssessmentVariancePayload[]
+  }>
+}
+
 export interface LineCorrectionInput {
   actor: string
   reason: string
@@ -286,6 +319,14 @@ export function fetchClaimInvoices(
 ): Promise<ClaimInvoiceSummary[]> {
   return requestJson(
     `/api/v1/claims/${encodeURIComponent(caseReference)}/invoices`
+  )
+}
+
+export function fetchEngineerAssessments(
+  caseReference = DEFAULT_CASE_REFERENCE
+): Promise<EngineerAssessmentPayload[]> {
+  return requestJson(
+    `/api/v1/claims/${encodeURIComponent(caseReference)}/engineer-assessments`
   )
 }
 

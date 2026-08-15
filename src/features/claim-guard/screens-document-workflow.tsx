@@ -401,7 +401,7 @@ export function UploadProcessingWorkflow({
     if (!selectedFiles.length) return
     const invalid = selectedFiles.find((file) => !isPdf(file))
     if (invalid) {
-      setUploadError(`${invalid.name} is not a PDF repair invoice.`)
+      setUploadError(`${invalid.name} is not a supported PDF document.`)
       return
     }
 
@@ -440,7 +440,10 @@ export function UploadProcessingWorkflow({
                 ? {
                     ...row,
                     status: "READY",
-                    detail: `${latestResult?.metrics?.invoice_units ?? 0} invoice unit(s)`,
+                    detail:
+                      latestResult?.document.kind === "engineer_assessment"
+                        ? `Engineer assessment${latestResult.document.paired ? " · paired" : " · awaiting matching invoice"}`
+                        : `${latestResult?.metrics?.invoice_units ?? 0} repair invoice unit(s)`,
                   }
                 : row
             )
@@ -468,7 +471,7 @@ export function UploadProcessingWorkflow({
       if (latestResult) await onProcessed()
       setProgress(100)
       setProgressMessage("Batch processing complete")
-      toast.success("Invoice batch processing completed", {
+      toast.success("Document batch processing completed", {
         description: `${selectedFiles.length} file${selectedFiles.length === 1 ? "" : "s"} checked. Review each status below.`,
       })
     } catch (error) {
@@ -484,7 +487,7 @@ export function UploadProcessingWorkflow({
     <>
       <ScreenHeading
         title="Upload & Processing"
-        description="Upload the current repair invoice. Analysis stays draft until the later human issuance gate."
+        description="Upload repair invoices and matching Engineer Assessment PDFs. Each document is classified, retained and kept auditable."
         action={
           <Button onClick={onContinue} disabled={busy}>
             View benchmarks
@@ -570,14 +573,14 @@ export function UploadProcessingWorkflow({
 
       {batchRows.length ? (
         <DataCard
-          title="Invoice batch"
-          description="Each uploaded PDF is processed and retained as a separate invoice."
+          title="Document batch"
+          description="Each PDF is retained separately and classified as a repair invoice or Engineer Assessment."
         >
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Invoice file</TableHead>
+                  <TableHead>Document file</TableHead>
                   <TableHead>Result</TableHead>
                   <TableHead className="text-right">Status</TableHead>
                 </TableRow>

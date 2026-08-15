@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class PageType(StrEnum):
+    ENGINEER_ASSESSMENT = "engineer_assessment"
     INVOICE = "invoice"
     ESTIMATE = "estimate_or_order"
     CREDIT_NOTE = "credit_note"
