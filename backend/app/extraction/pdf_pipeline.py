@@ -241,19 +241,21 @@ class PDFPipeline:
         render_dir = Path(output_dir)
         render_dir.mkdir(parents=True, exist_ok=True)
         page_dimensions = {
-            index + 1: (page.rect.width, page.rect.height)
-            for index, page in enumerate(document)
+            index + 1: (page.rect.width, page.rect.height) for index, page in enumerate(document)
         }
         cloud_pages: dict[int, CloudOCRPage] = {}
         if self.cloud_ocr is not None:
-            needs_ocr = any(
-                len(page.get_text("text").strip()) < self.config.native_min_characters
-                or len(_native_words(page)) < self.config.native_min_words
-                for page in document
-            )
-            if needs_ocr:
+            ocr_page_dimensions = {
+                index + 1: page_dimensions[index + 1]
+                for index, page in enumerate(document)
+                if (
+                    len(page.get_text("text").strip()) < self.config.native_min_characters
+                    or len(_native_words(page)) < self.config.native_min_words
+                )
+            }
+            if ocr_page_dimensions:
                 try:
-                    cloud_pages = self.cloud_ocr.analyse(source, page_dimensions)
+                    cloud_pages = self.cloud_ocr.analyse(source, ocr_page_dimensions)
                 except Exception as exc:
                     raise OCRUnavailableError(
                         f"Azure Document Intelligence OCR failed: {exc}"

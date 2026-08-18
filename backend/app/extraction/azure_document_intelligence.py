@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,10 @@ class CloudOCRPage:
 
 class AzureDocumentIntelligenceOCR:
     """Translate Azure's prebuilt-layout response into ClaimGuard's OCR shape."""
+
+    max_pages_per_request = 2
+    min_poll_interval_seconds = 1.0
+    max_rate_limit_retries = 4
 
     def __init__(
         self,
@@ -76,55 +81,141 @@ class AzureDocumentIntelligenceOCR:
             ),
         )
 
+    @staticmethod
+    def _error_detail(response: httpx.Response) -> str:
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+        error = payload.get("error") if isinstance(payload, dict) else None
+        if not isinstance(error, dict):
+            error = {}
+        code = str(error.get("code") or "").strip()
+        message = str(error.get("message") or "").strip()
+        azure_detail = ": ".join(value for value in (code, message) if value)
+        status = f"{response.status_code} {response.reason_phrase}".strip()
+        return f"Azure Document Intelligence request failed ({status})" + (
+            f": {azure_detail}" if azure_detail else ""
+        )
+
+    @classmethod
+    def _raise_for_status(cls, response: httpx.Response) -> None:
+        if response.is_error:
+            raise ValueError(cls._error_detail(response))
+
+    @classmethod
+    def _retry_delay(cls, response: httpx.Response, retry_number: int) -> float:
+        retry_after = response.headers.get("Retry-After", "").strip()
+        try:
+            requested_delay = float(retry_after)
+        except ValueError:
+            requested_delay = 0
+        return max(
+            cls.min_poll_interval_seconds,
+            requested_delay,
+            min(float(2**retry_number), 8.0),
+        )
+
+    def _request_with_rate_limit_retry(
+        self,
+        request: Callable[[], httpx.Response],
+        *,
+        deadline: float,
+    ) -> httpx.Response:
+        for retry_number in range(self.max_rate_limit_retries + 1):
+            response = request()
+            if response.status_code != 429:
+                self._raise_for_status(response)
+                return response
+            if retry_number == self.max_rate_limit_retries:
+                self._raise_for_status(response)
+            delay = self._retry_delay(response, retry_number)
+            if time.monotonic() + delay >= deadline:
+                raise TimeoutError(
+                    "Azure Document Intelligence remained rate limited until timeout."
+                )
+            time.sleep(delay)
+        raise AssertionError("Azure rate-limit retry loop exited unexpectedly")
+
+    def _analyse_batch(
+        self,
+        client: httpx.Client,
+        *,
+        analyse_url: str,
+        headers: dict[str, str],
+        pdf_bytes: bytes,
+        page_numbers: list[int],
+    ) -> dict[str, Any]:
+        deadline = time.monotonic() + self.timeout_seconds
+        params = {
+            "api-version": self.api_version,
+            "pages": ",".join(str(page_number) for page_number in page_numbers),
+        }
+        response = self._request_with_rate_limit_retry(
+            lambda: client.post(
+                analyse_url,
+                params=params,
+                headers=headers,
+                content=pdf_bytes,
+            ),
+            deadline=deadline,
+        )
+        operation_url = response.headers.get("operation-location")
+        if not operation_url:
+            raise ValueError("Azure Document Intelligence did not return an operation location.")
+
+        while time.monotonic() < deadline:
+            result = self._request_with_rate_limit_retry(
+                lambda: client.get(
+                    operation_url,
+                    headers={"Ocp-Apim-Subscription-Key": self.api_key},
+                ),
+                deadline=deadline,
+            )
+            payload = result.json()
+            status = str(payload.get("status", "")).lower()
+            if status == "succeeded":
+                return payload
+            if status in {"failed", "canceled"}:
+                error = payload.get("error") or {}
+                raise ValueError(str(error.get("message") or "Azure document analysis failed."))
+            time.sleep(self.min_poll_interval_seconds)
+        raise TimeoutError("Azure document analysis timed out.")
+
     def analyse(
         self,
         pdf_path: Path,
         page_dimensions: dict[int, tuple[float, float]],
     ) -> dict[int, CloudOCRPage]:
-        analyse_url = (
-            f"{self.endpoint}/documentintelligence/documentModels/"
-            f"{self.model}:analyze"
-        )
+        analyse_url = f"{self.endpoint}/documentintelligence/documentModels/{self.model}:analyze"
         headers = {
             "Ocp-Apim-Subscription-Key": self.api_key,
             "Content-Type": "application/octet-stream",
         }
-        deadline = time.monotonic() + self.timeout_seconds
+        requested_pages = sorted(page_dimensions)
+        if not requested_pages:
+            return {}
+        pdf_bytes = pdf_path.read_bytes()
+        payloads: list[dict[str, Any]] = []
         with httpx.Client(timeout=min(self.timeout_seconds, 60)) as client:
-            response = client.post(
-                analyse_url,
-                params={"api-version": self.api_version},
-                headers=headers,
-                content=pdf_path.read_bytes(),
-            )
-            response.raise_for_status()
-            operation_url = response.headers.get("operation-location")
-            if not operation_url:
-                raise ValueError(
-                    "Azure Document Intelligence did not return an operation location."
-                )
-            payload: dict[str, Any] = {}
-            while time.monotonic() < deadline:
-                result = client.get(
-                    operation_url,
-                    headers={"Ocp-Apim-Subscription-Key": self.api_key},
-                )
-                result.raise_for_status()
-                payload = result.json()
-                status = str(payload.get("status", "")).lower()
-                if status == "succeeded":
-                    break
-                if status in {"failed", "canceled"}:
-                    error = payload.get("error") or {}
-                    raise ValueError(
-                        str(error.get("message") or "Azure document analysis failed.")
+            for start in range(0, len(requested_pages), self.max_pages_per_request):
+                payloads.append(
+                    self._analyse_batch(
+                        client,
+                        analyse_url=analyse_url,
+                        headers=headers,
+                        pdf_bytes=pdf_bytes,
+                        page_numbers=requested_pages[start : start + self.max_pages_per_request],
                     )
-                time.sleep(0.25)
-            else:
-                raise TimeoutError("Azure document analysis timed out.")
+                )
 
         pages: dict[int, CloudOCRPage] = {}
-        for page in (payload.get("analyzeResult") or {}).get("pages", []):
+        azure_pages = [
+            page
+            for payload in payloads
+            for page in (payload.get("analyzeResult") or {}).get("pages", [])
+        ]
+        for page in azure_pages:
             page_number = int(page.get("pageNumber", 0) or 0)
             if page_number not in page_dimensions:
                 continue
