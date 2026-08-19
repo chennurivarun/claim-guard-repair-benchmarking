@@ -2,7 +2,7 @@
 
 ClaimGuard is a UK motor-claims invoice validation and price-challenge pilot. A handler confirms liability, uploads repair invoices, reviews extraction and ontology mapping, compares each net line against governed evidence, and issues an auditable challenge only after human approval.
 
-The project is a working full-stack implementation: a React/Vite interface in the shadcn design language, a FastAPI service, deterministic comparison logic, an optional hosted Gemini mapping adjudicator, a SQLite audit store, native PDF/Azure OCR processing, and JSON/XLSX/SQLite/DOCX/PDF outputs.
+The project is a working full-stack implementation: a React/Vite interface in the shadcn design language, a FastAPI service, deterministic comparison logic, an optional schema-constrained hosted LLM boundary, a SQLite audit store, native PDF/Azure OCR processing, and JSON/XLSX/SQLite/DOCX/PDF outputs.
 
 ## What ClaimGuard does
 
@@ -255,7 +255,7 @@ uv run claimguard-import-vehicle-lookup ../sample-data/vehicle_category_lookup.c
 
 The import is safe to repeat: normalized make/model matches are updated and new models are added. Existing extracted vehicles are reclassified immediately; unmatched vehicles remain in manual review.
 
-### Free hosted AI setup
+### Hosted AI setup
 
 ClaimGuard supports the Gemini Developer API free tier for ontology mapping adjudication. Create a key in [Google AI Studio](https://aistudio.google.com/app/apikey), then add it only to `backend/.env`:
 
@@ -272,7 +272,33 @@ CLAIM_GUARD_LLM_API_KEY=your_personal_key_here
 | Timeout, invalid response, or free-tier limit | The failure code is retained in the comparison result and mapping flags; that run safely continues in deterministic mode. |
 | Provider changed later | Implement the same `StructuredLLMClient` boundary; comparison and financial code do not change. |
 
-The API key is sent only from FastAPI to Google and is never included in frontend code, prompts, audit payloads, or error messages. The hosted model receives redacted invoice descriptions plus an allow-list of retrieved ontology candidates. It cannot create prices or calculate VAT, benchmarks, Challenge Price, or settlement totals.
+Azure AI and Azure OpenAI are also supported through the same boundary. They are
+not the same service as Azure Document Intelligence: Document Intelligence performs
+OCR/layout extraction, while an image-capable LLM is an optional fallback for pages
+that OCR or deterministic parsing cannot make usable.
+
+```dotenv
+CLAIM_GUARD_LLM_PROVIDER=azure_openai
+CLAIM_GUARD_LLM_MODEL=your-text-model-or-deployment
+CLAIM_GUARD_LLM_VISION_MODEL=your-image-capable-model-or-deployment
+CLAIM_GUARD_LLM_API_KEY=your_rotated_secret
+CLAIM_GUARD_LLM_BASE_URL=https://your-resource.services.ai.azure.com
+CLAIM_GUARD_LLM_API_VERSION=2024-05-01-preview
+CLAIM_GUARD_LLM_VISION_ENABLED=true
+```
+
+| Extraction layer | Behaviour |
+| ---------------- | --------- |
+| Native PDF / Azure layout | Runs first and remains authoritative when it produces usable fields and lines. |
+| Vision fallback | Receives rendered page images only when the normal extraction is incomplete or unreadable. |
+| Local validation | Rejects malformed, negative, out-of-range, zero-price, or wrong-page line items and recalculates arithmetic independently. |
+| Human review | Vision confidence is capped below automatic approval, so extracted values remain reviewable. |
+
+Keep `CLAIM_GUARD_LLM_VISION_ENABLED=false` until the configured model deployment is
+confirmed to accept image inputs. A failed or invalid model response does not overwrite
+a successful deterministic extraction, and comparison never uses invented prices.
+
+The API key is sent only from FastAPI to the configured provider and is never included in frontend code, prompts, audit payloads, or error messages. Mapping receives redacted invoice descriptions plus an allow-list of retrieved ontology candidates. Vision receives bounded rendered pages and untrusted extracted text only when fallback is required. Neither path can create authoritative prices or calculate VAT, benchmarks, Challenge Price, or settlement totals.
 
 Research evidence is accepted only from the hostname patterns in the versioned `CLAIM_GUARD_RESEARCH_SOURCE_ALLOWLISTS` map. The checked-in `*.example.test` entry is deliberately a non-production placeholder; replace it with insurer-approved UK supplier/provider hosts before enabling a real research adapter.
 
