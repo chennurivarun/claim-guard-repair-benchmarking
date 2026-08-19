@@ -38,6 +38,7 @@ from app.extraction.azure_document_intelligence import AzureDocumentIntelligence
 from app.extraction.calculation_validator import validate_invoice
 from app.extraction.engineer_assessment_parser import parse_engineer_assessment
 from app.extraction.pdf_pipeline import PDFPipeline, PipelineConfig
+from app.llm.factory import build_invoice_vision_extractor
 from app.models import (
     AssessmentOperation,
     Case,
@@ -117,6 +118,7 @@ def _extraction_method(value: str, *, invoice: bool = False) -> ExtractionMethod
         "ocr": ExtractionMethod.OCR,
         "azure_layout": ExtractionMethod.OCR,
         "vision_required": ExtractionMethod.VISION,
+        "vision": ExtractionMethod.VISION,
     }
     if invoice and value == "native_table":
         return ExtractionMethod.NATIVE_TABLE
@@ -299,12 +301,15 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
     manual_page_corrections = dict(document_metadata.get("page_corrections") or {})
     output_dir = Path(settings.storage_dir) / "cases" / case.id / document.sha256[:12] / "pages"
     cloud_ocr = _build_cloud_ocr(settings)
+    vision_extractor = build_invoice_vision_extractor(settings)
     pipeline = PDFPipeline(
         PipelineConfig(
             max_pages=settings.max_pdf_pages,
             ocr_enabled=settings.document_ocr_provider in {"auto", "tesseract"},
+            vision_max_batches=settings.llm_vision_max_batches,
         ),
         cloud_ocr=cloud_ocr,
+        vision_extractor=vision_extractor,
     )
     try:
         analysis = pipeline.analyse(document.storage_path, output_dir)

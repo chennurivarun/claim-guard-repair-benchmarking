@@ -23,6 +23,7 @@ class StructuredLLMClient(Protocol):
         system_instruction: str,
         payload: dict[str, Any],
         schema: dict[str, Any],
+        image_data_urls: list[str] | None = None,
     ) -> dict[str, Any]: ...
 
 
@@ -36,6 +37,7 @@ class DisabledLLMClient:
         system_instruction: str,
         payload: dict[str, Any],
         schema: dict[str, Any],
+        image_data_urls: list[str] | None = None,
     ) -> dict[str, Any]:
         raise LLMProviderError(
             "LLM_DISABLED",

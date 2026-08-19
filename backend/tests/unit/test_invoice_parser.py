@@ -1,7 +1,17 @@
+from datetime import date
 from decimal import Decimal
+from pathlib import Path
 
 from app.extraction.invoice_parser import InvoiceParser, _guess_item_kind
-from app.extraction.schemas import PageAnalysis, PageType
+from app.extraction.schemas import (
+    ExtractedInvoice,
+    ExtractedLine,
+    FieldSource,
+    InvoiceHeader,
+    InvoiceTotals,
+    PageAnalysis,
+    PageType,
+)
 
 
 class _TablePage:
@@ -91,3 +101,73 @@ def test_generic_part_table_recognises_explicit_repair_operations() -> None:
     assert _guess_item_kind("Part", "Fit Track Rod Ends") == "labour"
     assert _guess_item_kind("Part", "Waste Oil and Filter") == "disposal"
     assert _guess_item_kind("Part", "Oil Filter") == "part"
+
+
+def test_subtotal_mismatch_recovers_missing_lines_with_vision(monkeypatch) -> None:
+    class SingleLinePage:
+        def extract_text(self, layout=False):
+            return (
+                "ST ALBANS CAR CLINIC\nInvoice INV-1\nInvoice Date: 19/08/2026\n"
+                "Subtotal 30.00\nTotal 36.00"
+            )
+
+        def extract_tables(self):
+            return [
+                [
+                    ["Description", "Qty", "Unit Price", "Subtotal"],
+                    ["Existing part", "1", "10.00", "10.00"],
+                ]
+            ]
+
+    class FakePDF:
+        pages = [SingleLinePage()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class VisionFallback:
+        def extract(self, pages, *, role_hint=None):
+            return ExtractedInvoice(
+                header=InvoiceHeader(
+                    invoice_number="INV-1",
+                    invoice_date=date(2026, 8, 19),
+                    supplier_name="ST ALBANS CAR CLINIC",
+                ),
+                totals=InvoiceTotals(
+                    subtotal_net=Decimal("30.00"), total_gross=Decimal("36.00")
+                ),
+                line_items=[
+                    ExtractedLine(
+                        sequence_no=1,
+                        raw_description="Existing part",
+                        normalised_description="existing part",
+                        line_total_net=Decimal("10.00"),
+                        source=FieldSource(
+                            page_number=1, extraction_method="vision", confidence=0.8
+                        ),
+                    ),
+                    ExtractedLine(
+                        sequence_no=2,
+                        raw_description="Recovered labour",
+                        normalised_description="recovered labour",
+                        line_total_net=Decimal("20.00"),
+                        source=FieldSource(
+                            page_number=1, extraction_method="vision", confidence=0.8
+                        ),
+                    ),
+                ],
+                page_numbers=[1],
+                extraction_method="vision",
+                extraction_confidence=0.8,
+            )
+
+    monkeypatch.setattr("app.extraction.invoice_parser.pdfplumber.open", lambda _: FakePDF())
+    invoice = InvoiceParser(VisionFallback()).parse_group(Path("unused.pdf"), [_page()])
+    assert [line.raw_description for line in invoice.line_items] == [
+        "Existing part",
+        "Recovered labour",
+    ]
+    assert invoice.extraction_method == "vision"

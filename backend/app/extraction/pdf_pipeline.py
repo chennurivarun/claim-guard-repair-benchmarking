@@ -22,6 +22,8 @@ from app.extraction.schemas import (
     PageAnalysis,
     PageType,
 )
+from app.llm.base import LLMProviderError
+from app.llm.invoice_extraction import MultimodalInvoiceExtractor
 
 try:
     import pytesseract
@@ -43,6 +45,7 @@ class PipelineConfig:
     ocr_dpi: int = 300
     ocr_enabled: bool = True
     max_pages: int = 100
+    vision_max_batches: int = 3
 
 
 def sha256_file(path: Path) -> str:
@@ -223,9 +226,11 @@ class PDFPipeline:
         config: PipelineConfig | None = None,
         *,
         cloud_ocr: AzureDocumentIntelligenceOCR | None = None,
+        vision_extractor: MultimodalInvoiceExtractor | None = None,
     ) -> None:
         self.config = config or PipelineConfig()
-        self.parser = InvoiceParser()
+        self.vision_extractor = vision_extractor
+        self.parser = InvoiceParser(vision_extractor)
         self.cloud_ocr = cloud_ocr
 
     def analyse(self, pdf_path: str | Path, output_dir: str | Path) -> DocumentAnalysis:
@@ -257,9 +262,10 @@ class PDFPipeline:
                 try:
                     cloud_pages = self.cloud_ocr.analyse(source, ocr_page_dimensions)
                 except Exception as exc:
-                    raise OCRUnavailableError(
-                        f"Azure Document Intelligence OCR failed: {exc}"
-                    ) from exc
+                    if self.vision_extractor is None:
+                        raise OCRUnavailableError(
+                            f"Azure Document Intelligence OCR failed: {exc}"
+                        ) from exc
         pages: list[PageAnalysis] = []
         for index, page in enumerate(document):
             native_text = page.get_text("text").strip()
@@ -286,13 +292,13 @@ class PDFPipeline:
                 method = "azure_layout"
                 detected_rotation = (page.rotation + cloud_page.rotation) % 360
                 structured_tables = cloud_page.tables
-            elif self.cloud_ocr is not None:
+            elif self.cloud_ocr is not None and self.vision_extractor is None:
                 raise OCRUnavailableError(
                     "Azure Document Intelligence returned no readable OCR result for "
                     f"page {index + 1}. Check that the model is exactly "
                     "'prebuilt-layout' and try again."
                 )
-            elif self.config.ocr_enabled:
+            elif self.config.ocr_enabled and self.cloud_ocr is None:
                 try:
                     text, words, extraction_confidence, ocr_rotation = _ocr_image(
                         _render_page(page, self.config.ocr_dpi),
@@ -354,6 +360,35 @@ class PDFPipeline:
             except Exception:
                 # A single malformed invoice unit must not abort the rest of the document.
                 continue
+        if self.vision_extractor is not None:
+            grouped_numbers = {
+                page.page_number for grouped_pages in groups.values() for page in grouped_pages
+            }
+            candidates = [
+                page
+                for page in pages
+                if page.page_number not in grouped_numbers
+                and page.page_type not in {
+                    PageType.ENGINEER_ASSESSMENT,
+                    PageType.BLANK,
+                    PageType.SERVICE_HISTORY,
+                }
+                and (
+                    page.extraction_method == "vision_required"
+                    or page.page_type in {PageType.OTHER, PageType.PHOTO}
+                )
+            ]
+            # Ungrouped pages have no reliable evidence that they belong to one
+            # document. Process them individually to prevent cross-invoice mixing.
+            for page_index, page in enumerate(candidates):
+                if page_index >= self.config.vision_max_batches:
+                    break
+                try:
+                    extracted = self.vision_extractor.extract([page])
+                except LLMProviderError:
+                    continue
+                if extracted is not None:
+                    analysis.invoices.append(extracted)
         has_engineer_assessment = any(
             page.page_type == PageType.ENGINEER_ASSESSMENT for page in pages
         )

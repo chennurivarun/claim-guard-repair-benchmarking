@@ -54,12 +54,19 @@ class Settings(BaseSettings):
     default_currency: str = "GBP"
     default_jurisdiction: str = "UK"
 
-    # The LLM only adjudicates between candidates retrieved by deterministic code.
-    # It never supplies prices or performs financial arithmetic.
-    llm_provider: Literal["disabled", "gemini"] = "gemini"
+    # Mapping remains deterministic-first. Vision extraction is separately gated and
+    # its output always passes through the existing schemas and arithmetic checks.
+    llm_provider: Literal["disabled", "gemini", "azure_openai", "openai_compatible"] = (
+        "gemini"
+    )
     llm_model: str = "gemini-2.5-flash-lite"
+    llm_vision_model: str | None = None
+    llm_vision_enabled: bool = False
+    llm_vision_max_pages: int = Field(default=8, ge=1, le=20)
+    llm_vision_max_batches: int = Field(default=3, ge=1, le=10)
     llm_api_key: SecretStr | None = None
     llm_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+    llm_api_version: str = "2024-10-21"
     llm_timeout_seconds: float = Field(default=20.0, gt=0, le=120)
     llm_max_attempts: int = Field(default=2, ge=1, le=3)
 

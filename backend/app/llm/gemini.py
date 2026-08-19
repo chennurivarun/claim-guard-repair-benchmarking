@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import httpx
@@ -45,21 +46,35 @@ class GeminiStructuredLLMClient:
         system_instruction: str,
         payload: dict[str, Any],
         schema: dict[str, Any],
+        image_data_urls: list[str] | None = None,
     ) -> dict[str, Any]:
+        parts: list[dict[str, Any]] = [
+            {
+                "text": json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            }
+        ]
+        for data_url in image_data_urls or []:
+            match = re.fullmatch(r"data:([^;,]+);base64,([A-Za-z0-9+/=]+)", data_url)
+            if not match:
+                raise LLMProviderError("LLM_INVALID_IMAGE", "An image payload was invalid.")
+            parts.append(
+                {
+                    "inline_data": {
+                        "mime_type": match.group(1),
+                        "data": match.group(2),
+                    }
+                }
+            )
         request_body = {
             "system_instruction": {"parts": [{"text": system_instruction}]},
             "contents": [
                 {
                     "role": "user",
-                    "parts": [
-                        {
-                            "text": json.dumps(
-                                payload,
-                                ensure_ascii=False,
-                                separators=(",", ":"),
-                            )
-                        }
-                    ],
+                    "parts": parts,
                 }
             ],
             "generationConfig": {

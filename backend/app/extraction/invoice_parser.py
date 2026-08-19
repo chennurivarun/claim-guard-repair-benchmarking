@@ -22,6 +22,8 @@ from app.extraction.schemas import (
     InvoiceTotals,
     PageAnalysis,
 )
+from app.llm.base import LLMProviderError
+from app.llm.invoice_extraction import MultimodalInvoiceExtractor, merge_invoice_extractions
 
 MONEY_PATTERN = r"(?:£\s*)?([0-9][0-9,]*\.\d{2})"
 
@@ -305,6 +307,9 @@ def _line_tax(
 
 
 class InvoiceParser:
+    def __init__(self, vision_extractor: MultimodalInvoiceExtractor | None = None) -> None:
+        self.vision_extractor = vision_extractor
+
     def parse_group(
         self,
         pdf_path: Path,
@@ -320,14 +325,19 @@ class InvoiceParser:
         lines: list[ExtractedLine] = []
         layout_text_parts: list[str] = []
 
-        with pdfplumber.open(str(pdf_path)) as pdf:
-            for page_info in pages:
-                pdf_page = pdf.pages[page_info.page_number - 1]
-                layout_text_parts.append(pdf_page.extract_text(layout=True) or page_info.text)
-                if page_info.extraction_method == "native":
-                    lines.extend(self._native_table_lines(pdf_page, page_info, len(lines) + 1))
-                else:
-                    lines.extend(self._ocr_lines(page_info, len(lines) + 1))
+        try:
+            with pdfplumber.open(str(pdf_path)) as pdf:
+                for page_info in pages:
+                    pdf_page = pdf.pages[page_info.page_number - 1]
+                    layout_text_parts.append(pdf_page.extract_text(layout=True) or page_info.text)
+                    if page_info.extraction_method == "native":
+                        lines.extend(self._native_table_lines(pdf_page, page_info, len(lines) + 1))
+                    else:
+                        lines.extend(self._ocr_lines(page_info, len(lines) + 1))
+        except Exception:
+            if self.vision_extractor is None:
+                raise
+            layout_text_parts.extend(page.text for page in pages)
 
         layout_text = "\n".join(layout_text_parts)
         totals = self._totals(layout_text + "\n" + raw_text, pages)
@@ -365,7 +375,7 @@ class InvoiceParser:
 
         header = self._header(layout_text + "\n" + raw_text)
         confidence = sum(page.extraction_confidence for page in pages) / len(pages)
-        return ExtractedInvoice(
+        deterministic = ExtractedInvoice(
             header=header,
             totals=totals,
             line_items=lines,
@@ -373,6 +383,43 @@ class InvoiceParser:
             document_role=document_role,
             extraction_method=extraction_method,
             extraction_confidence=confidence,
+        )
+        usable_lines = [
+            line
+            for line in deterministic.line_items
+            if line.line_total_net is not None and line.line_total_net > 0
+        ]
+        stated_subtotal = deterministic.totals.subtotal_net
+        extracted_subtotal = sum(
+            (
+                line.line_total_net
+                for line in usable_lines
+                if line.vat_applicable and line.line_total_net is not None
+            ),
+            Decimal("0"),
+        )
+        recover_lines = not usable_lines or (
+            stated_subtotal is not None
+            and abs(extracted_subtotal - stated_subtotal) > Decimal("0.05")
+        )
+        if self.vision_extractor is None or (
+            not recover_lines
+            and deterministic.header.invoice_date is not None
+            and deterministic.header.supplier_name
+            and (
+                deterministic.totals.subtotal_net is not None
+                or deterministic.totals.total_gross is not None
+            )
+        ):
+            return deterministic
+        try:
+            vision = self.vision_extractor.extract(pages, role_hint=document_role)
+        except LLMProviderError:
+            return deterministic
+        return merge_invoice_extractions(
+            deterministic,
+            vision,
+            include_vision_lines=recover_lines,
         )
 
     def _native_table_lines(self, pdf_page, page: PageAnalysis, start: int) -> list[ExtractedLine]:
