@@ -853,8 +853,12 @@ export function App() {
             >
               {invoices.map((invoice, index) => (
                 <option key={invoice.id} value={invoice.id}>
-                  {invoice.invoice_number || `Invoice ${index + 1}`} ·{" "}
-                  {invoice.supplier_name || "Unknown repairer"}
+                  {invoice.invoice_number
+                    ? `Invoice ${invoice.invoice_number}`
+                    : invoice.document_filename
+                      ? `${invoice.document_filename} · Invoice ${index + 1}`
+                      : `Invoice ${index + 1}`}
+                  {invoice.supplier_name ? ` · ${invoice.supplier_name}` : ""}
                 </option>
               ))}
             </select>

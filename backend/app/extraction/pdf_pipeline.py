@@ -271,6 +271,7 @@ class PDFPipeline:
             preview = _render_page(page, self.config.render_dpi)
             preview_path = render_dir / f"page-{index + 1:03d}.png"
             preview.save(preview_path)
+            structured_tables: list[list[list[str]]] = []
 
             if use_native:
                 text = native_text
@@ -284,6 +285,7 @@ class PDFPipeline:
                 extraction_confidence = cloud_page.confidence
                 method = "azure_layout"
                 detected_rotation = (page.rotation + cloud_page.rotation) % 360
+                structured_tables = cloud_page.tables
             elif self.cloud_ocr is not None:
                 raise OCRUnavailableError(
                     "Azure Document Intelligence returned no readable OCR result for "
@@ -327,6 +329,7 @@ class PDFPipeline:
                 group_key=_group_key(page_type, text, index + 1),
                 rendered_image_path=preview_path,
                 words=words,
+                tables=structured_tables,
             )
             pages.append(page_info)
 

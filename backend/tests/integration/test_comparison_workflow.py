@@ -4,6 +4,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import fitz
 import pytest
 from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.orm import Session
@@ -15,6 +16,7 @@ from app.enums import (
     ComparisonStatus,
     DocumentRole,
     MappingStatus,
+    RunStatus,
 )
 from app.importers.seed_workbooks import SeedWorkbookBundle, load_seed_workbooks
 from app.init_db import initialize_database
@@ -318,6 +320,66 @@ def test_native_invoice_comparison_persists_reviewable_results(
         assert _count(session, ProcessingRun) == 2
         assert _count(session, PriceComparison) == 36
         assert _count(session, ChallengeResult) == 38
+
+
+def test_failed_document_preserves_last_successful_extraction_run(comparison_engine) -> None:
+    with Session(comparison_engine, expire_on_commit=False) as session:
+        case = Case(case_reference="CG-RUN-STATE", created_by="pytest.handler")
+        session.add(case)
+        session.flush()
+        successful_document = document_processing.store_pdf(
+            session,
+            case=case,
+            filename=INVOICE_PATH.name,
+            content=INVOICE_PATH.read_bytes(),
+            role=DocumentRole.CURRENT,
+        )
+        successful_run = document_processing.process_document(session, successful_document)
+        session.commit()
+
+        broken_document = document_processing.store_pdf(
+            session,
+            case=case,
+            filename="broken.pdf",
+            content=b"%PDF-broken",
+            role=DocumentRole.CURRENT,
+        )
+        session.commit()
+
+        with pytest.raises(fitz.FileDataError):
+            document_processing.process_document(session, broken_document)
+
+        session.expire_all()
+        persisted_case = session.get(Case, case.id)
+        assert persisted_case is not None
+        assert persisted_case.current_processing_run_id == successful_run.id
+        runs = session.scalars(
+            select(ProcessingRun).where(ProcessingRun.case_id == case.id)
+        ).all()
+        assert sorted(run.status for run in runs) == [RunStatus.FAILED, RunStatus.SUCCEEDED]
+
+
+def test_comparison_rejects_successful_but_incomplete_extraction(comparison_engine) -> None:
+    with Session(comparison_engine, expire_on_commit=False) as session:
+        case = Case(case_reference="CG-INCOMPLETE", created_by="pytest.handler")
+        session.add(case)
+        session.flush()
+        document = document_processing.store_pdf(
+            session,
+            case=case,
+            filename=INVOICE_PATH.name,
+            content=INVOICE_PATH.read_bytes(),
+            role=DocumentRole.CURRENT,
+        )
+        document_processing.process_document(session, document)
+        invoice = session.scalar(select(Invoice).where(Invoice.case_id == case.id))
+        assert invoice is not None
+        invoice.invoice_date = None
+
+        with pytest.raises(ValueError, match="Extraction is incomplete"):
+            run_case_comparison(session, case)
+
+        assert _count(session, MappingRun) == 0
 
 
 def test_comparison_workflow_persists_constrained_llm_adjudication(

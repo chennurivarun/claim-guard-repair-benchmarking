@@ -21,8 +21,8 @@ from app.enums import (
     CheckStatus,
     ClaimVehicleRole,
     ConsistencyFindingStatus,
-    DocumentRole,
     DocumentKind,
+    DocumentRole,
     ExtractionMethod,
     InvoiceDocumentRole,
     LineItemKind,
@@ -36,16 +36,16 @@ from app.enums import (
 )
 from app.extraction.azure_document_intelligence import AzureDocumentIntelligenceOCR
 from app.extraction.calculation_validator import validate_invoice
-from app.extraction.pdf_pipeline import PDFPipeline, PipelineConfig
 from app.extraction.engineer_assessment_parser import parse_engineer_assessment
+from app.extraction.pdf_pipeline import PDFPipeline, PipelineConfig
 from app.models import (
+    AssessmentOperation,
     Case,
     ClaimConsistencyFinding,
     ClaimVehicle,
     Document,
     DocumentPage,
     EngineerAssessment,
-    AssessmentOperation,
     Invoice,
     InvoiceLineItem,
     MathFinding,
@@ -54,8 +54,8 @@ from app.models import (
     Vehicle,
     invoice_page_links,
 )
-from app.services.vehicle_category_lookup import apply_lookup_to_vehicle
 from app.services.engineer_assessment import normalise_operation, pair_case_assessments
+from app.services.vehicle_category_lookup import apply_lookup_to_vehicle
 from app.services.vehicle_classification import (
     apply_vehicle_classification,
     classification_from_record,
@@ -186,7 +186,12 @@ def store_pdf(
     return document
 
 
-def _new_run(session: Session, case: Case) -> ProcessingRun:
+def _new_run(
+    session: Session,
+    case: Case,
+    *,
+    make_current: bool = True,
+) -> ProcessingRun:
     ontology_version = session.scalar(
         select(OntologyVersion).order_by(OntologyVersion.sequence_number.desc())
     )
@@ -206,8 +211,9 @@ def _new_run(session: Session, case: Case) -> ProcessingRun:
     )
     session.add(run)
     session.flush()
-    case.current_processing_run_id = run.id
-    case.status = CaseStatus.PROCESSING
+    if make_current:
+        case.current_processing_run_id = run.id
+        case.status = CaseStatus.PROCESSING
     return run
 
 
@@ -284,6 +290,8 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
     case = session.get(Case, document.case_id)
     if case is None:
         raise ValueError("Document case does not exist.")
+    previous_run_id = case.current_processing_run_id
+    previous_case_status = case.status
     run = _new_run(session, case)
     document.upload_status = UploadStatus.PROCESSING
     session.flush()
@@ -585,11 +593,19 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
         if failed_document is not None:
             failed_document.upload_status = UploadStatus.FAILED
         if failed_case is not None:
-            failed_run = _new_run(session, failed_case)
+            failed_run = _new_run(session, failed_case, make_current=False)
             failed_run.status = RunStatus.FAILED
             failed_run.completed_at = datetime.now(UTC)
             failed_run.error_summary = str(exc)[:1000]
-            failed_case.status = CaseStatus.FAILED
+            previous_run = (
+                session.get(ProcessingRun, previous_run_id) if previous_run_id else None
+            )
+            if previous_run is not None and previous_run.status == RunStatus.SUCCEEDED:
+                failed_case.current_processing_run_id = previous_run.id
+                failed_case.status = previous_case_status
+            else:
+                failed_case.current_processing_run_id = None
+                failed_case.status = CaseStatus.FAILED
         session.commit()
         raise
     session.flush()

@@ -42,6 +42,29 @@ def test_native_parser_reads_generic_description_quantity_unit_subtotal_table() 
     assert [line.line_total_net for line in lines] == [Decimal("8.95"), Decimal("39.24")]
 
 
+def test_ocr_parser_reuses_azure_structured_tables_before_line_regex() -> None:
+    page = _page().model_copy(
+        update={
+            "extraction_method": "azure_layout",
+            "extraction_confidence": 0.94,
+            "tables": [
+                [
+                    ["Operation", "Part No", "Qty", "Unit Price", "Total"],
+                    ["Oil Filter", "OF-1", "1", "8.95", "8.95"],
+                    ["Spark Plugs", "SP-4", "4", "9.81", "39.24"],
+                ]
+            ],
+        }
+    )
+
+    lines = InvoiceParser()._ocr_lines(page, 1)
+
+    assert [line.raw_description for line in lines] == ["Oil Filter", "Spark Plugs"]
+    assert [line.part_number for line in lines] == ["OF-1", "SP-4"]
+    assert [line.line_total_net for line in lines] == [Decimal("8.95"), Decimal("39.24")]
+    assert all(line.source.extraction_method == "ocr" for line in lines)
+
+
 def test_header_reads_compact_registration_make_and_model_line() -> None:
     header = InvoiceParser()._header(
         "ST ALBANS CAR CLINIC\n"

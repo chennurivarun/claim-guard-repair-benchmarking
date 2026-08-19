@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,7 @@ class CloudOCRPage:
     words: list[OCRWord]
     confidence: float
     rotation: int
+    tables: list[list[list[str]]] = field(default_factory=list)
 
 
 class AzureDocumentIntelligenceOCR:
@@ -80,6 +81,28 @@ class AzureDocumentIntelligenceOCR:
                 y1=max(ys) * scale_y,
             ),
         )
+
+    @staticmethod
+    def _tables_by_page(payloads: list[dict[str, Any]]) -> dict[int, list[list[list[str]]]]:
+        tables_by_page: dict[int, list[list[list[str]]]] = {}
+        for payload in payloads:
+            for table in (payload.get("analyzeResult") or {}).get("tables", []):
+                regions = table.get("boundingRegions") or []
+                page_number = int((regions[0] if regions else {}).get("pageNumber", 0) or 0)
+                if page_number <= 0:
+                    continue
+                row_count = int(table.get("rowCount", 0) or 0)
+                column_count = int(table.get("columnCount", 0) or 0)
+                if row_count <= 0 or column_count <= 0:
+                    continue
+                rows = [["" for _ in range(column_count)] for _ in range(row_count)]
+                for cell in table.get("cells", []):
+                    row_index = int(cell.get("rowIndex", -1))
+                    column_index = int(cell.get("columnIndex", -1))
+                    if 0 <= row_index < row_count and 0 <= column_index < column_count:
+                        rows[row_index][column_index] = str(cell.get("content", "")).strip()
+                tables_by_page.setdefault(page_number, []).append(rows)
+        return tables_by_page
 
     @staticmethod
     def _error_detail(response: httpx.Response) -> str:
@@ -210,6 +233,7 @@ class AzureDocumentIntelligenceOCR:
                 )
 
         pages: dict[int, CloudOCRPage] = {}
+        tables_by_page = self._tables_by_page(payloads)
         azure_pages = [
             page
             for payload in payloads
@@ -247,5 +271,6 @@ class AzureDocumentIntelligenceOCR:
                 words=words,
                 confidence=sum(confidences) / len(confidences) if confidences else 0,
                 rotation=round(float(page.get("angle", 0) or 0)) % 360,
+                tables=tables_by_page.get(page_number, []),
             )
         return pages

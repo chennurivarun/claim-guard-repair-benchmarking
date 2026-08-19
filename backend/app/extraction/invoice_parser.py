@@ -53,6 +53,17 @@ def _clean_cell(value: str | None) -> str:
     return strip_scan_artifacts(value or "")
 
 
+def _column_index(headers: list[str], *labels: str) -> int | None:
+    return next(
+        (
+            index
+            for index, value in enumerate(headers)
+            if value in labels or any(label in value for label in labels)
+        ),
+        None,
+    )
+
+
 def _guess_item_kind(section: str, description: str) -> str:
     section = section.lower()
     description_lower = description.lower()
@@ -365,18 +376,52 @@ class InvoiceParser:
         )
 
     def _native_table_lines(self, pdf_page, page: PageAnalysis, start: int) -> list[ExtractedLine]:
+        return self._table_lines(
+            pdf_page.extract_tables() or [],
+            page,
+            start,
+            extraction_method="native_table",
+            confidence=0.98,
+        )
+
+    def _table_lines(
+        self,
+        tables: list[list[list[str | None]]],
+        page: PageAnalysis,
+        start: int,
+        *,
+        extraction_method: str,
+        confidence: float,
+    ) -> list[ExtractedLine]:
         output: list[ExtractedLine] = []
         sequence = start
-        for table in pdf_page.extract_tables() or []:
+        for table in tables:
             if not table:
                 continue
-            header = " ".join(_clean_cell(cell) for cell in table[0] if cell)
+            header_cells = [_clean_cell(cell) for cell in table[0]]
+            normalised_headers = [re.sub(r"\s+", " ", cell.lower()).strip() for cell in header_cells]
+            header = " ".join(cell for cell in header_cells if cell)
             header_lower = header.lower()
+
+            description_index = _column_index(
+                normalised_headers, "description", "operation", "item"
+            )
+            quantity_index = _column_index(normalised_headers, "qty", "quantity")
+            unit_price_index = _column_index(
+                normalised_headers, "unit price", "unit cost", "rate", "price"
+            )
+            line_total_index = _column_index(
+                normalised_headers, "line total", "subtotal", "sub total", "amount"
+            )
+            if line_total_index is None:
+                line_total_index = _column_index(normalised_headers, "total")
+            part_number_index = _column_index(
+                normalised_headers, "part number", "part no", "part #"
+            )
             generic_parts_table = (
-                "description" in header_lower
-                and any(key in header_lower for key in ("qty", "quantity"))
-                and "unit" in header_lower
-                and any(key in header_lower for key in ("subtotal", "sub total"))
+                description_index is not None
+                and quantity_index is not None
+                and line_total_index is not None
             )
             governed_table = "sub total" in header_lower and any(
                 key in header_lower for key in ("parts", "labour", "service")
@@ -388,9 +433,23 @@ class InvoiceParser:
                 cells = [_clean_cell(cell) for cell in row]
                 if not cells or not cells[0]:
                     continue
-                if generic_parts_table and len(cells) >= 4:
-                    description, quantity, unit_price, line_total = cells[:4]
-                    part_number = ""
+                if generic_parts_table:
+                    required_index = max(description_index, quantity_index, line_total_index)
+                    if len(cells) <= required_index:
+                        continue
+                    description = cells[description_index]
+                    quantity = cells[quantity_index]
+                    line_total = cells[line_total_index]
+                    unit_price = (
+                        cells[unit_price_index]
+                        if unit_price_index is not None and unit_price_index < len(cells)
+                        else ""
+                    )
+                    part_number = (
+                        cells[part_number_index]
+                        if part_number_index is not None and part_number_index < len(cells)
+                        else ""
+                    )
                 elif section == "parts" and len(cells) >= 6:
                     description, part_number, quantity, unit_price, _, line_total = cells[:6]
                 elif section == "labour" and len(cells) >= 5:
@@ -406,6 +465,8 @@ class InvoiceParser:
                     continue
                 if not description or line_total_value is None:
                     continue
+                if unit_price_value is None and qty and qty > 0:
+                    unit_price_value = line_total_value / qty
                 output.append(
                     ExtractedLine(
                         sequence_no=sequence,
@@ -428,8 +489,8 @@ class InvoiceParser:
                             unit_price=unit_price,
                             line_total=line_total,
                             raw_text=" | ".join(cells),
-                            extraction_method="native_table",
-                            confidence=0.98,
+                            extraction_method=extraction_method,
+                            confidence=confidence,
                         ),
                     )
                 )
@@ -437,6 +498,16 @@ class InvoiceParser:
         return output
 
     def _ocr_lines(self, page: PageAnalysis, start: int) -> list[ExtractedLine]:
+        table_lines = self._table_lines(
+            page.tables,
+            page,
+            start,
+            extraction_method="ocr",
+            confidence=page.extraction_confidence,
+        )
+        if table_lines:
+            return table_lines
+
         output: list[ExtractedLine] = []
         current_section = "unknown"
         sequence = start
