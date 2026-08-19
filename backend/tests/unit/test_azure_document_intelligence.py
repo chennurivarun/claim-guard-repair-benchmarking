@@ -52,6 +52,41 @@ def test_azure_error_includes_service_code_and_message() -> None:
         AzureDocumentIntelligenceOCR._raise_for_status(response)
 
 
+def test_azure_layout_tables_are_preserved_by_page() -> None:
+    tables = AzureDocumentIntelligenceOCR._tables_by_page(
+        [
+            {
+                "analyzeResult": {
+                    "tables": [
+                        {
+                            "rowCount": 2,
+                            "columnCount": 4,
+                            "boundingRegions": [{"pageNumber": 2}],
+                            "cells": [
+                                {"rowIndex": 0, "columnIndex": 0, "content": "Description"},
+                                {"rowIndex": 0, "columnIndex": 1, "content": "Qty"},
+                                {"rowIndex": 0, "columnIndex": 2, "content": "Unit"},
+                                {"rowIndex": 0, "columnIndex": 3, "content": "Subtotal"},
+                                {"rowIndex": 1, "columnIndex": 0, "content": "Oil filter"},
+                                {"rowIndex": 1, "columnIndex": 1, "content": "1"},
+                                {"rowIndex": 1, "columnIndex": 2, "content": "8.95"},
+                                {"rowIndex": 1, "columnIndex": 3, "content": "8.95"},
+                            ],
+                        }
+                    ]
+                }
+            }
+        ]
+    )
+
+    assert tables[2] == [
+        [
+            ["Description", "Qty", "Unit", "Subtotal"],
+            ["Oil filter", "1", "8.95", "8.95"],
+        ]
+    ]
+
+
 def test_azure_batches_two_pages_and_retries_throttled_requests(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -138,6 +138,7 @@ export interface ClaimInvoiceSummary {
   id: string
   invoice_number: string | null
   invoice_date: string | null
+  document_filename: string
   supplier_name: string | null
   totals: {
     gross: number | null

@@ -68,6 +68,7 @@ from app.exports import (
 )
 from app.llm.factory import build_mapping_adjudicator
 from app.models import (
+    AssessmentOperation,
     AuditEvent,
     Case,
     ChallengeResult,
@@ -77,7 +78,6 @@ from app.models import (
     Document,
     DocumentPage,
     EngineerAssessment,
-    AssessmentOperation,
     HistoricalObservation,
     Invoice,
     InvoiceLineItem,
@@ -860,6 +860,7 @@ def get_invoices(case_reference: str, db: DatabaseSession) -> list[dict[str, Any
             .join(Case, Invoice.case_id == Case.id)
             .where(Case.case_reference == case_reference)
             .options(
+                selectinload(Invoice.document),
                 selectinload(Invoice.vehicle),
                 selectinload(Invoice.line_items),
                 selectinload(Invoice.math_findings),
@@ -908,6 +909,7 @@ def get_invoices(case_reference: str, db: DatabaseSession) -> list[dict[str, Any
             "id": invoice.id,
             "invoice_number": invoice.invoice_number,
             "invoice_date": invoice.invoice_date.isoformat() if invoice.invoice_date else None,
+            "document_filename": invoice.document.original_filename,
             "document_role": invoice.document_role.value,
             "supplier_name": invoice.supplier_name,
             "vehicle": (

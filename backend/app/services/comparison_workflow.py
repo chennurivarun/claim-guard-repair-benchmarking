@@ -289,6 +289,34 @@ def run_case_comparison(
             "line_count": len(existing),
         }
 
+    invoices = (
+        session.scalars(
+            select(Invoice)
+            .where(
+                Invoice.case_id == case.id,
+                Invoice.document_role == InvoiceDocumentRole.INVOICE,
+            )
+            .options(selectinload(Invoice.line_items))
+        )
+        .unique()
+        .all()
+    )
+    eligible_line_ids = {
+        line.id
+        for invoice in invoices
+        if invoice.invoice_date is not None
+        for line in invoice.line_items
+        if line.status != ReviewStatus.REJECTED
+        and line.line_total_net is not None
+        and Decimal(str(line.line_total_net)) > 0
+    }
+    if not eligible_line_ids:
+        raise ValueError(
+            "Extraction is incomplete. Comparison requires at least one invoice "
+            "with an invoice date and a positive line-item price. Review the "
+            "extracted document before benchmarking."
+        )
+
     version = (
         session.get(OntologyVersion, processing_run.ontology_version_id)
         if processing_run.ontology_version_id
@@ -327,18 +355,6 @@ def run_case_comparison(
     session.add(mapping_run)
     session.flush()
 
-    invoices = (
-        session.scalars(
-            select(Invoice)
-            .where(
-                Invoice.case_id == case.id,
-                Invoice.document_role == InvoiceDocumentRole.INVOICE,
-            )
-            .options(selectinload(Invoice.line_items))
-        )
-        .unique()
-        .all()
-    )
     line_count = 0
     mapped_count = 0
     challenge_count = 0
@@ -349,9 +365,7 @@ def run_case_comparison(
     for invoice in invoices:
         line_comparisons = []
         for line in invoice.line_items:
-            if line.status == ReviewStatus.REJECTED:
-                continue
-            if line.line_total_net is None or invoice.invoice_date is None:
+            if line.id not in eligible_line_ids:
                 continue
             line_count += 1
             retrieved_candidates = retrieve_candidates(

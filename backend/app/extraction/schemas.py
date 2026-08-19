@@ -121,6 +121,7 @@ class PageAnalysis(BaseModel):
     group_key: str | None = None
     rendered_image_path: Path | None = None
     words: list[OCRWord] = Field(default_factory=list)
+    tables: list[list[list[str]]] = Field(default_factory=list)
 
 
 class DocumentAnalysis(BaseModel):
