@@ -9,11 +9,15 @@ import app.extraction.pdf_pipeline as pdf_pipeline_module
 from app.config import Settings
 from app.extraction.pdf_pipeline import OCRUnavailableError, PDFPipeline, PipelineConfig
 from app.extraction.schemas import (
+    EngineerAssessmentFields,
+    ExtractedAssessmentOperation,
+    ExtractedEngineerAssessment,
     ExtractedInvoice,
     ExtractedLine,
     FieldSource,
     InvoiceHeader,
     InvoiceTotals,
+    PageType,
 )
 from app.services.document_processing import _build_cloud_ocr
 
@@ -186,3 +190,107 @@ def test_ungrouped_pages_are_sent_to_vision_separately(tmp_path: Path) -> None:
         "INV-1",
         "INV-2",
     ]
+
+
+def test_normal_engineer_report_tables_use_existing_vision_fallback(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "engineer-report.pdf"
+    document = fitz.open()
+    page = document.new_page()
+    page.insert_text(
+        (72, 72),
+        "Engineer Report\nClaim Number: ABC 123456\nRepair Details\nRear bumper £541.00",
+    )
+    document.save(pdf_path)
+    document.close()
+
+    class VisionFallback:
+        max_pages = 8
+
+        def __init__(self):
+            self.assessment_calls = []
+
+        def extract(self, pages, *, role_hint=None):
+            return None
+
+        def extract_assessment(self, pages):
+            self.assessment_calls.append([page.page_number for page in pages])
+            return ExtractedEngineerAssessment(
+                fields=EngineerAssessmentFields(
+                    assessment_number="AAA6575879",
+                    claim_reference="ABC 123456",
+                    registration="ABC02QQQ",
+                    gross_total=Decimal("5068.87"),
+                ),
+                operations=[
+                    ExtractedAssessmentOperation(
+                        sequence_no=1,
+                        category="part",
+                        description="Rear bumper",
+                        total=Decimal("541.00"),
+                        page_number=1,
+                    )
+                ],
+                page_numbers=[1],
+                extraction_method="vision",
+                extraction_confidence=0.8,
+            )
+
+    vision = VisionFallback()
+    analysis = PDFPipeline(
+        PipelineConfig(
+            ocr_enabled=False,
+            native_min_characters=10,
+            native_min_words=2,
+        ),
+        vision_extractor=vision,
+    ).analyse(pdf_path, tmp_path / "pages")
+
+    assert vision.assessment_calls == [[1]]
+    assert analysis.engineer_assessments[0].fields.assessment_number == "AAA6575879"
+
+
+def test_unfamiliar_page_can_be_recovered_as_an_assessment(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "unfamiliar-layout.pdf"
+    document = fitz.open()
+    page = document.new_page()
+    page.insert_text((72, 72), "Vehicle work schedule\nRear panel £250.00")
+    document.save(pdf_path)
+    document.close()
+
+    class VisionFallback:
+        max_pages = 8
+
+        def extract(self, pages, *, role_hint=None):
+            return None
+
+        def extract_assessment(self, pages):
+            return ExtractedEngineerAssessment(
+                fields=EngineerAssessmentFields(
+                    claim_reference="ABC 123456",
+                    gross_total=Decimal("250.00"),
+                ),
+                operations=[
+                    ExtractedAssessmentOperation(
+                        sequence_no=1,
+                        category="part",
+                        description="Rear panel",
+                        total=Decimal("250.00"),
+                        page_number=pages[0].page_number,
+                    )
+                ],
+                page_numbers=[pages[0].page_number],
+                extraction_method="vision",
+                extraction_confidence=0.8,
+            )
+
+    analysis = PDFPipeline(
+        PipelineConfig(
+            ocr_enabled=False,
+            native_min_characters=10,
+            native_min_words=2,
+        ),
+        vision_extractor=VisionFallback(),
+    ).analyse(pdf_path, tmp_path / "pages")
+
+    assert analysis.pages[0].page_type == PageType.ENGINEER_ASSESSMENT
+    assert analysis.engineer_assessments[0].operations[0].total == Decimal("250.00")

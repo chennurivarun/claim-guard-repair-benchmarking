@@ -616,7 +616,8 @@ def upload_document(
     except ValueError as exc:
         db.rollback()
         raise HTTPException(
-            status_code=422, detail={"code": "INVALID_PDF", "message": str(exc)}
+            status_code=422,
+            detail={"code": "INVALID_DOCUMENT", "message": str(exc)},
         ) from exc
     return serialise_document(document)
 

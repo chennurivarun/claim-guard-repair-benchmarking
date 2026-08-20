@@ -63,6 +63,71 @@ import {
 
 const HANDLER_ID = "pilot.handler"
 
+const GENERIC_INVOICE_VALUES = new Set([
+  "",
+  "-",
+  "invoice",
+  "invoice no",
+  "invoice number",
+  "inv",
+  "inv no",
+  "inv number",
+  "n/a",
+  "na",
+  "none",
+  "repair invoice",
+  "tax invoice",
+  "unknown",
+])
+
+const GENERIC_SUPPLIER_VALUES = new Set([
+  "",
+  "-",
+  "garage",
+  "invoice",
+  "n/a",
+  "na",
+  "none",
+  "repair invoice",
+  "repairer",
+  "supplier",
+  "unknown",
+  "unknown repairer",
+])
+
+function usableDisplayValue(
+  value: string | null,
+  genericValues: Set<string>
+): string | null {
+  const cleaned = value?.trim() ?? ""
+  const token = cleaned
+    .toLocaleLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+  return genericValues.has(token) ? null : cleaned
+}
+
+function invoiceDisplayLabel(
+  invoice: ClaimInvoiceSummary,
+  index: number
+): string {
+  const invoiceNumber = usableDisplayValue(
+    invoice.invoice_number,
+    GENERIC_INVOICE_VALUES
+  )
+  const supplierName = usableDisplayValue(
+    invoice.supplier_name,
+    GENERIC_SUPPLIER_VALUES
+  )
+  const primary = invoiceNumber
+    ? `Invoice ${invoiceNumber}`
+    : invoice.document_filename
+      ? `${invoice.document_filename} · Invoice ${index + 1}`
+      : `Invoice ${index + 1}`
+  return supplierName ? `${primary} · ${supplierName}` : primary
+}
+
 export function App() {
   const [workspace, setWorkspace] = useState<ClaimWorkspace>(demoWorkspace)
   const [apiMode, setApiMode] = useState<"api" | "demo">("demo")
@@ -816,10 +881,7 @@ export function App() {
       break
     case "audit-reports":
       screen = (
-        <AuditReportsScreen
-          workspace={workspace}
-          onExport={handleReport}
-        />
+        <AuditReportsScreen workspace={workspace} onExport={handleReport} />
       )
       break
   }
@@ -853,12 +915,7 @@ export function App() {
             >
               {invoices.map((invoice, index) => (
                 <option key={invoice.id} value={invoice.id}>
-                  {invoice.invoice_number
-                    ? `Invoice ${invoice.invoice_number}`
-                    : invoice.document_filename
-                      ? `${invoice.document_filename} · Invoice ${index + 1}`
-                      : `Invoice ${index + 1}`}
-                  {invoice.supplier_name ? ` · ${invoice.supplier_name}` : ""}
+                  {invoiceDisplayLabel(invoice, index)}
                 </option>
               ))}
             </select>

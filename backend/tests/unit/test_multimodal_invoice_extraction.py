@@ -7,6 +7,7 @@ import pytest
 from PIL import Image
 
 from app.extraction.schemas import (
+    ExtractedEngineerAssessment,
     ExtractedInvoice,
     ExtractedLine,
     FieldSource,
@@ -108,6 +109,17 @@ def test_vision_result_reuses_invoice_schema_and_never_derives_missing_prices(tm
     assert "untrusted" in client.calls[0]["system_instruction"]
 
 
+def test_invoice_header_rejects_generic_display_placeholders() -> None:
+    header = InvoiceHeader(
+        invoice_number=" Invoice ",
+        supplier_name="Unknown repairer",
+    )
+
+    assert header.invoice_number is None
+    assert header.supplier_name is None
+    assert InvoiceHeader(invoice_number="ABC123").invoice_number == "ABC123"
+
+
 def test_out_of_range_page_and_zero_total_do_not_create_invoice(tmp_path) -> None:
     client = StubVisionClient(
         {
@@ -162,3 +174,70 @@ def test_header_only_fallback_does_not_replace_deterministic_lines() -> None:
     merged = merge_invoice_extractions(deterministic, vision)
     assert [line.raw_description for line in merged.line_items] == ["Existing part"]
     assert merged.extraction_method == "ocr"
+
+
+def test_vision_extracts_engineer_assessment_into_shared_schema(tmp_path) -> None:
+    client = StubVisionClient(
+        {
+            "document_role": "engineer_assessment",
+            "confidence": 0.97,
+            "fields": {
+                "assessment_number": "AAA6575879",
+                "claim_reference": "ABC 123456",
+                "created_date": "2026-01-25",
+                "registration": "ABC02QQQ",
+                "vehicle_make": "VOLVO",
+                "vehicle_model": "XC40",
+                "subtotal_net": "4224.06",
+                "vat_total": "844.81",
+                "gross_total": "5068.87",
+            },
+            "operations": [
+                {
+                    "page_number": 1,
+                    "category": "part",
+                    "code": "Replace",
+                    "description": "Rear bumper",
+                    "quantity": "1",
+                    "unit_price": "541.00",
+                    "total": "541.00",
+                }
+            ],
+        }
+    )
+
+    result = MultimodalInvoiceExtractor(client).extract_assessment(
+        [_page(tmp_path / "assessment.jpg")]
+    )
+
+    assert isinstance(result, ExtractedEngineerAssessment)
+    assert result.fields.assessment_number == "AAA6575879"
+    assert result.fields.claim_reference == "ABC 123456"
+    assert result.fields.gross_total == Decimal("5068.87")
+    assert result.operations[0].description == "Rear bumper"
+    assert result.extraction_confidence == 0.89
+
+
+def test_assessment_vision_rejects_operations_from_unseen_pages(tmp_path) -> None:
+    client = StubVisionClient(
+        {
+            "document_role": "engineer_assessment",
+            "confidence": 0.8,
+            "fields": {"assessment_number": "A-1"},
+            "operations": [
+                {
+                    "page_number": 99,
+                    "category": "part",
+                    "description": "Invented part",
+                    "total": "20.00",
+                }
+            ],
+        }
+    )
+
+    assert (
+        MultimodalInvoiceExtractor(client).extract_assessment(
+            [_page(tmp_path / "assessment.jpg")]
+        )
+        is None
+    )

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import re
 from datetime import date
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class PageType(StrEnum):
@@ -93,6 +94,56 @@ class InvoiceHeader(BaseModel):
     mileage: int | None = None
     currency: str = "GBP"
 
+    @field_validator("invoice_number", mode="before")
+    @classmethod
+    def reject_generic_invoice_number(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        cleaned = value.strip()
+        token = " ".join(re.sub(r"[^a-z0-9]+", " ", cleaned.casefold()).split())
+        if token in {
+            "",
+            "-",
+            "invoice",
+            "invoice no",
+            "invoice number",
+            "inv",
+            "inv no",
+            "inv number",
+            "n/a",
+            "na",
+            "none",
+            "repair invoice",
+            "tax invoice",
+            "unknown",
+        }:
+            return None
+        return cleaned
+
+    @field_validator("supplier_name", mode="before")
+    @classmethod
+    def reject_generic_supplier_name(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        cleaned = value.strip()
+        token = " ".join(re.sub(r"[^a-z0-9]+", " ", cleaned.casefold()).split())
+        if token in {
+            "",
+            "-",
+            "garage",
+            "invoice",
+            "n/a",
+            "na",
+            "none",
+            "repair invoice",
+            "repairer",
+            "supplier",
+            "unknown",
+            "unknown repairer",
+        }:
+            return None
+        return cleaned
+
 
 class ExtractedInvoice(BaseModel):
     header: InvoiceHeader
@@ -100,6 +151,61 @@ class ExtractedInvoice(BaseModel):
     line_items: list[ExtractedLine] = Field(default_factory=list)
     page_numbers: list[int]
     document_role: str = "invoice"
+    extraction_method: str
+    extraction_confidence: float = Field(ge=0, le=1)
+
+
+class EngineerAssessmentFields(BaseModel):
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+    assessment_number: str | None = None
+    claim_reference: str | None = None
+    policy_number: str | None = None
+    created_date: date | None = None
+    incident_date: date | None = None
+    authorisation_status: str | None = None
+    registration: str | None = None
+    vin: str | None = None
+    vehicle_make: str | None = None
+    vehicle_model: str | None = None
+    vehicle_variant: str | None = None
+    mileage: int | None = None
+    pre_accident_condition: str | None = None
+    impact_severity: str | None = None
+    roadworthiness: str | None = None
+    damage_areas: list[str] | None = None
+    labour_rate: Decimal | None = None
+    paint_rate: Decimal | None = None
+    labour_net: Decimal | None = None
+    paint_net: Decimal | None = None
+    parts_net: Decimal | None = None
+    extras_net: Decimal | None = None
+    subtotal_net: Decimal | None = None
+    vat_rate: Decimal | None = None
+    vat_total: Decimal | None = None
+    gross_total: Decimal | None = None
+
+
+class ExtractedAssessmentOperation(BaseModel):
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+    sequence_no: int
+    category: str
+    code: str | None = None
+    part_number: str | None = None
+    description: str
+    work_units: Decimal | None = None
+    hours: Decimal | None = None
+    quantity: Decimal | None = None
+    unit_price: Decimal | None = None
+    total: Decimal | None = None
+    page_number: int
+
+
+class ExtractedEngineerAssessment(BaseModel):
+    fields: EngineerAssessmentFields
+    operations: list[ExtractedAssessmentOperation] = Field(default_factory=list)
+    page_numbers: list[int]
     extraction_method: str
     extraction_confidence: float = Field(ge=0, le=1)
 
@@ -130,6 +236,7 @@ class DocumentAnalysis(BaseModel):
     page_count: int
     pages: list[PageAnalysis]
     invoices: list[ExtractedInvoice] = Field(default_factory=list)
+    engineer_assessments: list[ExtractedEngineerAssessment] = Field(default_factory=list)
 
 
 class MathFinding(BaseModel):

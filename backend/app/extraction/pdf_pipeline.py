@@ -18,6 +18,7 @@ from app.extraction.invoice_parser import InvoiceParser
 from app.extraction.schemas import (
     BoundingBox,
     DocumentAnalysis,
+    ExtractedEngineerAssessment,
     OCRWord,
     PageAnalysis,
     PageType,
@@ -140,6 +141,7 @@ def classify_page(text: str, *, image_only: bool) -> tuple[PageType, float, list
     strong_keyword_groups = {
         PageType.ENGINEER_ASSESSMENT: (
             "engineer assessment report",
+            "engineer report",
             "audatex system using manufacturer times",
             "assessment number",
         ),
@@ -218,6 +220,36 @@ def _label_rotated_service_sequences(pages: list[PageAnalysis]) -> None:
             apply(run)
             run = [page] if page.rotation in {90, 270} else []
     apply(run)
+
+
+def _merge_assessment_batches(
+    batches: list[ExtractedEngineerAssessment],
+) -> ExtractedEngineerAssessment | None:
+    if not batches:
+        return None
+    fields = batches[0].fields.model_dump()
+    operations = []
+    page_numbers: set[int] = set()
+    confidence = 1.0
+    for batch in batches:
+        for name, value in batch.fields.model_dump().items():
+            if fields.get(name) is None or fields.get(name) == "" or fields.get(name) == []:
+                if value is not None and value != "" and value != []:
+                    fields[name] = value
+        for operation in batch.operations:
+            operations.append(
+                operation.model_copy(update={"sequence_no": len(operations) + 1})
+            )
+        page_numbers.update(batch.page_numbers)
+        confidence = min(confidence, batch.extraction_confidence)
+    return batches[0].model_copy(
+        update={
+            "fields": batches[0].fields.model_copy(update=fields),
+            "operations": operations,
+            "page_numbers": sorted(page_numbers),
+            "extraction_confidence": confidence,
+        }
+    )
 
 
 class PDFPipeline:
@@ -361,6 +393,29 @@ class PDFPipeline:
                 # A single malformed invoice unit must not abort the rest of the document.
                 continue
         if self.vision_extractor is not None:
+            assessment_pages = [
+                page for page in pages if page.page_type == PageType.ENGINEER_ASSESSMENT
+            ]
+            assessment_batches: list[ExtractedEngineerAssessment] = []
+            extract_assessment = getattr(
+                self.vision_extractor, "extract_assessment", None
+            )
+            max_pages = max(1, getattr(self.vision_extractor, "max_pages", 8))
+            vision_calls = 0
+            if callable(extract_assessment):
+                for batch_index in range(0, len(assessment_pages), max_pages):
+                    if vision_calls >= self.config.vision_max_batches:
+                        break
+                    vision_calls += 1
+                    try:
+                        extracted_assessment = extract_assessment(
+                            assessment_pages[batch_index : batch_index + max_pages]
+                        )
+                    except LLMProviderError:
+                        continue
+                    if extracted_assessment is not None:
+                        assessment_batches.append(extracted_assessment)
+
             grouped_numbers = {
                 page.page_number for grouped_pages in groups.values() for page in grouped_pages
             }
@@ -380,16 +435,40 @@ class PDFPipeline:
             ]
             # Ungrouped pages have no reliable evidence that they belong to one
             # document. Process them individually to prevent cross-invoice mixing.
-            for page_index, page in enumerate(candidates):
-                if page_index >= self.config.vision_max_batches:
+            for page in candidates:
+                if vision_calls >= self.config.vision_max_batches:
                     break
+                vision_calls += 1
                 try:
                     extracted = self.vision_extractor.extract([page])
                 except LLMProviderError:
                     continue
                 if extracted is not None:
                     analysis.invoices.append(extracted)
-        has_engineer_assessment = any(
+                    continue
+                if not callable(extract_assessment):
+                    continue
+                try:
+                    extracted_assessment = extract_assessment([page])
+                except LLMProviderError:
+                    continue
+                if extracted_assessment is not None:
+                    assessment_batches.append(extracted_assessment)
+
+            merged_assessment = _merge_assessment_batches(assessment_batches)
+            if merged_assessment is not None:
+                analysis.engineer_assessments.append(merged_assessment)
+                assessment_numbers = set(merged_assessment.page_numbers)
+                for page in pages:
+                    if page.page_number in assessment_numbers:
+                        page.page_type = PageType.ENGINEER_ASSESSMENT
+                        page.group_key = None
+                        page.classification_signals.append("vision:engineer_assessment")
+                        page.classification_confidence = max(
+                            page.classification_confidence,
+                            merged_assessment.extraction_confidence,
+                        )
+        has_engineer_assessment = bool(analysis.engineer_assessments) or any(
             page.page_type == PageType.ENGINEER_ASSESSMENT for page in pages
         )
         if not analysis.invoices and not has_engineer_assessment:

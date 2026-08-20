@@ -14,10 +14,7 @@ import {
   UploadCloudIcon,
 } from "lucide-react"
 import { toast } from "sonner"
-import {
-  fetchDataReadiness,
-  type DataReadinessPayload,
-} from "@/lib/api"
+import { fetchDataReadiness, type DataReadinessPayload } from "@/lib/api"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
@@ -94,11 +91,13 @@ function humanise(value: string) {
     .replace(/\b\w/g, (character) => character.toUpperCase())
 }
 
-function isPdf(file: File) {
-  return (
-    file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")
-  )
+function isSupportedDocument(file: File) {
+  const name = file.name.toLowerCase()
+  return [".pdf", ".doc", ".docx"].some((extension) => name.endsWith(extension))
 }
+
+const supportedDocumentTypes =
+  "application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.pdf,.doc,.docx"
 
 const directoryInputProps = {
   webkitdirectory: "",
@@ -188,7 +187,8 @@ function CurrentInvoiceCard({
               <div className="min-w-0">
                 <CardTitle>Current repair invoice</CardTitle>
                 <CardDescription>
-                  Upload a PDF and run the native-first pipeline.
+                  Upload a PDF or Word document and run the layered extraction
+                  pipeline.
                 </CardDescription>
               </div>
             </div>
@@ -203,12 +203,12 @@ function CurrentInvoiceCard({
           <FieldGroup>
             <Field data-invalid={Boolean(error)}>
               <FieldLabel htmlFor="repair-invoice-pdf">
-                Repair invoice PDF
+                Repair invoice or assessment
               </FieldLabel>
               <Input
                 id="repair-invoice-pdf"
                 type="file"
-                accept="application/pdf,.pdf"
+                accept={supportedDocumentTypes}
                 multiple
                 aria-invalid={Boolean(error)}
                 disabled={busy || finalised}
@@ -218,10 +218,10 @@ function CurrentInvoiceCard({
               />
               <FieldDescription>
                 {selectedFiles.length
-                  ? `${selectedFiles.length} PDF${selectedFiles.length === 1 ? "" : "s"} selected`
+                  ? `${selectedFiles.length} document${selectedFiles.length === 1 ? "" : "s"} selected`
                   : currentDocument
                     ? `${currentDocument} · ${pageCount} page${pageCount === 1 ? "" : "s"} available`
-                    : "Choose one or more PDFs. Native text is attempted before cloud OCR."}
+                    : "Choose PDF, DOC, or DOCX files. Word files are converted to PDF before extraction."}
               </FieldDescription>
             </Field>
             <Field>
@@ -231,18 +231,21 @@ function CurrentInvoiceCard({
               <Input
                 id="repair-invoice-folder"
                 type="file"
-                accept="application/pdf,.pdf"
+                accept={supportedDocumentTypes}
                 multiple
                 disabled={busy || finalised}
                 {...directoryInputProps}
                 onChange={(event) =>
                   onFilesChange(
-                    Array.from(event.target.files ?? []).filter(isPdf)
+                    Array.from(event.target.files ?? []).filter(
+                      isSupportedDocument
+                    )
                   )
                 }
               />
               <FieldDescription>
-                All PDF invoices in the selected folder are queued separately.
+                All supported documents in the selected folder are queued
+                separately.
               </FieldDescription>
             </Field>
           </FieldGroup>
@@ -399,9 +402,11 @@ export function UploadProcessingWorkflow({
       return
     }
     if (!selectedFiles.length) return
-    const invalid = selectedFiles.find((file) => !isPdf(file))
+    const invalid = selectedFiles.find((file) => !isSupportedDocument(file))
     if (invalid) {
-      setUploadError(`${invalid.name} is not a supported PDF document.`)
+      setUploadError(
+        `${invalid.name} is not a supported PDF, DOC, or DOCX document.`
+      )
       return
     }
 
@@ -427,7 +432,11 @@ export function UploadProcessingWorkflow({
         setBatchRows((current) =>
           current.map((row) =>
             row.id === batchRowId
-              ? { ...row, status: "PROCESSING", detail: "Uploading and extracting" }
+              ? {
+                  ...row,
+                  status: "PROCESSING",
+                  detail: "Uploading and extracting",
+                }
               : row
           )
         )
@@ -487,7 +496,7 @@ export function UploadProcessingWorkflow({
     <>
       <ScreenHeading
         title="Upload & Processing"
-        description="Upload repair invoices and matching Engineer Assessment PDFs. Each document is classified, retained and kept auditable."
+        description="Upload repair invoices and matching Engineer Assessments as PDF, DOC, or DOCX. Each document is classified, retained and kept auditable."
         action={
           <Button onClick={onContinue} disabled={busy}>
             View benchmarks
@@ -511,8 +520,8 @@ export function UploadProcessingWorkflow({
           <LockKeyholeIcon />
           <AlertTitle>Finalised case is read-only</AlertTitle>
           <AlertDescription>
-            Existing invoices remain available for review and download. Create
-            a new case revision before adding or reprocessing documents.
+            Existing invoices remain available for review and download. Create a
+            new case revision before adding or reprocessing documents.
           </AlertDescription>
         </Alert>
       ) : null}
@@ -533,8 +542,8 @@ export function UploadProcessingWorkflow({
           onFilesChange={(files) => {
             setSelectedFiles(files)
             setUploadError(
-              files.some((file) => !isPdf(file))
-                ? "Every selected file must be a PDF repair invoice."
+              files.some((file) => !isSupportedDocument(file))
+                ? "Every selected file must be PDF, DOC, or DOCX."
                 : null
             )
           }}
@@ -574,7 +583,7 @@ export function UploadProcessingWorkflow({
       {batchRows.length ? (
         <DataCard
           title="Document batch"
-          description="Each PDF is retained separately and classified as a repair invoice or Engineer Assessment."
+          description="Each document is retained separately and classified as a repair invoice or Engineer Assessment."
         >
           <div className="overflow-x-auto">
             <Table>
@@ -717,7 +726,8 @@ export function DocumentPagesWorkflow({
       }
       setPages(await fetchDocumentPages())
       toast.success("Corrected document reprocessed", {
-        description: "Invoice grouping and extraction now use the saved page corrections.",
+        description:
+          "Invoice grouping and extraction now use the saved page corrections.",
       })
     } catch (error) {
       setLoadError(documentApiErrorMessage(error))
@@ -807,7 +817,7 @@ export function DocumentPagesWorkflow({
             corrected page is saved and audited; existing invoice units remain
             draft until the PDF pipeline is rerun.
             <Button
-              className="ml-3 mt-2"
+              className="mt-2 ml-3"
               size="sm"
               variant="outline"
               disabled={reprocessing}

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import shutil
+import subprocess
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 from sqlalchemy import select
@@ -104,6 +109,89 @@ def _safe_filename(value: str) -> str:
     return stem[:180] or "invoice.pdf"
 
 
+@dataclass(frozen=True)
+class NormalisedDocumentUpload:
+    content: bytes
+    stored_filename: str
+    source_format: str
+
+
+def normalise_document_upload(filename: str, content: bytes) -> NormalisedDocumentUpload:
+    """Convert a supported upload to the PDF contract used by the extraction pipeline."""
+
+    safe_name = _safe_filename(filename)
+    suffix = Path(safe_name).suffix.lower()
+    if not content or len(content) > settings.max_upload_bytes:
+        raise ValueError(
+            f"Document must be between 1 byte and {settings.max_upload_bytes} bytes."
+        )
+    if suffix == ".pdf":
+        if content[:5] != b"%PDF-":
+            raise ValueError("The uploaded PDF does not have a valid PDF signature.")
+        return NormalisedDocumentUpload(content, safe_name, "pdf")
+
+    signatures = {
+        ".doc": b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1",
+        ".docx": b"PK\x03\x04",
+    }
+    signature = signatures.get(suffix)
+    if signature is None:
+        raise ValueError("Only PDF, DOC, and DOCX documents are accepted.")
+    if not content.startswith(signature):
+        raise ValueError(f"The uploaded {suffix[1:].upper()} file signature is invalid.")
+
+    executable = shutil.which("soffice") or shutil.which("libreoffice")
+    if not executable:
+        raise ValueError(
+            "Word document conversion is unavailable. Install LibreOffice on the "
+            "backend host, or upload the document as PDF."
+        )
+
+    with TemporaryDirectory(prefix="claimguard-upload-") as directory:
+        temp = Path(directory)
+        source_path = temp / f"source{suffix}"
+        source_path.write_bytes(content)
+        profile = temp / "lo-profile"
+        profile.mkdir()
+        environment = os.environ.copy()
+        command = [
+            executable,
+            "--headless",
+            f"-env:UserInstallation={profile.as_uri()}",
+            "--convert-to",
+            "pdf",
+            "--outdir",
+            str(temp),
+            str(source_path),
+        ]
+        try:
+            subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                env=environment,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ValueError("Word document conversion timed out after 60 seconds.") from exc
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ValueError("Word document conversion failed.") from exc
+
+        generated = temp / "source.pdf"
+        if not generated.exists():
+            raise ValueError("Word document conversion did not produce a PDF.")
+        pdf_content = generated.read_bytes()
+        if not pdf_content.startswith(b"%PDF-"):
+            raise ValueError("Word document conversion produced an invalid PDF.")
+        if len(pdf_content) > settings.max_upload_bytes:
+            raise ValueError(
+                f"Converted PDF exceeds the {settings.max_upload_bytes}-byte upload limit."
+            )
+        stored_name = f"{Path(safe_name).stem}.pdf"
+        return NormalisedDocumentUpload(pdf_content, stored_name, suffix[1:])
+
+
 def _enum_or(enum_type, value: str, fallback):
     try:
         return enum_type(value)
@@ -153,13 +241,9 @@ def store_pdf(
     content: bytes,
     role: DocumentRole = DocumentRole.CURRENT,
 ) -> Document:
-    """Validate and immutably store a PDF before creating its DB record."""
+    """Normalise and immutably store a supported document before creating its record."""
 
-    safe_name = _safe_filename(filename)
-    if not safe_name.lower().endswith(".pdf") or content[:5] != b"%PDF-":
-        raise ValueError("Only files with a valid PDF signature are accepted.")
-    if not content or len(content) > settings.max_upload_bytes:
-        raise ValueError(f"PDF must be between 1 byte and {settings.max_upload_bytes} bytes.")
+    normalised = normalise_document_upload(filename, content)
     digest = hashlib.sha256(content).hexdigest()
     existing = session.scalar(
         select(Document).where(Document.case_id == case.id, Document.sha256 == digest)
@@ -169,8 +253,8 @@ def store_pdf(
 
     storage_dir = Path(settings.storage_dir) / "cases" / case.id / digest[:12]
     storage_dir.mkdir(parents=True, exist_ok=True)
-    stored_path = storage_dir / safe_name
-    stored_path.write_bytes(content)
+    stored_path = storage_dir / normalised.stored_filename
+    stored_path.write_bytes(normalised.content)
     document = Document(
         case_id=case.id,
         document_role=role,
@@ -178,9 +262,12 @@ def store_pdf(
         storage_path=str(stored_path),
         sha256=digest,
         mime_type="application/pdf",
-        file_size=len(content),
+        file_size=len(normalised.content),
         upload_status=UploadStatus.STORED,
-        metadata_json={"safe_filename": safe_name},
+        metadata_json={
+            "safe_filename": normalised.stored_filename,
+            "source_format": normalised.source_format,
+        },
     )
     session.add(document)
     case.status = CaseStatus.UPLOADED
@@ -357,32 +444,49 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
         ]
         if engineer_pages and not analysis.invoices:
             document.document_kind = DocumentKind.ENGINEER_ASSESSMENT
-            parsed = parse_engineer_assessment(engineer_pages)
-            assessment_fields = dict(parsed.fields)
+            try:
+                parsed = parse_engineer_assessment(engineer_pages)
+            except ValueError:
+                parsed = None
+            if parsed is not None:
+                assessment_fields = dict(parsed.fields)
+                assessment_operations = parsed.operations
+                assessment_confidence = parsed.confidence
+                assessment_payload = {
+                    "fields": {
+                        key: value.isoformat() if hasattr(value, "isoformat") else str(value)
+                        for key, value in parsed.fields.items()
+                    },
+                    "operation_count": len(parsed.operations),
+                }
+            elif analysis.engineer_assessments:
+                extracted_assessment = analysis.engineer_assessments[0]
+                assessment_fields = extracted_assessment.fields.model_dump()
+                assessment_operations = extracted_assessment.operations
+                assessment_confidence = extracted_assessment.extraction_confidence
+                assessment_payload = extracted_assessment.model_dump(mode="json")
+            else:
+                raise ValueError(
+                    "Engineer assessment extraction did not produce usable repair operations."
+                )
             assessment_fields["damage_areas_json"] = assessment_fields.pop(
                 "damage_areas", None
             )
             assessment = EngineerAssessment(
                 case_id=case.id,
                 document_id=document.id,
-                extraction_confidence=parsed.confidence,
+                extraction_confidence=assessment_confidence,
                 review_status=(
                     ReviewStatus.APPROVED
-                    if parsed.confidence > settings.auto_accept_confidence_threshold
+                    if assessment_confidence > settings.auto_accept_confidence_threshold
                     else ReviewStatus.PENDING
                 ),
-                extraction_payload_json={
-                    "fields": {
-                        key: value.isoformat() if hasattr(value, "isoformat") else str(value)
-                        for key, value in parsed.fields.items()
-                    },
-                    "operation_count": len(parsed.operations),
-                },
+                extraction_payload_json=assessment_payload,
                 **assessment_fields,
             )
             session.add(assessment)
             session.flush()
-            for operation in parsed.operations:
+            for operation in assessment_operations:
                 page_row = page_rows.get(operation.page_number)
                 session.add(
                     AssessmentOperation(
@@ -390,6 +494,7 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
                         sequence_no=operation.sequence_no,
                         category=operation.category,
                         operation_code=operation.code,
+                        part_number=getattr(operation, "part_number", None),
                         raw_description=operation.description,
                         normalised_description=normalise_operation(operation.description),
                         work_units=operation.work_units,
@@ -398,7 +503,7 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
                         unit_price_net=operation.unit_price,
                         total_net=operation.total,
                         source_page_id=page_row.id if page_row else None,
-                        extraction_confidence=parsed.confidence,
+                        extraction_confidence=assessment_confidence,
                     )
                 )
             session.flush()
