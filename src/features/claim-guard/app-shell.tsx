@@ -1,7 +1,6 @@
 import { useState, type CSSProperties, type ReactNode } from "react"
 import {
   ArchiveIcon,
-  CalculatorIcon,
   CheckCircle2Icon,
   ChevronRightIcon,
   ClipboardCheckIcon,
@@ -51,8 +50,16 @@ const primaryNavigation = [
     label: "Benchmarks",
     icon: BarChart3Icon,
   },
-  { id: "price-comparison", label: "Review findings", icon: SearchCheckIcon },
-  { id: "claim-liability", label: "Summary", icon: LayoutDashboardIcon },
+  {
+    id: "price-comparison",
+    label: "Challenged invoices",
+    icon: SearchCheckIcon,
+  },
+  {
+    id: "challenge-review",
+    label: "Challenge decision",
+    icon: ClipboardCheckIcon,
+  },
 ] satisfies Array<{
   id: ScreenId
   label: string
@@ -60,30 +67,16 @@ const primaryNavigation = [
 }>
 
 const administration = [
+  { id: "claim-liability", label: "Claim details", icon: LayoutDashboardIcon },
   { id: "document-pages", label: "Source document", icon: FileScanIcon },
-  {
-    id: "extracted-invoice",
-    label: "Extracted invoice",
-    icon: FileTextIcon,
-  },
-  {
-    id: "calculation-checks",
-    label: "Invoice calculations",
-    icon: CalculatorIcon,
-  },
   {
     id: "ontology-mapping",
     label: "Repair item matching",
     icon: FolderSearch2Icon,
   },
   { id: "missing-items", label: "Unmatched items", icon: GaugeIcon },
-  { id: "ontology-bank", label: "Repair item library", icon: LibraryBigIcon },
+  { id: "ontology-bank", label: "External price library", icon: LibraryBigIcon },
   { id: "knowledge-graph", label: "Knowledge graph", icon: Share2Icon },
-  {
-    id: "challenge-review",
-    label: "Challenge decision",
-    icon: ClipboardCheckIcon,
-  },
 ] satisfies Array<{
   id: ScreenId
   label: string
@@ -104,6 +97,7 @@ const reviewScreens: ScreenId[] = [
 
 function primaryActiveId(activeScreen: ScreenId): ScreenId {
   if (documentScreens.includes(activeScreen)) return "upload-processing"
+  if (activeScreen === "calculation-checks") return "upload-processing"
   if (reviewScreens.includes(activeScreen)) return "price-comparison"
   if (activeScreen === "knowledge-graph") return "benchmark-dashboard"
   return activeScreen
@@ -137,7 +131,7 @@ function AppSidebar({
             <SidebarMenuButton
               size="lg"
               className="h-14 px-2"
-              onClick={() => navigate("claim-liability")}
+              onClick={() => navigate("upload-processing")}
             >
               <span className="flex size-10 items-center justify-center rounded-lg bg-primary text-base font-bold text-primary-foreground">
                 CG

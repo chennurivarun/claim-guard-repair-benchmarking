@@ -105,11 +105,12 @@ def test_configured_vision_can_recover_when_azure_ocr_fails(
                 ),
                 totals=InvoiceTotals(subtotal_net=Decimal("10.00")),
                 line_items=[
-                    ExtractedLine(
-                        sequence_no=1,
-                        raw_description="Visible part",
-                        normalised_description="visible part",
-                        line_total_net=Decimal("10.00"),
+                        ExtractedLine(
+                            sequence_no=1,
+                            raw_description="Visible part",
+                            normalised_description="visible part",
+                            item_kind="part",
+                            line_total_net=Decimal("10.00"),
                         source=FieldSource(
                             page_number=pages[0].page_number,
                             extraction_method="vision",
@@ -162,11 +163,12 @@ def test_ungrouped_pages_are_sent_to_vision_separately(tmp_path: Path) -> None:
                 header=InvoiceHeader(invoice_number=f"INV-{page_number}"),
                 totals=InvoiceTotals(subtotal_net=Decimal("10.00")),
                 line_items=[
-                    ExtractedLine(
-                        sequence_no=1,
-                        raw_description=f"Part {page_number}",
-                        normalised_description=f"part {page_number}",
-                        line_total_net=Decimal("10.00"),
+                        ExtractedLine(
+                            sequence_no=1,
+                            raw_description=f"Part {page_number}",
+                            normalised_description=f"part {page_number}",
+                            item_kind="part",
+                            line_total_net=Decimal("10.00"),
                         source=FieldSource(
                             page_number=page_number,
                             extraction_method="vision",

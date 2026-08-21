@@ -47,9 +47,12 @@ export interface UploadedDocument {
   filename: string
   status: string
   page_count: number | null
+  invoice_units?: number
   reprocess_required: boolean
   kind?: "unknown" | "repair_invoice" | "engineer_assessment" | "supporting_evidence"
   paired?: boolean
+  manual_review?: boolean
+  manual_review_reason?: string | null
 }
 
 export interface DocumentProcessingResult {
@@ -60,6 +63,8 @@ export interface DocumentProcessingResult {
     invoice_units: number
     extracted_lines: number
     engineer_assessments?: number
+    manual_review?: boolean
+    manual_review_reason?: string
   }
   document: UploadedDocument
   reprocess_required?: boolean
@@ -115,6 +120,12 @@ export function documentApiErrorMessage(error: unknown) {
 export function fetchDocumentPages(caseReference = DEFAULT_CASE_REFERENCE) {
   return requestJson<DocumentPageRecord[]>(
     `/api/v1/claims/${encodeURIComponent(caseReference)}/pages`
+  )
+}
+
+export function fetchCaseDocuments(caseReference = DEFAULT_CASE_REFERENCE) {
+  return requestJson<UploadedDocument[]>(
+    `/api/v1/claims/${encodeURIComponent(caseReference)}/documents`
   )
 }
 

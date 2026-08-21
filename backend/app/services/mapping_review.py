@@ -7,11 +7,14 @@ from enum import Enum
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.comparison import CurrentInvoiceLine, LineComparison, aggregate_challenges, compare_line
 from app.domain.money import ZERO, money, percentage
+from app.domain.normalisation import normalise_description
 from app.enums import (
+    ApprovalStatus,
     AuditActorType,
     CaseStatus,
     ChallengeStatus,
@@ -29,6 +32,7 @@ from app.models import (
     InvoiceLineItem,
     OntologyItem,
     OntologyMapping,
+    OntologySynonym,
     OntologyVersion,
     PriceComparison,
 )
@@ -133,6 +137,59 @@ def _invalidate_challenge_review(challenge: ChallengeResult) -> None:
     challenge.reviewer_approved = False
     challenge.approved_by = None
     challenge.approved_at = None
+
+
+def _learn_approved_synonym(
+    session: Session,
+    *,
+    line: InvoiceLineItem,
+    item: OntologyItem,
+    version: OntologyVersion,
+) -> str | None:
+    """Reuse a handler-approved invoice description for future exact matching."""
+
+    synonym = line.raw_description.strip()
+    normalised = normalise_description(synonym)
+    if not normalised or normalised == normalise_description(item.canonical_name):
+        return None
+    existing = session.scalar(
+        select(OntologySynonym).where(
+            OntologySynonym.normalised_synonym == normalised,
+        )
+    )
+    if existing is not None:
+        if existing.ontology_item_id != item.id:
+            return None
+        if existing.approval_status != ApprovalStatus.APPROVED:
+            existing.approval_status = ApprovalStatus.APPROVED
+        return existing.id
+    learned = OntologySynonym(
+        ontology_item_id=item.id,
+        synonym=synonym,
+        normalised_synonym=normalised,
+        source_type="handler_approved_invoice_mapping",
+        source_reference=f"invoice_line:{line.id}",
+        approval_status=ApprovalStatus.APPROVED,
+        created_in_version_id=version.id,
+    )
+    try:
+        with session.begin_nested():
+            session.add(learned)
+            session.flush()
+        return learned.id
+    except IntegrityError:
+        # Another handler may approve the same description concurrently. The
+        # savepoint keeps the outer mapping decision usable; reuse the winner.
+        existing = session.scalar(
+            select(OntologySynonym).where(
+                OntologySynonym.normalised_synonym == normalised,
+            )
+        )
+        if existing is None or existing.ontology_item_id != item.id:
+            return None
+        if existing.approval_status != ApprovalStatus.APPROVED:
+            existing.approval_status = ApprovalStatus.APPROVED
+        return existing.id
 
 
 def _set_non_comparable(
@@ -590,7 +647,7 @@ def _set_bundle_comparison(
     return component_payloads, True
 
 
-def _refresh_invoice_rollup(
+def refresh_invoice_rollup(
     session: Session,
     *,
     line: InvoiceLineItem,
@@ -631,20 +688,33 @@ def _refresh_invoice_rollup(
         )
 
     invoice_net = money(sum((_decimal(row.invoice_line_net) for row in comparisons), ZERO)) or ZERO
+    reviewable_challenges = [
+        row for row in line_challenges if row.status != ChallengeStatus.REJECTED
+    ]
     challenge_net = (
-        money(sum((max(_decimal(row.challenge_net), ZERO) for row in line_challenges), ZERO))
+        money(
+            sum(
+                (max(_decimal(row.challenge_net), ZERO) for row in reviewable_challenges),
+                ZERO,
+            )
+        )
         or ZERO
     )
     vat_impact = (
-        money(sum((max(_decimal(row.challenge_vat), ZERO) for row in line_challenges), ZERO))
+        money(
+            sum(
+                (max(_decimal(row.challenge_vat), ZERO) for row in reviewable_challenges),
+                ZERO,
+            )
+        )
         or ZERO
     )
     gross_effect = money(challenge_net + vat_impact) or ZERO
     challenge_price = money(invoice_net - challenge_net) or ZERO
     average_score = (
-        Decimal(sum(row.evidence_strength_score for row in line_challenges))
-        / Decimal(len(line_challenges))
-        if line_challenges
+        Decimal(sum(row.evidence_strength_score for row in reviewable_challenges))
+        / Decimal(len(reviewable_challenges))
+        if reviewable_challenges
         else ZERO
     )
     label = "Strong" if average_score >= 80 else "Moderate" if average_score >= 60 else "Weak"
@@ -660,7 +730,9 @@ def _refresh_invoice_rollup(
         "(proposed payable before any liability apportionment)."
     )
     invoice_challenge.score_breakdown_json = {
-        "challenged_line_count": sum(_decimal(row.challenge_net) > 0 for row in line_challenges),
+        "challenged_line_count": sum(
+            _decimal(row.challenge_net) > 0 for row in reviewable_challenges
+        ),
         "recomputed_after_mapping_review": True,
     }
     invoice_challenge.findings_json = {"positive_only": True, "mot_vat_exempt": True}
@@ -756,6 +828,7 @@ def review_line_mapping(
     mapping.flags_json = flags
 
     allocation_resolved: bool | None = None
+    learned_synonym_id: str | None = None
     if action == "reject":
         mapping.selected_ontology_item_id = None
         mapping.decision = MappingDecision.NO_MATCH
@@ -851,13 +924,19 @@ def review_line_mapping(
             comparison=comparison,
             challenge=challenge,
         )
+        learned_synonym_id = _learn_approved_synonym(
+            session,
+            line=line,
+            item=item,
+            version=version,
+        )
 
     if line.raw_description != original_description or line.line_total_net != original_line_net:
         raise MappingReviewError(
             "SOURCE_LINE_MUTATED",
             "Mapping review must not alter the original extracted invoice line.",
         )
-    invoice_challenge = _refresh_invoice_rollup(
+    invoice_challenge = refresh_invoice_rollup(
         session,
         line=line,
         processing_run_id=comparison.processing_run_id,
@@ -887,6 +966,7 @@ def review_line_mapping(
                 "recomputed_scope": "affected_line_and_invoice_rollup",
                 "previous_challenge_approval_invalidated": previous_approval,
                 "bundle_allocation_resolved": allocation_resolved,
+                "learned_synonym_id": learned_synonym_id,
             },
         )
     )
@@ -897,6 +977,7 @@ def review_line_mapping(
         "source_description": line.raw_description,
         "source_line_net": line.line_total_net,
         "decision": action,
+        "learned_synonym_id": learned_synonym_id,
         "mapping": after["mapping"],
         "comparison": after["comparison"],
         "challenge": after["challenge"],

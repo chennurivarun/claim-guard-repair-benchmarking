@@ -509,6 +509,8 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
             session.flush()
         elif analysis.invoices:
             document.document_kind = DocumentKind.REPAIR_INVOICE
+        else:
+            document.document_kind = DocumentKind.UNKNOWN
 
         for extracted in analysis.invoices:
             header = extracted.header
@@ -677,13 +679,19 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
         pair_case_assessments(session, case.id)
 
         document.upload_status = UploadStatus.READY
+        if analysis.manual_review_reason:
+            document_metadata["manual_review"] = True
+            document_metadata["manual_review_reason"] = analysis.manual_review_reason
+        else:
+            document_metadata.pop("manual_review", None)
+            document_metadata.pop("manual_review_reason", None)
         if manual_page_corrections:
             document_metadata["reprocess_required"] = False
             document_metadata.pop("reprocess_reason", None)
             document_metadata["last_reprocessed_with_page_corrections_at"] = datetime.now(
                 UTC
             ).isoformat()
-            document.metadata_json = document_metadata
+        document.metadata_json = document_metadata
         case.status = CaseStatus.EXTRACTION_REVIEW
         run.status = RunStatus.SUCCEEDED
         run.completed_at = datetime.now(UTC)
@@ -692,6 +700,9 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
             "invoice_units": len(analysis.invoices),
             "extracted_lines": sum(len(invoice.line_items) for invoice in analysis.invoices),
         }
+        if analysis.manual_review_reason:
+            run.metrics_json["manual_review"] = True
+            run.metrics_json["manual_review_reason"] = analysis.manual_review_reason
         if engineer_pages and not analysis.invoices:
             run.metrics_json["engineer_assessments"] = 1
     except Exception as exc:
@@ -724,6 +735,14 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
 
 def serialise_document(document: Document) -> dict[str, Any]:
     metadata = document.metadata_json or {}
+    invoice_units = len(document.invoices)
+    inferred_manual_review = bool(
+        document.upload_status == UploadStatus.READY
+        and document.page_count
+        and invoice_units == 0
+        and document.engineer_assessment is None
+    )
+    manual_review = bool(metadata.get("manual_review")) or inferred_manual_review
     return {
         "id": document.id,
         "case_id": document.case_id,
@@ -737,5 +756,13 @@ def serialise_document(document: Document) -> dict[str, Any]:
         ),
         "status": document.upload_status.value,
         "page_count": document.page_count,
+        "invoice_units": invoice_units,
         "reprocess_required": bool(metadata.get("reprocess_required")),
+        "manual_review": manual_review,
+        "manual_review_reason": metadata.get("manual_review_reason")
+        or (
+            "No benchmarkable invoice line items were detected in this document."
+            if inferred_manual_review
+            else None
+        ),
     }

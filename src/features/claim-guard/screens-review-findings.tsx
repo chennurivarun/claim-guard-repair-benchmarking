@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useState } from "react"
 import {
   ArrowLeftIcon,
   ArrowRightIcon,
@@ -188,11 +188,10 @@ function InvoiceComparisonTable({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>All invoice items</CardTitle>
+        <CardTitle>Challenged invoice items</CardTitle>
         <CardDescription>
-          Compare the final supported price with both evidence streams: the
-          uploaded-invoice P90 and the governed ontology/historical-claim
-          calculation.
+          Review only lines with a positive challenge. Benchmark and external
+          prices remain separate and traceable.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -333,12 +332,8 @@ export function ReviewFindingsScreen({
     (item) =>
       !["approved", "rejected"].includes(item.challengeStatus ?? "review")
   )
-  const rows = useMemo(
-    () =>
-      workspace.lines.filter((item) =>
-        item.description.toLowerCase().includes(query.toLowerCase())
-      ),
-    [query, workspace.lines]
+  const rows = challenged.filter((item) =>
+    item.description.toLowerCase().includes(query.toLowerCase())
   )
 
   if (!line) {
@@ -349,7 +344,7 @@ export function ReviewFindingsScreen({
             Claim {workspace.claim.id}
           </p>
           <h1 className="mt-1 text-3xl font-semibold tracking-tight">
-            Review findings
+            Review findings - challenged invoices
           </h1>
         </div>
         <EngineerAssessmentCard assessment={engineerAssessment} />
@@ -387,7 +382,7 @@ export function ReviewFindingsScreen({
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">
-            Review findings
+            Review findings - challenged invoices
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
             Decide whether the evidence supports this price challenge.
@@ -439,7 +434,7 @@ export function ReviewFindingsScreen({
             </div>
           </CardHeader>
           <CardContent className="flex flex-col gap-6">
-            <div className="grid overflow-hidden rounded-lg border sm:grid-cols-3">
+            <div className="grid overflow-hidden rounded-lg border sm:grid-cols-4">
               <div className="p-5">
                 <p className="text-xs font-medium text-muted-foreground">
                   Repairer billed
@@ -450,10 +445,18 @@ export function ReviewFindingsScreen({
               </div>
               <div className="border-y p-5 sm:border-x sm:border-y-0">
                 <p className="text-xs font-medium text-muted-foreground">
-                  Supported price
+                  Benchmark price
                 </p>
                 <p className="mt-2 text-2xl font-semibold tabular-nums">
-                  {formatMoney(line.recommended)}
+                  {benchmark ? formatMoney(benchmark.p90) : "—"}
+                </p>
+              </div>
+              <div className="border-b p-5 sm:border-r sm:border-b-0">
+                <p className="text-xs font-medium text-muted-foreground">
+                  External price
+                </p>
+                <p className="mt-2 text-2xl font-semibold tabular-nums">
+                  {line.ontologyTotal ? formatMoney(line.ontologyTotal) : "—"}
                 </p>
               </div>
               <div className="bg-primary/5 p-5">
@@ -474,7 +477,7 @@ export function ReviewFindingsScreen({
                     <p className="mt-1 text-xs text-muted-foreground">
                       {benchmark.category} · {benchmark.historicalCount} earlier
                       invoice{benchmark.historicalCount === 1 ? "" : "s"} ·
-                      current invoice excluded
+                      based only on earlier invoices
                     </p>
                   </div>
                   <Badge variant={benchmarkChallenged ? "destructive" : "outline"}>
@@ -535,14 +538,11 @@ export function ReviewFindingsScreen({
                 <p className="mt-2 text-sm leading-6 text-muted-foreground">
                   {line.rationale}
                 </p>
-                {benchmark ? (
-                  <p className="mt-2 text-xs leading-5 text-muted-foreground">
-                    The supported price uses the higher of P90 and any reliable
-                    governed ontology/historical-claim price. This conservative
-                    rule avoids overstating the reduction while retaining both
-                    evidence streams.
-                  </p>
-                ) : null}
+                <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                  When both prices are available, the supported price uses 70%
+                  benchmark and 30% approved external price. If only one is
+                  available, that available price is used.
+                </p>
             </div>
 
             <div>
@@ -594,7 +594,7 @@ export function ReviewFindingsScreen({
                     </p>
                     <p className="mt-1 text-xs text-muted-foreground">
                       {benchmark.historicalCount} earlier uploaded invoices;
-                      current invoice excluded
+                      the current invoice is not counted
                     </p>
                   </div>
                 ) : null}

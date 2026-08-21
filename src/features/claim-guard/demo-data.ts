@@ -26,7 +26,7 @@ export const screenTitles: Record<ScreenId, string> = {
   "price-comparison": "Price Comparison",
   "missing-items": "Missing Items",
   "challenge-review": "Challenge Review",
-  "ontology-bank": "Ontology Bank",
+  "ontology-bank": "External Price Library",
   "benchmark-dashboard": "Repair Benchmarks",
   "knowledge-graph": "Repairer Knowledge Graph",
   "audit-reports": "Audit & Reports",

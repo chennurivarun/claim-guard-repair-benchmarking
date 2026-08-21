@@ -168,6 +168,32 @@ def test_partial_deterministic_lines_are_preserved_and_completed_by_vision() -> 
     assert merged.extraction_method == "vision"
 
 
+def test_vision_enriches_unknown_deterministic_line_without_replacing_price() -> None:
+    deterministic = _invoice("LWR door seal", method="ocr")
+    vision = _invoice("LWR door seal", method="vision")
+    vision.line_items[0] = vision.line_items[0].model_copy(
+        update={
+            "item_kind": "part",
+            "part_number": "SEAL-7",
+            "quantity": Decimal("1"),
+            "unit": "each",
+            "unit_price_net": Decimal("99.99"),
+        }
+    )
+
+    merged = merge_invoice_extractions(
+        deterministic,
+        vision,
+        include_vision_lines=True,
+    )
+
+    assert len(merged.line_items) == 1
+    assert merged.line_items[0].item_kind == "part"
+    assert merged.line_items[0].part_number == "SEAL-7"
+    assert merged.line_items[0].line_total_net == Decimal("10.00")
+    assert merged.line_items[0].source.extraction_method == "ocr"
+
+
 def test_header_only_fallback_does_not_replace_deterministic_lines() -> None:
     deterministic = _invoice("Existing part", method="ocr")
     vision = _invoice("Different model line", method="vision")

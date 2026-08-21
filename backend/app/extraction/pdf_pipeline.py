@@ -468,12 +468,23 @@ class PDFPipeline:
                             page.classification_confidence,
                             merged_assessment.extraction_confidence,
                         )
+        analysis.invoices = [
+            invoice
+            for invoice in analysis.invoices
+            if invoice.has_benchmarkable_part_lines()
+        ]
         has_engineer_assessment = bool(analysis.engineer_assessments) or any(
             page.page_type == PageType.ENGINEER_ASSESSMENT for page in pages
         )
         if not analysis.invoices and not has_engineer_assessment:
-            raise ValueError(
-                "No readable invoice was found. Check the PDF and OCR configuration, "
-                "then try again."
+            has_invoice_page = any(
+                page.page_type in {PageType.INVOICE, PageType.ESTIMATE}
+                for page in pages
+            )
+            analysis.manual_review_reason = (
+                "Line-item information is not available. The invoice appears to be "
+                "rolled up and cannot be benchmarked automatically."
+                if has_invoice_page
+                else "No benchmarkable invoice line items were detected in this document."
             )
         return analysis

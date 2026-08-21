@@ -98,6 +98,9 @@ def test_claim_liability_pdf_correction_and_settlement_flow(client: TestClient) 
             data={"role": "current"},
         )
     assert uploaded.status_code == 200
+    documents = client.get("/api/v1/claims/CG-API-91283/documents")
+    assert documents.status_code == 200
+    assert documents.json()[0]["filename"] == source.name
     processed = client.post(f"/api/v1/documents/{uploaded.json()['id']}/process")
     assert processed.status_code == 200
     assert processed.json()["metrics"] == {
@@ -646,6 +649,9 @@ def test_governed_finalisation_and_report_routes(client: TestClient) -> None:
     assert edited_line["recommended"] == 14.0
     assert edited_line["challenge"] == 6.02
     assert edited_workspace["summary"]["challengeAmount"] == 96.02
+    edited_result = client.get("/api/v1/claims/CG-GOVERNANCE-91283/result").json()
+    assert edited_result["summary"]["challenge_price_net"] == "547.24"
+    assert edited_result["summary"]["challenge_amount_net"] == "96.02"
     rejected = client.post(
         f"/api/v1/challenge-results/{positive['Air Filter']['id']}/decision",
         json={
@@ -656,6 +662,9 @@ def test_governed_finalisation_and_report_routes(client: TestClient) -> None:
     )
     assert rejected.status_code == 200
     assert rejected.json()["status"] == "rejected"
+    rejected_result = client.get("/api/v1/claims/CG-GOVERNANCE-91283/result").json()
+    assert rejected_result["summary"]["challenge_price_net"] == "553.26"
+    assert rejected_result["summary"]["challenge_amount_net"] == "90.00"
     approved = client.post(
         f"/api/v1/challenge-results/{positive['Carried Out Full Service']['id']}/decision",
         json={

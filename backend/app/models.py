@@ -1101,6 +1101,13 @@ class OntologySynonym(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
         ),
         Index("ix_ontology_synonyms_normalised", "normalised_synonym"),
         Index("ix_ontology_synonyms_approval", "approval_status"),
+        Index(
+            "uq_ontology_synonyms_learned_normalised",
+            "normalised_synonym",
+            unique=True,
+            sqlite_where=text("source_type = 'handler_approved_invoice_mapping'"),
+            postgresql_where=text("source_type = 'handler_approved_invoice_mapping'"),
+        ),
     )
 
     ontology_item_id: Mapped[str] = mapped_column(

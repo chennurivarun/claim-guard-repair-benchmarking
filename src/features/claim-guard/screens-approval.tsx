@@ -44,6 +44,7 @@ export function ApprovalScreen({
   onSettlement,
   onDownload,
   onBackToFindings,
+  onReviewLiability,
   onReviewPendingInvoice,
 }: {
   workspace: ClaimWorkspace
@@ -59,6 +60,7 @@ export function ApprovalScreen({
   onSettlement: () => void
   onDownload: (format: "docx" | "pdf") => void
   onBackToFindings: () => void
+  onReviewLiability: () => void
   onReviewPendingInvoice?: () => void
 }) {
   const [evidenceLine, setEvidenceLine] = useState<InvoiceLine | null>(null)
@@ -170,8 +172,14 @@ export function ApprovalScreen({
         <Alert>
           <LockKeyholeIcon />
           <AlertTitle>Issuance is gated by liability</AlertTitle>
-          <AlertDescription>
-            Confirm ADMITTED or SPLIT LIABILITY before generating the package.
+          <AlertDescription className="flex items-center justify-between gap-4">
+            <span>
+              Confirm ADMITTED or SPLIT LIABILITY before generating the package.
+            </span>
+            <Button variant="outline" size="sm" onClick={onReviewLiability}>
+              Review claim details
+              <ArrowRightIcon data-icon="inline-end" />
+            </Button>
           </AlertDescription>
         </Alert>
       ) : null}

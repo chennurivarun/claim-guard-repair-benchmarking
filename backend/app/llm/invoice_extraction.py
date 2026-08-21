@@ -425,6 +425,38 @@ def merge_invoice_extractions(
     ]
     merged_lines = list(usable_lines)
     if include_vision_lines:
+        vision_by_identity: dict[
+            tuple[str, Decimal | None], list[ExtractedLine]
+        ] = {}
+        for line in vision.line_items:
+            identity = (line.normalised_description, line.line_total_net)
+            vision_by_identity.setdefault(identity, []).append(line)
+
+        enriched_lines: list[ExtractedLine] = []
+        for line in merged_lines:
+            identity = (line.normalised_description, line.line_total_net)
+            candidates = vision_by_identity.get(identity) or []
+            candidate = candidates.pop(0) if candidates else None
+            if candidate is None:
+                enriched_lines.append(line)
+                continue
+            updates: dict[str, object] = {}
+            if line.item_kind == "unknown" and candidate.item_kind != "unknown":
+                updates["item_kind"] = candidate.item_kind
+            for field in (
+                "part_number",
+                "quantity",
+                "unit",
+                "unit_price_net",
+                "vat_rate",
+                "vat_amount",
+                "gross_amount",
+            ):
+                if getattr(line, field) is None and getattr(candidate, field) is not None:
+                    updates[field] = getattr(candidate, field)
+            enriched_lines.append(line.model_copy(update=updates) if updates else line)
+        merged_lines = enriched_lines
+
         existing = Counter(
             (line.normalised_description, line.line_total_net)
             for line in merged_lines

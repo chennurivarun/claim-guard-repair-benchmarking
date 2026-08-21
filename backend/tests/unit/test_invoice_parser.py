@@ -75,6 +75,25 @@ def test_ocr_parser_reuses_azure_structured_tables_before_line_regex() -> None:
     assert all(line.source.extraction_method == "ocr" for line in lines)
 
 
+def test_ocr_parser_recognises_parts_heading_with_column_labels() -> None:
+    page = _page().model_copy(
+        update={
+            "extraction_method": "ocr",
+            "extraction_confidence": 0.86,
+            "text": (
+                "PARTS Qty Unit Value\n"
+                "oil filter 1.00 11.10 11.10\n"
+                "FULLY SYN ENG OIL 9.50 7.50 71.25\n"
+            ),
+        }
+    )
+
+    lines = InvoiceParser()._ocr_lines(page, 1)
+
+    assert [line.raw_description for line in lines] == ["oil filter", "FULLY SYN ENG OIL"]
+    assert all(line.item_kind == "part" for line in lines)
+
+
 def test_header_reads_compact_registration_make_and_model_line() -> None:
     header = InvoiceParser()._header(
         "ST ALBANS CAR CLINIC\n"
@@ -101,6 +120,8 @@ def test_generic_part_table_recognises_explicit_repair_operations() -> None:
     assert _guess_item_kind("Part", "Fit Track Rod Ends") == "labour"
     assert _guess_item_kind("Part", "Waste Oil and Filter") == "disposal"
     assert _guess_item_kind("Part", "Oil Filter") == "part"
+    assert _guess_item_kind("unknown", "REPLACED FRONT BRAKE DISCS AND PADS") == "labour"
+    assert _guess_item_kind("unknown", "LWR door seal") == "part"
 
 
 def test_subtotal_mismatch_recovers_missing_lines_with_vision(monkeypatch) -> None:
@@ -171,3 +192,77 @@ def test_subtotal_mismatch_recovers_missing_lines_with_vision(monkeypatch) -> No
         "Recovered labour",
     ]
     assert invoice.extraction_method == "vision"
+
+
+def test_unknown_priced_line_triggers_vision_enrichment_even_when_totals_match(
+    monkeypatch,
+) -> None:
+    class UnknownLinePage:
+        def extract_text(self, layout=False):
+            return (
+                "EXL Repairer Service Ltd\nInvoice INV-7\nInvoice Date: 19/08/2026\n"
+                "R/OSTROM MIRROR 1.00 76.00 76.00\n"
+                "Subtotal 76.00\nVAT 15.20\nTotal 91.20"
+            )
+
+        def extract_tables(self):
+            return []
+
+    class FakePDF:
+        pages = [UnknownLinePage()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class VisionEnrichment:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def extract(self, pages, *, role_hint=None):
+            self.calls += 1
+            return ExtractedInvoice(
+                header=InvoiceHeader(
+                    invoice_number="INV-7",
+                    invoice_date=date(2026, 8, 19),
+                    supplier_name="EXL Repairer Service Ltd",
+                ),
+                totals=InvoiceTotals(
+                    subtotal_net=Decimal("76.00"), total_gross=Decimal("91.20")
+                ),
+                line_items=[
+                    ExtractedLine(
+                        sequence_no=1,
+                        raw_description="R/OSTROM MIRROR",
+                        normalised_description="r/ostrom mirror",
+                        item_kind="part",
+                        part_number="7219-000-813",
+                        line_total_net=Decimal("76.00"),
+                        source=FieldSource(
+                            page_number=1,
+                            extraction_method="vision",
+                            confidence=0.85,
+                        ),
+                    )
+                ],
+                page_numbers=[1],
+                extraction_method="vision",
+                extraction_confidence=0.85,
+            )
+
+    vision = VisionEnrichment()
+    monkeypatch.setattr("app.extraction.invoice_parser.pdfplumber.open", lambda _: FakePDF())
+    source_page = _page().model_copy(
+        update={
+            "extraction_method": "ocr",
+            "extraction_confidence": 0.86,
+            "text": UnknownLinePage().extract_text(),
+        }
+    )
+    invoice = InvoiceParser(vision).parse_group(Path("unused.pdf"), [source_page])
+
+    assert vision.calls == 1
+    assert invoice.extraction_method == "vision"
+    assert invoice.line_items[0].line_total_net == Decimal("76.00")

@@ -88,7 +88,13 @@ import {
   ScreenHeading,
   StatusBadge,
 } from "./shared"
-import type { ClaimWorkspace, InvoiceLine, ResearchQueueItem } from "./types"
+import type {
+  ClaimWorkspace,
+  InvoiceLine,
+  OntologyBankItem,
+  PriceObservationRecord,
+  ResearchQueueItem,
+} from "./types"
 
 function ChallengeSummary({ workspace }: { workspace: ClaimWorkspace }) {
   return (
@@ -188,7 +194,7 @@ export function LineEvidenceSheet({
                         Operational price decision
                       </p>
                       <p className="mt-1 font-semibold">
-                        P90 checked against governed ontology/history evidence
+                        70% P90 + 30% approved external evidence
                       </p>
                     </div>
                     <Badge variant={line.challenge > 0 ? "destructive" : "outline"}>
@@ -275,9 +281,10 @@ export function LineEvidenceSheet({
                         : `A challenge requires both more than ${p90ThresholdPct}% above P90 and at least ${formatMoney(MINIMUM_CHALLENGE_AMOUNT)} difference.`}
                     </p>
                     <p className="mt-2 text-xs text-muted-foreground">
-                      {p90.method}. Current invoice excluded: yes. The final
-                      support uses the higher of this P90 and any reliable
-                      governed ontology/historical-claim price.
+                      {p90.method}. Current invoice excluded: yes. When an
+                      approved external price exists, the final support weights
+                      this P90 at 70% and that external price at 30%; otherwise
+                      P90 is used alone.
                     </p>
                   </div>
 
@@ -1321,7 +1328,11 @@ export function ChallengeDecisionDialog({
             void onSubmit({
               approved: !rejecting,
               rationale,
-              challengePriceNet: editing ? Number(challengePrice) : undefined,
+              challengePriceNet: rejecting
+                ? undefined
+                : editing
+                  ? Number(challengePrice)
+                  : line?.recommended,
             })
           }}
         >
@@ -1650,7 +1661,7 @@ export function ChallengeReviewScreen({
               "Invoice line and corrected extraction",
               "Ontology item and active version",
               "Previous invoice comparables and date range",
-              "60/40 policy calculation and £5/5% gates",
+              "70/30 policy calculation and £5/5% gates",
               "Mapping, evidence and challenge-strength scores",
               "Handler approval and immutable audit record",
             ].map((item) => (
@@ -2047,6 +2058,35 @@ export function LegacyAuditReportsScreen({
   )
 }
 
+function externalPriceMethod(
+  item: OntologyBankItem,
+  observations: PriceObservationRecord[]
+) {
+  const prices = observations
+    .filter((observation) => observation.approvalStatus.toLowerCase() === "approved")
+    .map((observation) => observation.priceNet)
+    .sort((left, right) => left - right)
+  if (!prices.length || item.referencePriceNet == null) {
+    if (observations.length && item.referencePriceNet != null) {
+      return `Governed library value; ${observations.length} observation${observations.length === 1 ? " remains" : "s remain"} provisional and excluded until approved.`
+    }
+    return "No approved external observations are available."
+  }
+  const middle = Math.floor(prices.length / 2)
+  const median =
+    prices.length % 2
+      ? prices[middle]
+      : (prices[middle - 1] + prices[middle]) / 2
+  const mean = prices.reduce((total, price) => total + price, 0) / prices.length
+  if (Math.abs(item.referencePriceNet - median) < 0.01) {
+    return `Median of ${prices.length} approved external observation${prices.length === 1 ? "" : "s"}.`
+  }
+  if (Math.abs(item.referencePriceNet - mean) < 0.01) {
+    return `Mean of ${prices.length} approved external observation${prices.length === 1 ? "" : "s"}.`
+  }
+  return "Governed approved library price; individual observations are shown below."
+}
+
 export function OntologyBankScreen({
   workspace,
 }: {
@@ -2058,12 +2098,18 @@ export function OntologyBankScreen({
     priceObservations: [],
   }
   const activeVersion = workspace.versions?.ontology ?? "unversioned"
+  const [selectedItem, setSelectedItem] = useState<OntologyBankItem | null>(null)
+  const selectedObservations = selectedItem
+    ? bank.priceObservations.filter(
+        (observation) => observation.ontologyItemId === selectedItem.id
+      )
+    : []
 
   return (
     <>
       <ScreenHeading
-        title="Ontology Bank"
-        description="Canonical items, immutable versions, and governed price evidence with source traceability. Provisional external observations do not affect challenge calculations."
+        title="External Price Library"
+        description="Approved external prices with source traceability. Provisional observations do not affect challenge calculations."
         action={<Badge variant="success">{activeVersion} ACTIVE</Badge>}
       />
       <Tabs defaultValue="items">
@@ -2084,7 +2130,7 @@ export function OntologyBankScreen({
                     <TableHead>ID</TableHead>
                     <TableHead>Canonical item</TableHead>
                     <TableHead>Type</TableHead>
-                    <TableHead>Reference price</TableHead>
+                    <TableHead>External price</TableHead>
                     <TableHead className="text-right">Observations</TableHead>
                     <TableHead className="text-right">Status</TableHead>
                   </TableRow>
@@ -2120,7 +2166,15 @@ export function OntologyBankScreen({
                           : `${formatMoney(item.referencePriceNet)} / ${item.unit}`}
                       </TableCell>
                       <TableCell className="text-right tabular-nums">
-                        {item.observationCount}
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setSelectedItem(item)}
+                        >
+                          <EyeIcon data-icon="inline-start" />
+                          {item.observationCount} source{item.observationCount === 1 ? "" : "s"}
+                        </Button>
                       </TableCell>
                       <TableCell>
                         <div className="flex justify-end">
@@ -2247,6 +2301,89 @@ export function OntologyBankScreen({
           </DataCard>
         </TabsContent>
       </Tabs>
+      <Dialog
+        open={selectedItem !== null}
+        onOpenChange={(open) => {
+          if (!open) setSelectedItem(null)
+        }}
+      >
+        <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{selectedItem?.name ?? "External price evidence"}</DialogTitle>
+            <DialogDescription>
+              Source prices and the exact aggregation used for the library value.
+            </DialogDescription>
+          </DialogHeader>
+          {selectedItem ? (
+            <div className="flex flex-col gap-4">
+              <div className="grid gap-3 rounded-lg border p-4 sm:grid-cols-2">
+                <div>
+                  <p className="text-xs text-muted-foreground">External price used</p>
+                  <p className="mt-1 text-xl font-semibold tabular-nums">
+                    {selectedItem.referencePriceNet == null
+                      ? "—"
+                      : formatMoney(selectedItem.referencePriceNet)}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Aggregation method</p>
+                  <p className="mt-1 text-sm font-medium">
+                    {externalPriceMethod(selectedItem, selectedObservations)}
+                  </p>
+                </div>
+              </div>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Source</TableHead>
+                    <TableHead>Date</TableHead>
+                    <TableHead className="text-right">Net price</TableHead>
+                    <TableHead className="text-right">Status</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {selectedObservations.length ? (
+                    selectedObservations.map((observation) => (
+                      <TableRow key={observation.id}>
+                        <TableCell>
+                          {observation.sourceRef?.startsWith("http") ? (
+                            <a
+                              href={observation.sourceRef}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 text-primary hover:underline"
+                            >
+                              {observation.providerName || observation.source}
+                              <ExternalLinkIcon className="size-3.5" />
+                            </a>
+                          ) : (
+                            observation.providerName || observation.source
+                          )}
+                        </TableCell>
+                        <TableCell>{observation.date}</TableCell>
+                        <TableCell className="text-right font-medium tabular-nums">
+                          {formatMoney(observation.priceNet)}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex justify-end">
+                            <StatusBadge status={observation.approvalStatus} />
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  ) : (
+                    <TableRow>
+                      <TableCell colSpan={4} className="py-8 text-center text-muted-foreground">
+                        No individual source observations are stored for this item.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </>
   )
 }

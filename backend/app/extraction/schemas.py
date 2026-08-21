@@ -104,7 +104,11 @@ class InvoiceHeader(BaseModel):
         if token in {
             "",
             "-",
+            "claim",
+            "claim no",
+            "claim number",
             "invoice",
+            "invoice claim",
             "invoice no",
             "invoice number",
             "inv",
@@ -153,6 +157,17 @@ class ExtractedInvoice(BaseModel):
     document_role: str = "invoice"
     extraction_method: str
     extraction_confidence: float = Field(ge=0, le=1)
+
+    def has_benchmarkable_part_lines(self) -> bool:
+        """Return whether the invoice contains priced part evidence for benchmarking."""
+
+        return any(
+            bool(line.raw_description.strip())
+            and (line.item_kind.casefold() == "part" or bool(line.part_number))
+            and line.line_total_net is not None
+            and line.line_total_net > 0
+            for line in self.line_items
+        )
 
 
 class EngineerAssessmentFields(BaseModel):
@@ -237,6 +252,7 @@ class DocumentAnalysis(BaseModel):
     pages: list[PageAnalysis]
     invoices: list[ExtractedInvoice] = Field(default_factory=list)
     engineer_assessments: list[ExtractedEngineerAssessment] = Field(default_factory=list)
+    manual_review_reason: str | None = None
 
 
 class MathFinding(BaseModel):

@@ -69,16 +69,19 @@ def _column_index(headers: list[str], *labels: str) -> int | None:
 def _guess_item_kind(section: str, description: str) -> str:
     section = section.lower()
     description_lower = description.lower()
+    description_words = set(re.findall(r"[a-z]+", description_lower))
     if "labour" in section:
         return "labour"
     # Generic invoice tables often put every row under a "Part" heading even
     # when the description clearly represents an operation. Preserve the
     # governed part/service boundary by recognising explicit operation wording
     # before falling back to the section label.
-    if description_lower.startswith("fit "):
+    if description_lower.startswith(
+        ("fit ", "fitted ", "replace ", "replaced ", "remove ", "removed ", "refit ")
+    ):
         return "labour"
-    if description_lower.startswith(("carried out ", "carry out ")) and "service" in description_lower:
-        return "service"
+    if description_lower.startswith(("carried out ", "carry out ")):
+        return "service" if ("service" in description_lower or "mot" in description_lower) else "labour"
     if "mot" in section or "mot test" in description_lower:
         return "service"
     if "disposal" in description_lower or {
@@ -89,9 +92,62 @@ def _guess_item_kind(section: str, description: str) -> str:
         return "disposal"
     if "paint" in description_lower:
         return "paint"
+    if "service" in description_words:
+        return "service"
     if "service" in section:
         return "service"
+    if any(
+        token in description_words
+        for token in {
+            "adblue",
+            "bumper",
+            "cleaner",
+            "disc",
+            "discs",
+            "door",
+            "filter",
+            "gas",
+            "grille",
+            "lamp",
+            "oil",
+            "pad",
+            "pads",
+            "panel",
+            "screenwash",
+            "seal",
+            "sensor",
+            "tyre",
+            "washer",
+            "wheel",
+            "wing",
+        }
+    ):
+        return "part"
     return "part" if "part" in section else "unknown"
+
+
+def _ocr_section(line: str) -> str | None:
+    """Recognise noisy OCR section headings without mistaking priced rows for headings."""
+
+    if re.search(MONEY_PATTERN, line):
+        return None
+    token = re.sub(r"[^a-z]+", " ", line.lower()).strip()
+    words = token.split()
+    if not words:
+        return None
+    if words[0] in {"parts", "part"} and len(words) <= 6:
+        return "parts"
+    if "parts" in words and any(
+        marker in words for marker in {"qty", "quantity", "unit", "value", "total"}
+    ):
+        return "parts"
+    if words[0] == "labour" and len(words) <= 7:
+        return "labour"
+    if words[0] == "service" and len(words) <= 6:
+        return "service"
+    if token in {"work performed", "labour work carried out"}:
+        return "labour"
+    return None
 
 
 def _token(value: str) -> str:
@@ -398,7 +454,11 @@ class InvoiceParser:
             ),
             Decimal("0"),
         )
-        recover_lines = not usable_lines or (
+        uncertain_lines = any(
+            line.item_kind == "unknown" or line.source.confidence < 0.75
+            for line in usable_lines
+        )
+        recover_lines = not usable_lines or uncertain_lines or (
             stated_subtotal is not None
             and abs(extracted_subtotal - stated_subtotal) > Decimal("0.05")
         )
@@ -563,13 +623,22 @@ class InvoiceParser:
             lower = line.lower()
             if not line:
                 continue
-            if lower in {"labour", "parts", "service", "work performed"}:
-                current_section = lower
+            if section := _ocr_section(line):
+                current_section = section
                 continue
             amounts = re.findall(MONEY_PATTERN, line)
             if not amounts or not re.search(r"[A-Za-z]{3}", line):
                 continue
             if any(token in lower for token in ("subtotal", "total", "vat", "balance", "payment")):
+                continue
+            if any(
+                token in lower
+                for token in (
+                    "terms and conditions",
+                    "all repairs are undertaken",
+                    "receipt",
+                )
+            ):
                 continue
             line_total = money(amounts[-1])
             unit_price = money(amounts[-2]) if len(amounts) > 1 else line_total

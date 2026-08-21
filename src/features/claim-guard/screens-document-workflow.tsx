@@ -68,11 +68,18 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs"
 
 import {
   correctDocumentPage,
   documentApiErrorMessage,
   documentImageUrl,
+  fetchCaseDocuments,
   fetchDocumentPages,
   PAGE_TYPES,
   processUploadedDocument,
@@ -82,6 +89,7 @@ import type {
   DocumentPageRecord,
   DocumentPageType,
   DocumentProcessingResult,
+  UploadedDocument,
 } from "./document-api"
 import { DataCard, ScreenHeading, StatusBadge } from "./shared"
 
@@ -310,6 +318,7 @@ export function UploadProcessingWorkflow({
   onOpenOntologyLibrary: () => void
 }) {
   const [pages, setPages] = useState<DocumentPageRecord[]>([])
+  const [documents, setDocuments] = useState<UploadedDocument[]>([])
   const [pageLoadError, setPageLoadError] = useState<string | null>(null)
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
   const [busy, setBusy] = useState(false)
@@ -325,10 +334,15 @@ export function UploadProcessingWorkflow({
 
   useEffect(() => {
     let active = true
-    void Promise.all([fetchDocumentPages(caseReference), fetchDataReadiness()])
-      .then(([records, ready]) => {
+    void Promise.all([
+      fetchDocumentPages(caseReference),
+      fetchCaseDocuments(caseReference),
+      fetchDataReadiness(),
+    ])
+      .then(([records, documentRecords, ready]) => {
         if (!active) return
         setPages(records)
+        setDocuments(documentRecords)
         setReadiness(ready)
         setPageLoadError(null)
       })
@@ -354,6 +368,15 @@ export function UploadProcessingWorkflow({
     (page) => page.classification_source === "handler"
   ).length
   const metrics = processingResult?.metrics
+  const manualReviewDocuments = documents.filter(
+    (document) => document.manual_review
+  )
+  const benchmarkDocuments = documents.filter(
+    (document) =>
+      !document.manual_review &&
+      document.status === "ready" &&
+      (document.invoice_units ?? 0) > 0
+  )
   const processingRows: Array<[string, string, string, string]> = [
     [
       "File intake",
@@ -448,9 +471,14 @@ export function UploadProcessingWorkflow({
               row.id === batchRowId
                 ? {
                     ...row,
-                    status: "READY",
+                    status: latestResult?.document.manual_review
+                      ? "MANUAL REVIEW"
+                      : "READY",
                     detail:
-                      latestResult?.document.kind === "engineer_assessment"
+                      latestResult?.document.manual_review
+                        ? latestResult.document.manual_review_reason ??
+                          "No benchmarkable line items were detected."
+                        : latestResult?.document.kind === "engineer_assessment"
                         ? `Engineer assessment${latestResult.document.paired ? " · paired" : " · awaiting matching invoice"}`
                         : `${latestResult?.metrics?.invoice_units ?? 0} repair invoice unit(s)`,
                   }
@@ -474,8 +502,12 @@ export function UploadProcessingWorkflow({
       setProcessingResult(latestResult)
       setProgress(90)
       setProgressMessage("Refreshing invoice list and document pages")
-      const refreshedPages = await fetchDocumentPages(caseReference)
+      const [refreshedPages, refreshedDocuments] = await Promise.all([
+        fetchDocumentPages(caseReference),
+        fetchCaseDocuments(caseReference),
+      ])
       setPages(refreshedPages)
+      setDocuments(refreshedDocuments)
       setPageLoadError(null)
       if (latestResult) await onProcessed()
       setProgress(100)
@@ -614,6 +646,30 @@ export function UploadProcessingWorkflow({
         </DataCard>
       ) : null}
 
+      <Tabs defaultValue="benchmarking">
+        <TabsList>
+          <TabsTrigger value="benchmarking">
+            Benchmarking queue ({benchmarkDocuments.length})
+          </TabsTrigger>
+          <TabsTrigger value="manual-review">
+            Manual review ({manualReviewDocuments.length})
+          </TabsTrigger>
+        </TabsList>
+        <TabsContent value="benchmarking" className="mt-4">
+          <DocumentQueue
+            documents={benchmarkDocuments}
+            emptyMessage="Processed invoices with usable line items will appear here."
+          />
+        </TabsContent>
+        <TabsContent value="manual-review" className="mt-4">
+          <DocumentQueue
+            documents={manualReviewDocuments}
+            emptyMessage="No documents currently require manual review."
+            manualReview
+          />
+        </TabsContent>
+      </Tabs>
+
       <DataCard
         title="Processing run"
         description="Live status from the PDF pipeline for this case."
@@ -648,6 +704,66 @@ export function UploadProcessingWorkflow({
         </div>
       </DataCard>
     </>
+  )
+}
+
+function DocumentQueue({
+  documents,
+  emptyMessage,
+  manualReview = false,
+}: {
+  documents: UploadedDocument[]
+  emptyMessage: string
+  manualReview?: boolean
+}) {
+  return (
+    <DataCard
+      title={manualReview ? "Unprocessed for human review" : "Ready for benchmarking"}
+      description={
+        manualReview
+          ? "These documents are retained but excluded from automatic benchmarking."
+          : "These documents contain usable invoice line items."
+      }
+    >
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Document</TableHead>
+            <TableHead>{manualReview ? "Why it needs review" : "Result"}</TableHead>
+            <TableHead className="text-right">Status</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {documents.length ? (
+            documents.map((document) => (
+              <TableRow key={document.id}>
+                <TableCell className="font-medium">{document.filename}</TableCell>
+                <TableCell className="text-muted-foreground">
+                  {manualReview
+                    ? document.manual_review_reason ?? "Line-item information is unavailable."
+                    : `${document.page_count ?? 0} page${document.page_count === 1 ? "" : "s"} · ${
+                        (document.invoice_units ?? 0) > 0
+                          ? "Repair Invoice"
+                          : humanise(document.kind ?? "repair_invoice")
+                      }`}
+                </TableCell>
+                <TableCell>
+                  <div className="flex justify-end">
+                    <StatusBadge status={manualReview ? "MANUAL REVIEW" : "READY"} />
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))
+          ) : (
+            <TableRow>
+              <TableCell colSpan={3} className="py-8 text-center text-muted-foreground">
+                {emptyMessage}
+              </TableCell>
+            </TableRow>
+          )}
+        </TableBody>
+      </Table>
+    </DataCard>
   )
 }
 

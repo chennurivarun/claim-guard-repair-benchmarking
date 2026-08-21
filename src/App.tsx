@@ -131,7 +131,7 @@ function invoiceDisplayLabel(
 export function App() {
   const [workspace, setWorkspace] = useState<ClaimWorkspace>(demoWorkspace)
   const [apiMode, setApiMode] = useState<"api" | "demo">("demo")
-  const [activeScreen, setActiveScreen] = useState<ScreenId>("claim-liability")
+  const [activeScreen, setActiveScreen] = useState<ScreenId>("upload-processing")
   const [liabilityStatus, setLiabilityStatus] = useState<LiabilityStatus>(
     demoWorkspace.liability.status
   )
@@ -843,6 +843,7 @@ export function App() {
           onSettlement={() => setSettlementOpen(true)}
           onDownload={handleReport}
           onBackToFindings={() => navigate("price-comparison")}
+          onReviewLiability={() => navigate("claim-liability")}
           onReviewPendingInvoice={
             pendingReviewInvoice
               ? () => {

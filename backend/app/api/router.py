@@ -109,6 +109,7 @@ from app.services.mapping_review import (
     BundleComponentDecision,
     MappingReviewCommand,
     MappingReviewError,
+    refresh_invoice_rollup,
     review_line_mapping,
 )
 from app.services.page_correction import (
@@ -620,6 +621,26 @@ def upload_document(
             detail={"code": "INVALID_DOCUMENT", "message": str(exc)},
         ) from exc
     return serialise_document(document)
+
+
+@router.get("/claims/{case_reference}/documents", tags=["documents"])
+def list_case_documents(
+    case_reference: str,
+    db: DatabaseSession,
+) -> list[dict[str, Any]]:
+    case = db.scalar(select(Case).where(Case.case_reference == case_reference))
+    if case is None:
+        raise _not_found("Claim not found")
+    documents = db.scalars(
+        select(Document)
+        .where(Document.case_id == case.id)
+        .options(
+            selectinload(Document.invoices),
+            selectinload(Document.engineer_assessment),
+        )
+        .order_by(Document.created_at.desc())
+    ).all()
+    return [serialise_document(document) for document in documents]
 
 
 @router.post("/documents/{document_id}/process", tags=["documents"])
@@ -1557,6 +1578,12 @@ def decide_challenge(
     challenge.status = ChallengeStatus.APPROVED if request.approved else ChallengeStatus.REJECTED
     challenge.approved_by = request.actor
     challenge.approved_at = datetime.now(UTC)
+    if comparison is not None and line is not None:
+        refresh_invoice_rollup(
+            db,
+            line=line,
+            processing_run_id=comparison.processing_run_id,
+        )
     db.add(
         AuditEvent(
             case_id=case_id,
