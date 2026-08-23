@@ -52,7 +52,7 @@ const primaryNavigation = [
   },
   {
     id: "price-comparison",
-    label: "Challenged invoices",
+    label: "Review findings",
     icon: SearchCheckIcon,
   },
   {
