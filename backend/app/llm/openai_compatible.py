@@ -35,10 +35,17 @@ def _completion_url(base_url: str, model_id: str, api_version: str) -> str:
         target_path = f"{path}/chat/completions"
 
     query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    # The next-generation Azure OpenAI v1 surface (/openai/v1/...) is
+    # versionless and rejects the api-version parameter outright.
+    versionless_v1 = "/openai/v1/" in f"{target_path}/"
     if (
-        (parsed.hostname or "").endswith(".azure.com")
-        or "/openai/deployments/" in target_path
-    ) and api_version:
+        not versionless_v1
+        and (
+            (parsed.hostname or "").endswith(".azure.com")
+            or "/openai/deployments/" in target_path
+        )
+        and api_version
+    ):
         query.setdefault("api-version", api_version)
     return urlunsplit((parsed.scheme, parsed.netloc, target_path, urlencode(query), ""))
 
