@@ -43,6 +43,22 @@ def _completion_url(base_url: str, model_id: str, api_version: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, target_path, urlencode(query), ""))
 
 
+def _first_json_object(text: str):
+    """Parse the leading JSON value, tolerating trailing chatter some models append.
+
+    Content safety is unaffected: every response is still schema-validated locally.
+    """
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        if start < 0:
+            raise
+        value, _ = json.JSONDecoder().raw_decode(text, start)
+        return value
+
+
 class OpenAICompatibleStructuredLLMClient:
     """Schema-constrained adapter for Azure AI, Azure OpenAI and OpenAI-compatible APIs."""
 
@@ -88,11 +104,20 @@ class OpenAICompatibleStructuredLLMClient:
             {"type": "image_url", "image_url": {"url": image_url, "detail": "high"}}
             for image_url in image_data_urls or []
         )
+        # Some compatible gateways accept response_format but do not enforce it for
+        # every model, so the schema is also stated in the instruction itself.
+        schema_instruction = (
+            f"{system_instruction}\n\n"
+            "Reply with exactly one JSON object and nothing else. It must validate "
+            "against this JSON Schema — use only the properties it defines, all "
+            "required properties, and no extra keys:\n"
+            f"{json.dumps(schema, separators=(',', ':'))}"
+        )
         body = {
             "model": self.model_id,
             "temperature": 0,
             "messages": [
-                {"role": "system", "content": system_instruction},
+                {"role": "system", "content": schema_instruction},
                 {"role": "user", "content": content},
             ],
             "response_format": {
@@ -134,7 +159,7 @@ class OpenAICompatibleStructuredLLMClient:
             if text.startswith("```"):
                 text = text.removeprefix("```json").removeprefix("```")
                 text = text.removesuffix("```").strip()
-            result = json.loads(text)
+            result = _first_json_object(text)
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise LLMProviderError(
                 "LLM_INVALID_RESPONSE", "LLM provider returned no valid structured response."
