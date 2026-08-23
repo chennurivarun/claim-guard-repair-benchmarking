@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import {
+  AlertCircleIcon,
   ArrowRightIcon,
   BadgeCheckIcon,
   BanknoteIcon,
   CheckCheckIcon,
+  CheckIcon,
   DatabaseIcon,
   DownloadIcon,
   EyeIcon,
@@ -79,7 +81,17 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 
 import { auditEvents, ontologyVersions } from "./demo-data"
+import {
+  documentApiErrorMessage,
+  documentImageUrl,
+  fetchCaseDocuments,
+  fetchDocumentPages,
+  type DocumentPageRecord,
+  type UploadedDocument,
+} from "./document-api"
 import { formatMoney } from "./format"
+import { isMappingApproved } from "./mapping-rules"
+import { MappingDecisionDialog, type MappingDialogSelection } from "./screens-validation"
 import {
   ConfidenceCell,
   DataCard,
@@ -88,6 +100,7 @@ import {
   ScreenHeading,
   StatusBadge,
 } from "./shared"
+import { cn } from "@/lib/utils"
 import type {
   ClaimWorkspace,
   InvoiceLine,
@@ -99,6 +112,7 @@ import {
   fetchHistoricalObservation,
   getApiErrorMessage,
   type HistoricalObservationPayload,
+  type MappingDecisionInput,
 } from "@/lib/api"
 
 function ChallengeSummary({ workspace }: { workspace: ClaimWorkspace }) {
@@ -292,14 +306,131 @@ function HistoricalObservationDialog({
   )
 }
 
+export function InlineMappingApproval({
+  line,
+  ontologyOptions,
+  mappingSaving,
+  onMappingDecision,
+  researchSaving,
+  onProposeNewItem,
+}: {
+  line: InvoiceLine
+  ontologyOptions: OntologyBankItem[]
+  mappingSaving: boolean
+  onMappingDecision: (
+    line: InvoiceLine,
+    input: Omit<MappingDecisionInput, "actor">
+  ) => Promise<void>
+  researchSaving?: boolean
+  onProposeNewItem?: (line: InvoiceLine, values: ResearchFormValues) => Promise<void>
+}) {
+  const [selection, setSelection] = useState<MappingDialogSelection | null>(
+    null
+  )
+  const [researchOpen, setResearchOpen] = useState(false)
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="rounded-lg border bg-muted/30 p-3">
+        <p className="text-xs font-medium text-muted-foreground">
+          Suggested repair item match
+        </p>
+        <p className="mt-1 font-semibold">
+          {line.ontologyName ?? line.ontologyId ?? "No candidate suggested"}
+        </p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {line.mappingConfidence != null
+            ? `${line.mappingConfidence}% confidence`
+            : "Confidence unavailable"}
+          {line.mappingReviewStatus ? ` · ${line.mappingReviewStatus}` : ""}
+        </p>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <Button
+          size="sm"
+          disabled={mappingSaving || !line.ontologyId}
+          onClick={() => setSelection({ line, action: "approve" })}
+        >
+          <CheckIcon data-icon="inline-start" />
+          Approve match
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={mappingSaving}
+          onClick={() => setSelection({ line, action: "change" })}
+        >
+          <PencilLineIcon data-icon="inline-start" />
+          Change match…
+        </Button>
+        {onProposeNewItem ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={Boolean(researchSaving)}
+            onClick={() => setResearchOpen(true)}
+          >
+            <SearchIcon data-icon="inline-start" />
+            Propose new item…
+          </Button>
+        ) : null}
+      </div>
+      {!line.ontologyId ? (
+        <p className="text-xs text-muted-foreground">
+          No candidate to approve yet — use Change match to select a repair
+          item.
+        </p>
+      ) : null}
+      {selection ? (
+        <MappingDecisionDialog
+          key={`${selection.line.id}-${selection.action}`}
+          selection={selection}
+          ontologyOptions={ontologyOptions}
+          saving={mappingSaving}
+          onOpenChange={(open) => {
+            if (!open) setSelection(null)
+          }}
+          onSubmit={onMappingDecision}
+        />
+      ) : null}
+      {onProposeNewItem ? (
+        <ResearchDialog
+          key={researchOpen ? `${line.id}-research-open` : "research-closed"}
+          line={researchOpen ? line : null}
+          open={researchOpen}
+          onOpenChange={setResearchOpen}
+          onSubmit={async (targetLine, values) => {
+            await onProposeNewItem(targetLine, values)
+            setResearchOpen(false)
+          }}
+          saving={Boolean(researchSaving)}
+        />
+      ) : null}
+    </div>
+  )
+}
+
 export function LineEvidenceSheet({
   line,
   onClose,
   p90ThresholdPct = 0,
+  ontologyOptions,
+  mappingSaving,
+  onMappingDecision,
+  researchSaving,
+  onProposeNewItem,
 }: {
   line: InvoiceLine | null
   onClose: () => void
   p90ThresholdPct?: number
+  ontologyOptions?: OntologyBankItem[]
+  mappingSaving?: boolean
+  onMappingDecision?: (
+    line: InvoiceLine,
+    input: Omit<MappingDecisionInput, "actor">
+  ) => Promise<void>
+  researchSaving?: boolean
+  onProposeNewItem?: (line: InvoiceLine, values: ResearchFormValues) => Promise<void>
 }) {
   const comparables = line?.comparables ?? []
   const p90 = line?.p90Benchmark
@@ -321,6 +452,27 @@ export function LineEvidenceSheet({
         {line ? (
           <ScrollArea className="min-h-0 flex-1">
             <div className="flex flex-col gap-5 px-4 pb-6">
+              {!isMappingApproved(line) && onMappingDecision ? (
+                <div className="rounded-lg border border-warning/40 bg-warning/5 p-4">
+                  <p className="text-sm font-medium">
+                    Provisional finding: repair item match needs approval
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Approve, change, or propose a new repair item before this
+                    evidence becomes actionable in Review findings.
+                  </p>
+                  <div className="mt-3">
+                    <InlineMappingApproval
+                      line={line}
+                      ontologyOptions={ontologyOptions ?? []}
+                      mappingSaving={Boolean(mappingSaving)}
+                      onMappingDecision={onMappingDecision}
+                      researchSaving={researchSaving}
+                      onProposeNewItem={onProposeNewItem}
+                    />
+                  </div>
+                </div>
+              ) : null}
               {line.recommended !== undefined ? (
                 <div className="rounded-lg border bg-primary/5 p-4">
                   <div className="flex items-start justify-between gap-4">
@@ -1282,18 +1434,197 @@ function ResearchDialog({
   )
 }
 
+function ManualReviewDocumentsSection({
+  caseReference,
+  focusDocumentId,
+}: {
+  caseReference: string
+  focusDocumentId?: string | null
+}) {
+  const [documents, setDocuments] = useState<UploadedDocument[]>([])
+  const [pages, setPages] = useState<DocumentPageRecord[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [viewerPage, setViewerPage] = useState<DocumentPageRecord | null>(
+    null
+  )
+  const rowRefs = useRef<Record<string, HTMLDivElement | null>>({})
+
+  useEffect(() => {
+    let active = true
+    Promise.all([
+      fetchCaseDocuments(caseReference),
+      fetchDocumentPages(caseReference),
+    ])
+      .then(([documentRecords, pageRecords]) => {
+        if (!active) return
+        setDocuments(documentRecords)
+        setPages(pageRecords)
+        setLoadError(null)
+      })
+      .catch((error: unknown) => {
+        if (active) setLoadError(documentApiErrorMessage(error))
+      })
+      .finally(() => {
+        if (active) setLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [caseReference])
+
+  useEffect(() => {
+    if (!focusDocumentId) return
+    const node = rowRefs.current[focusDocumentId]
+    node?.scrollIntoView({ behavior: "smooth", block: "center" })
+  }, [focusDocumentId, documents])
+
+  const reviewDocuments = documents.filter(
+    (document) => document.manual_review || document.status === "failed"
+  )
+
+  return (
+    <DataCard
+      title="Documents needing manual review"
+      description={`${reviewDocuments.length} document${reviewDocuments.length === 1 ? "" : "s"} could not be fully processed automatically`}
+    >
+      {loadError ? (
+        <Alert variant="destructive">
+          <AlertCircleIcon />
+          <AlertTitle>Documents could not be loaded</AlertTitle>
+          <AlertDescription>{loadError}</AlertDescription>
+        </Alert>
+      ) : loading ? (
+        <p className="py-6 text-center text-sm text-muted-foreground">
+          Loading documents…
+        </p>
+      ) : reviewDocuments.length === 0 ? (
+        <p className="py-6 text-center text-sm text-muted-foreground">
+          No documents currently require manual review.
+        </p>
+      ) : (
+        <div className="flex flex-col gap-4">
+          {reviewDocuments.map((document) => {
+            const documentPages = pages.filter(
+              (page) => page.document_id === document.id
+            )
+            return (
+              <div
+                key={document.id}
+                ref={(node) => {
+                  rowRefs.current[document.id] = node
+                }}
+                className={cn(
+                  "rounded-lg border p-4",
+                  focusDocumentId === document.id &&
+                    "ring-2 ring-primary ring-offset-2 ring-offset-background"
+                )}
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="font-medium">{document.filename}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {document.page_count ?? 0} page
+                      {document.page_count === 1 ? "" : "s"} ·{" "}
+                      {document.status.replaceAll("_", " ")}
+                    </p>
+                  </div>
+                  <StatusBadge
+                    status={
+                      document.status === "failed"
+                        ? "FAILED"
+                        : "MANUAL REVIEW"
+                    }
+                  />
+                </div>
+                <div className="mt-3 flex items-start gap-2 rounded-md bg-muted/30 p-3 text-sm">
+                  <InfoIcon
+                    className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+                    aria-hidden
+                  />
+                  <p className="text-muted-foreground">
+                    {document.manual_review_reason ??
+                      "No further detail was returned for this document. A future release will summarise this automatically as an AI briefing."}
+                  </p>
+                </div>
+                {documentPages.length ? (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {documentPages.map((page) => (
+                      <button
+                        key={page.id}
+                        type="button"
+                        onClick={() => setViewerPage(page)}
+                        className="overflow-hidden rounded-md border transition hover:ring-2 hover:ring-primary"
+                        aria-label={`Enlarge page ${page.page_number} of ${document.filename}`}
+                      >
+                        <img
+                          src={documentImageUrl(page.image_url)}
+                          alt={`Page ${page.page_number} thumbnail of ${document.filename}`}
+                          loading="lazy"
+                          className="h-20 w-16 object-cover"
+                        />
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mt-3 text-xs text-muted-foreground">
+                    No page images are available for this document yet.
+                  </p>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+      <Alert className="mt-4">
+        <InfoIcon />
+        <AlertTitle>Manual pricing entry is not yet available</AlertTitle>
+        <AlertDescription>
+          Manual line entry arrives with the next backend update. Once a
+          document&apos;s underlying issue is fixed, correct it from Source
+          document and reprocess to bring it back into benchmarking.
+        </AlertDescription>
+      </Alert>
+      <Dialog
+        open={viewerPage !== null}
+        onOpenChange={(open) => !open && setViewerPage(null)}
+      >
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>
+              {viewerPage ? `Page ${viewerPage.page_number}` : "Page image"}
+            </DialogTitle>
+            <DialogDescription>
+              {viewerPage?.document_filename ?? "Document page image"}
+            </DialogDescription>
+          </DialogHeader>
+          {viewerPage ? (
+            <img
+              src={documentImageUrl(viewerPage.image_url)}
+              alt={`Page ${viewerPage.page_number} of ${viewerPage.document_filename}`}
+              className="w-full rounded-md border"
+            />
+          ) : null}
+        </DialogContent>
+      </Dialog>
+    </DataCard>
+  )
+}
+
 export function MissingItemsScreen({
   workspace,
   enabled,
   saving,
   onResearch,
   onApprove,
+  focusDocumentId,
 }: {
   workspace: ClaimWorkspace
   enabled: boolean
   saving: boolean
   onResearch: (line: InvoiceLine, values: ResearchFormValues) => Promise<void>
   onApprove: (item: ResearchQueueItem) => Promise<void>
+  focusDocumentId?: string | null
 }) {
   const [researchLine, setResearchLine] = useState<InvoiceLine | null>(null)
   const missingLines = workspace.lines.filter(
@@ -1306,9 +1637,13 @@ export function MissingItemsScreen({
   return (
     <>
       <ScreenHeading
-        title="Missing Items"
-        description="Research is reviewer-initiated. Suggestions remain provisional until a handler approves them."
+        title="Manual review"
+        description="Documents that need a closer look, plus new repair item proposals awaiting handler approval."
         action={<Badge variant="outline">auto_research: false</Badge>}
+      />
+      <ManualReviewDocumentsSection
+        caseReference={workspace.claim.id}
+        focusDocumentId={focusDocumentId}
       />
       <Alert>
         <FlaskConicalIcon />
@@ -1320,7 +1655,7 @@ export function MissingItemsScreen({
         </AlertDescription>
       </Alert>
       <DataCard
-        title="Research queue"
+        title="New repair item proposals"
         description={`${missingLines.length} invoice line${missingLines.length === 1 ? "" : "s"} without an approved mapping`}
         action={<Badge variant="outline">two_step_approval: false</Badge>}
       >

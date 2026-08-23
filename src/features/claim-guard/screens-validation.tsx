@@ -310,7 +310,7 @@ export function CalculationChecksScreen({
   )
 }
 
-interface MappingDialogSelection {
+export interface MappingDialogSelection {
   line: InvoiceLine
   action: MappingDecisionAction
 }
@@ -338,7 +338,7 @@ function optionalNumber(value: string, label: string) {
   return parsed
 }
 
-function MappingDecisionDialog({
+export function MappingDecisionDialog({
   selection,
   ontologyOptions,
   onOpenChange,
