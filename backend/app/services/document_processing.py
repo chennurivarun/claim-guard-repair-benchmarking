@@ -22,6 +22,7 @@ from app.domain.liability import (
     claim_invoice_consistency,
 )
 from app.enums import (
+    AuditActorType,
     CaseStatus,
     CheckStatus,
     ClaimVehicleRole,
@@ -43,9 +44,15 @@ from app.extraction.azure_document_intelligence import AzureDocumentIntelligence
 from app.extraction.calculation_validator import validate_invoice
 from app.extraction.engineer_assessment_parser import parse_engineer_assessment
 from app.extraction.pdf_pipeline import PDFPipeline, PipelineConfig
+from app.llm.document_briefing import (
+    DocumentBriefingPage,
+    build_document_briefing,
+    build_document_briefing_generator,
+)
 from app.llm.factory import build_invoice_vision_extractor
 from app.models import (
     AssessmentOperation,
+    AuditEvent,
     Case,
     ClaimConsistencyFinding,
     ClaimVehicle,
@@ -389,6 +396,8 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
     output_dir = Path(settings.storage_dir) / "cases" / case.id / document.sha256[:12] / "pages"
     cloud_ocr = _build_cloud_ocr(settings)
     vision_extractor = build_invoice_vision_extractor(settings)
+    briefing_generator = build_document_briefing_generator(settings)
+    engineer_assessment_manual_reason: str | None = None
     pipeline = PDFPipeline(
         PipelineConfig(
             max_pages=settings.max_pdf_pages,
@@ -466,47 +475,54 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
                 assessment_confidence = extracted_assessment.extraction_confidence
                 assessment_payload = extracted_assessment.model_dump(mode="json")
             else:
-                raise ValueError(
-                    "Engineer assessment extraction did not produce usable repair operations."
+                # No document should hard-fail just because the engineer
+                # assessment could not be parsed automatically: retain the
+                # document, route it to manual review, and let the briefing
+                # explain what the AI could and could not read.
+                assessment_fields = None
+                engineer_assessment_manual_reason = (
+                    "Engineer assessment could not be parsed automatically; "
+                    "manual review required."
                 )
-            assessment_fields["damage_areas_json"] = assessment_fields.pop(
-                "damage_areas", None
-            )
-            assessment = EngineerAssessment(
-                case_id=case.id,
-                document_id=document.id,
-                extraction_confidence=assessment_confidence,
-                review_status=(
-                    ReviewStatus.APPROVED
-                    if assessment_confidence > settings.auto_accept_confidence_threshold
-                    else ReviewStatus.PENDING
-                ),
-                extraction_payload_json=assessment_payload,
-                **assessment_fields,
-            )
-            session.add(assessment)
-            session.flush()
-            for operation in assessment_operations:
-                page_row = page_rows.get(operation.page_number)
-                session.add(
-                    AssessmentOperation(
-                        assessment_id=assessment.id,
-                        sequence_no=operation.sequence_no,
-                        category=operation.category,
-                        operation_code=operation.code,
-                        part_number=getattr(operation, "part_number", None),
-                        raw_description=operation.description,
-                        normalised_description=normalise_operation(operation.description),
-                        work_units=operation.work_units,
-                        hours=operation.hours,
-                        quantity=operation.quantity,
-                        unit_price_net=operation.unit_price,
-                        total_net=operation.total,
-                        source_page_id=page_row.id if page_row else None,
-                        extraction_confidence=assessment_confidence,
+            if assessment_fields is not None:
+                assessment_fields["damage_areas_json"] = assessment_fields.pop(
+                    "damage_areas", None
+                )
+                assessment = EngineerAssessment(
+                    case_id=case.id,
+                    document_id=document.id,
+                    extraction_confidence=assessment_confidence,
+                    review_status=(
+                        ReviewStatus.APPROVED
+                        if assessment_confidence > settings.auto_accept_confidence_threshold
+                        else ReviewStatus.PENDING
+                    ),
+                    extraction_payload_json=assessment_payload,
+                    **assessment_fields,
+                )
+                session.add(assessment)
+                session.flush()
+                for operation in assessment_operations:
+                    page_row = page_rows.get(operation.page_number)
+                    session.add(
+                        AssessmentOperation(
+                            assessment_id=assessment.id,
+                            sequence_no=operation.sequence_no,
+                            category=operation.category,
+                            operation_code=operation.code,
+                            part_number=getattr(operation, "part_number", None),
+                            raw_description=operation.description,
+                            normalised_description=normalise_operation(operation.description),
+                            work_units=operation.work_units,
+                            hours=operation.hours,
+                            quantity=operation.quantity,
+                            unit_price_net=operation.unit_price,
+                            total_net=operation.total,
+                            source_page_id=page_row.id if page_row else None,
+                            extraction_confidence=assessment_confidence,
+                        )
                     )
-                )
-            session.flush()
+                session.flush()
         elif analysis.invoices:
             document.document_kind = DocumentKind.REPAIR_INVOICE
         else:
@@ -678,13 +694,48 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
 
         pair_case_assessments(session, case.id)
 
+        manual_review_reason = analysis.manual_review_reason or engineer_assessment_manual_reason
         document.upload_status = UploadStatus.READY
-        if analysis.manual_review_reason:
+        if manual_review_reason:
             document_metadata["manual_review"] = True
-            document_metadata["manual_review_reason"] = analysis.manual_review_reason
+            document_metadata["manual_review_reason"] = manual_review_reason
+            briefing_pages = [
+                DocumentBriefingPage(
+                    page_number=page_row.page_number,
+                    page_type=page_row.page_type.value,
+                    text=page_row.raw_text or "",
+                    classification_confidence=page_row.classification_confidence,
+                )
+                for page_row in sorted(page_rows.values(), key=lambda row: row.page_number)
+            ]
+            document.review_briefing_json = build_document_briefing(
+                briefing_generator,
+                pages=briefing_pages,
+                manual_review_reason=manual_review_reason,
+            )
+            session.add(
+                AuditEvent(
+                    case_id=case.id,
+                    processing_run_id=run.id,
+                    actor_type=AuditActorType.SYSTEM,
+                    actor_id="document_briefing_generator",
+                    event_type="DOCUMENT_BRIEFING_RECORDED",
+                    entity_type="document",
+                    entity_id=document.id,
+                    after_json={
+                        "fallback": document.review_briefing_json.get("fallback"),
+                        "manual_review_reason": manual_review_reason,
+                    },
+                    event_payload_json={
+                        "model": document.review_briefing_json.get("model"),
+                        "prompt_version": document.review_briefing_json.get("prompt_version"),
+                    },
+                )
+            )
         else:
             document_metadata.pop("manual_review", None)
             document_metadata.pop("manual_review_reason", None)
+            document.review_briefing_json = None
         if manual_page_corrections:
             document_metadata["reprocess_required"] = False
             document_metadata.pop("reprocess_reason", None)
@@ -700,10 +751,10 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
             "invoice_units": len(analysis.invoices),
             "extracted_lines": sum(len(invoice.line_items) for invoice in analysis.invoices),
         }
-        if analysis.manual_review_reason:
+        if manual_review_reason:
             run.metrics_json["manual_review"] = True
-            run.metrics_json["manual_review_reason"] = analysis.manual_review_reason
-        if engineer_pages and not analysis.invoices:
+            run.metrics_json["manual_review_reason"] = manual_review_reason
+        if engineer_pages and not analysis.invoices and not engineer_assessment_manual_reason:
             run.metrics_json["engineer_assessments"] = 1
     except Exception as exc:
         document_id = document.id
@@ -757,6 +808,7 @@ def serialise_document(document: Document) -> dict[str, Any]:
         "status": document.upload_status.value,
         "page_count": document.page_count,
         "invoice_units": invoice_units,
+        "review_briefing": document.review_briefing_json,
         "reprocess_required": bool(metadata.get("reprocess_required")),
         "manual_review": manual_review,
         "manual_review_reason": metadata.get("manual_review_reason")

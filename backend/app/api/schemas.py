@@ -97,6 +97,32 @@ class InvoiceLineCorrectionRequest(BaseModel):
     vat_applicable: bool | None = None
 
 
+class InvoiceLineManualCreateRequest(BaseModel):
+    """A handler-entered line for a document the pipeline could not benchmark.
+
+    Recorded with extraction_method=manual and confidence=1.0 so it flows into
+    mapping and comparison on the next run, exactly like any other
+    handler-approved extraction.
+    """
+
+    description: str = Field(min_length=1, max_length=2_000)
+    quantity: Decimal | None = None
+    unit: str | None = Field(default=None, max_length=80)
+    unit_price_net: Decimal | None = None
+    line_total_net: Decimal = Field(gt=0)
+    vat_rate: Decimal | None = Field(default=None, ge=0, le=100)
+    item_kind: str = Field(default="part", max_length=40)
+    part_number: str | None = Field(default=None, max_length=160)
+    page_number: int | None = Field(default=None, ge=1)
+    recorded_by: str = Field(min_length=1, max_length=160)
+
+    @model_validator(mode="after")
+    def description_not_blank(self):
+        if not self.description.strip():
+            raise ValueError("description must not be blank")
+        return self
+
+
 class ExtractionDecisionRequest(BaseModel):
     decision: Literal["approved", "rejected", "undo"]
     actor: str = Field(min_length=1, max_length=160)

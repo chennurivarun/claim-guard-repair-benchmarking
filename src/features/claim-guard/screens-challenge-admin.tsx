@@ -80,6 +80,7 @@ import { Textarea } from "@/components/ui/textarea"
 
 import { auditEvents, ontologyVersions } from "./demo-data"
 import { formatMoney } from "./format"
+import { ManualReviewDocumentsSection } from "./manual-review-documents"
 import {
   ConfidenceCell,
   DataCard,
@@ -1153,6 +1154,10 @@ export function MissingItemsScreen({
           remain attached.
         </AlertDescription>
       </Alert>
+      <ManualReviewDocumentsSection
+        caseReference={workspace.claim.id}
+        enabled={enabled}
+      />
       <DataCard
         title="Research queue"
         description={`${missingLines.length} invoice line${missingLines.length === 1 ? "" : "s"} without an approved mapping`}
