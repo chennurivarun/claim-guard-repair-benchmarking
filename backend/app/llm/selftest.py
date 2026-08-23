@@ -34,6 +34,10 @@ FAILURE_ADVICE = {
         "The AI service took too long to answer. Run this again; if it always "
         "times out, the deployment may be in a distant region or scaled to zero."
     ),
+    "LLM_HTTP_ERROR": (
+        "The AI endpoint answered with an error - the details below show its "
+        "exact words, which usually name the misconfiguration."
+    ),
     "LLM_UNAVAILABLE": (
         "The AI service could not be reached at all. Check the base URL in "
         "backend/.env and that this machine has internet access to it."
@@ -83,6 +87,57 @@ def _fixture_pages():
     return pages
 
 
+def _print_http_diagnostics(client) -> None:
+    """On an HTTP-level failure, show the exact URL and the provider's own
+    error text - that message names the misconfiguration (wrong deployment
+    name, bad api-version, wrong path) far better than a status code alone."""
+
+    url = getattr(client, "_url", None)
+    api_key = getattr(client, "_api_key", None)
+    if not url or not api_key:
+        return
+    print(f"       Requested URL: {url}")
+    try:
+        import httpx
+
+        response = httpx.post(
+            url,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+                "api-key": api_key,
+            },
+            json={
+                "model": getattr(client, "model_id", ""),
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 4,
+            },
+            timeout=30,
+        )
+        body = response.text[:400].replace(api_key, "***")
+        print(f"       HTTP status:   {response.status_code}")
+        print(f"       Provider says: {body}")
+        hints = {
+            404: (
+                "A 404 usually means the URL path or deployment is wrong: "
+                "CLAIM_GUARD_LLM_MODEL must be EXACTLY your Azure deployment "
+                "name (check Azure AI Foundry > Deployments), and the base URL "
+                "must be the resource endpoint with no extra path."
+            ),
+            400: (
+                "A 400 usually means the model/deployment name or "
+                "CLAIM_GUARD_LLM_API_VERSION is wrong for this endpoint."
+            ),
+            401: "A 401 means the key is wrong for this resource.",
+            403: "A 403 means the key lacks permission for this deployment.",
+        }
+        hint = hints.get(response.status_code)
+        if hint:
+            print(f"       Hint: {hint}")
+    except Exception as diagnostic_error:  # noqa: BLE001 - diagnostics must never crash
+        print(f"       (Could not reach the endpoint at all: {diagnostic_error})")
+
+
 def main() -> int:
     settings = get_settings()
     status = llm_configuration_status(settings)
@@ -121,7 +176,10 @@ def main() -> int:
             print(f"[WARN] 1. Connection - answered in {elapsed:.1f}s but oddly: {result!r}")
     except LLMProviderError as error:
         print(f"[FAIL] 1. Connection ({error.code})")
+        print(f"       {error}")
         print(f"       {_advice(error.code)}")
+        if error.code in {"LLM_HTTP_ERROR", "LLM_UNAVAILABLE"}:
+            _print_http_diagnostics(client)
         print("\nFix the connection first; the remaining checks need it.")
         return 1
 
