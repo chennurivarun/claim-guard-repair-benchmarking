@@ -332,7 +332,13 @@ export function UploadProcessingWorkflow({
     useState<DocumentProcessingResult | null>(null)
   const [readiness, setReadiness] = useState<DataReadinessPayload | null>(null)
   const [batchRows, setBatchRows] = useState<
-    Array<{ id: string; name: string; status: string; detail: string }>
+    Array<{
+      id: string
+      name: string
+      status: string
+      detail: string
+      documentId?: string
+    }>
   >([])
 
   useEffect(() => {
@@ -482,6 +488,7 @@ export function UploadProcessingWorkflow({
               row.id === batchRowId
                 ? {
                     ...row,
+                    documentId: uploaded.id,
                     status: latestResult?.document.manual_review
                       ? "MANUAL REVIEW"
                       : "READY",
@@ -646,7 +653,20 @@ export function UploadProcessingWorkflow({
                     </TableCell>
                     <TableCell>
                       <div className="flex justify-end">
-                        <StatusBadge status={row.status} />
+                        {row.status === "MANUAL REVIEW" &&
+                        row.documentId &&
+                        onOpenManualReview ? (
+                          <button
+                            type="button"
+                            onClick={() => onOpenManualReview(row.documentId!)}
+                            className="cursor-pointer rounded focus-visible:outline-2"
+                            title="Open in Manual review"
+                          >
+                            <StatusBadge status="MANUAL REVIEW" />
+                          </button>
+                        ) : (
+                          <StatusBadge status={row.status} />
+                        )}
                       </div>
                     </TableCell>
                   </TableRow>

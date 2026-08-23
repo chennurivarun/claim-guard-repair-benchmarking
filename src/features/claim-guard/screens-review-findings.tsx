@@ -288,6 +288,71 @@ function InvoiceComparisonTable({
   )
 }
 
+function AllExtractedLinesTable({ lines }: { lines: InvoiceLine[] }) {
+  if (!lines.length) return null
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>All extracted lines ({lines.length})</CardTitle>
+        <CardDescription>
+          Every line read from this invoice, including parts and charges that
+          are within thresholds or still awaiting a repair-item match.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="overflow-x-auto rounded-lg border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Line</TableHead>
+                <TableHead>Part number</TableHead>
+                <TableHead className="text-right">Qty</TableHead>
+                <TableHead className="text-right">Billed net</TableHead>
+                <TableHead>Repair item match</TableHead>
+                <TableHead className="text-right">Status</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {lines.map((item) => (
+                <TableRow key={item.id}>
+                  <TableCell className="font-medium">
+                    {item.description}
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {item.partNumber || "—"}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {item.quantity} {item.unit}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {formatMoney(item.currentTotal)}
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {item.ontologyId
+                      ? isMappingApproved(item)
+                        ? "Matched"
+                        : "Match awaiting approval"
+                      : "No match — proposal in Manual review"}
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex justify-end">
+                      <StatusBadge
+                        status={
+                          item.challenge > 0 ? item.comparisonStatus : "WITHIN"
+                        }
+                      />
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
 export function ReviewFindingsScreen({
   workspace,
   p90ThresholdPct,
@@ -393,6 +458,7 @@ export function ReviewFindingsScreen({
           onViewEvidence={setEvidenceLine}
           onInspect={onInspect}
         />
+        <AllExtractedLinesTable lines={workspace.lines} />
         <LineEvidenceSheet
           line={evidenceLine}
           p90ThresholdPct={p90ThresholdPct}
@@ -796,6 +862,8 @@ export function ReviewFindingsScreen({
         onViewEvidence={setEvidenceLine}
         onInspect={onInspect}
       />
+
+      <AllExtractedLinesTable lines={workspace.lines} />
 
       <Separator />
       <p className="text-center text-xs text-muted-foreground">

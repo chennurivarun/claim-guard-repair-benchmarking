@@ -231,25 +231,17 @@ export function App() {
   const challengedInvoices = invoices.filter(
     (invoice) => (invoice.challenge_review?.positive ?? 0) > 0
   )
-  // The Review findings screen only makes sense for invoices with a positive
-  // price challenge; every other screen keeps the full uploaded-invoice list.
+  // Review findings lists every scanned invoice (challenged ones first) so
+  // handlers can inspect any invoice's extracted lines, not only challenges.
   const invoiceSelectorOptions =
-    activeScreen === "price-comparison" ? challengedInvoices : invoices
-
-  useEffect(() => {
-    if (activeScreen !== "price-comparison") return
-    const qualifying = invoices.filter(
-      (invoice) => (invoice.challenge_review?.positive ?? 0) > 0
-    )
-    if (!qualifying.length) return
-    if (qualifying.some((invoice) => invoice.id === workspace.invoice.id)) {
-      return
-    }
-    void handleInvoiceSelection(qualifying[0].id)
-    // handleInvoiceSelection is a stable function declaration recreated each
-    // render; the guards above already prevent redundant or looping calls.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeScreen, invoices, workspace.invoice.id])
+    activeScreen === "price-comparison"
+      ? [
+          ...challengedInvoices,
+          ...invoices.filter(
+            (invoice) => !challengedInvoices.some((c) => c.id === invoice.id)
+          ),
+        ]
+      : invoices
 
   function applyWorkspace(nextWorkspace: ClaimWorkspace) {
     setWorkspace(nextWorkspace)
@@ -1017,7 +1009,9 @@ export function App() {
         liabilityStatus={liabilityStatus}
         apiMode={apiMode}
       >
-        {activeScreen === "price-comparison" && !challengedInvoices.length ? (
+        {activeScreen === "price-comparison" &&
+        !invoices.length &&
+        !challengedInvoices.length ? (
           <div className="mb-4 rounded-lg border border-dashed bg-card px-4 py-6 text-center">
             <p className="text-sm font-medium">
               No invoices with price challenges yet
