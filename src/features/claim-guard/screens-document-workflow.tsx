@@ -476,11 +476,20 @@ export function UploadProcessingWorkflow({
           const uploaded = await uploadCurrentDocument(file, caseReference)
           latestResult = await processUploadedDocument(uploaded.id)
           if (latestResult?.metrics?.llm_failures?.length) {
+            const codes = Array.from(new Set(latestResult.metrics.llm_failures))
+            const reason = codes.includes("LLM_AUTH_ERROR")
+              ? "The AI service rejected the configured key — check CLAIM_GUARD_LLM_API_KEY in backend/.env."
+              : codes.includes("LLM_RATE_LIMITED")
+                ? "The AI service hit its rate limit — reprocess the affected documents in a few minutes."
+                : codes.includes("LLM_TIMEOUT")
+                  ? "The AI service timed out — reprocessing usually succeeds."
+                  : codes.some((code) => code.includes("INVALID"))
+                    ? "The AI model's answers did not pass validation for these pages — they were kept for human review instead."
+                    : "The AI service was unavailable for these pages."
             toast.info("AI reading was unavailable for part of this batch", {
-              description:
-                "Affected documents were processed with the standard reader and routed to Manual review where needed. Reprocessing later usually restores AI reading.",
+              description: `${reason} (${codes.join(", ")}) Affected documents used the standard reader and were routed to Manual review where needed.`,
               id: "ai-degraded",
-              duration: 9000,
+              duration: 12000,
             })
           }
           setBatchRows((current) =>
