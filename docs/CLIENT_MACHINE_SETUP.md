@@ -58,6 +58,41 @@ Verify: `http://localhost:8000/health` must show `"ai_status": "configured"`.
 `configuration_required` means the key is missing or incomplete; the app still runs,
 but matching is deterministic-only.
 
+### Alternative: any OpenAI-compatible provider (OpenRouter, local gateways)
+
+The same boundary accepts any OpenAI-compatible endpoint — including
+[OpenRouter](https://openrouter.ai), which fronts many models (some free):
+
+```dotenv
+CLAIM_GUARD_LLM_PROVIDER=openai_compatible
+CLAIM_GUARD_LLM_MODEL=google/gemini-2.0-flash-exp:free
+CLAIM_GUARD_LLM_API_KEY=your_openrouter_key
+CLAIM_GUARD_LLM_BASE_URL=https://openrouter.ai/api/v1
+```
+
+Swap `CLAIM_GUARD_LLM_MODEL` for any OpenRouter model id, including free
+(`:free`) or stealth alpha models. Models that lack strict JSON-schema support
+are handled automatically (the client falls back to JSON mode and validates
+locally), but weaker models may fail extraction more often — test first.
+
+**Testing models before committing to one:** from `backend/`, copy
+`scripts/probe_models.example.json`, list the models you want to compare, set
+the key environment variables, and run:
+
+```bash
+cd backend
+uv run python scripts/llm_model_probe.py --models scripts/probe_models.example.json
+```
+
+It scores each model on connectivity/latency, the wrong-part mapping trap
+(a model that picks the fan belt for a radiator grille is unusable for
+mapping), and line extraction from the Audatex-style fixture.
+
+**Data governance:** free/community models may log or train on inputs. The
+probe only ever sends the synthetic fixtures in this repository. For real
+claim documents, use a paid provider under the insurer's data terms (Gemini
+paid tier or Azure OpenAI in the company tenant), never free-tier routing.
+
 ## 4. Scanned documents (Azure Document Intelligence)
 
 Required for photographed or scanned invoices; native PDFs work without it.
