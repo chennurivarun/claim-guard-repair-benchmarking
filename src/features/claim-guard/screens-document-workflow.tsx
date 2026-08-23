@@ -469,6 +469,14 @@ export function UploadProcessingWorkflow({
         try {
           const uploaded = await uploadCurrentDocument(file, caseReference)
           latestResult = await processUploadedDocument(uploaded.id)
+          if (latestResult?.metrics?.llm_failures?.length) {
+            toast.info("AI reading was unavailable for part of this batch", {
+              description:
+                "Affected documents were processed with the standard reader and routed to Manual review where needed. Reprocessing later usually restores AI reading.",
+              id: "ai-degraded",
+              duration: 9000,
+            })
+          }
           setBatchRows((current) =>
             current.map((row) =>
               row.id === batchRowId

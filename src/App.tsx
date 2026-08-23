@@ -50,6 +50,7 @@ import {
   approveResearchItem,
   recordSettlement,
   requestReport,
+  friendlyAiUnavailableMessage,
   runClaimComparison,
   startLineResearch,
   type ManualResearchInput,
@@ -297,8 +298,9 @@ export function App() {
   }
 
   async function refreshComparison(invoiceId?: string) {
-    await runClaimComparison(workspace.claim.id)
-    return refreshWorkspace(invoiceId)
+    const run = await runClaimComparison(workspace.claim.id)
+    await refreshWorkspace(invoiceId)
+    return run
   }
 
   async function handleRunComparison(
@@ -310,9 +312,17 @@ export function App() {
     }
     setComparisonSaving(true)
     try {
-      await refreshComparison(workspace.invoice.id)
+      const run = await refreshComparison(workspace.invoice.id)
       navigate(destination)
       toast.success("Ontology mapping and price comparison completed")
+      const aiNotice = friendlyAiUnavailableMessage(run?.ai_failure_code)
+      if (aiNotice) {
+        toast.info("AI assistance was unavailable for this run", {
+          description: aiNotice,
+          id: "ai-degraded",
+          duration: 9000,
+        })
+      }
     } catch (error) {
       toast.error("Comparison could not run", {
         description: getApiErrorMessage(error),

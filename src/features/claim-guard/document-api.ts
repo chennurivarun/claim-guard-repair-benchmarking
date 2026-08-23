@@ -79,6 +79,7 @@ export interface DocumentProcessingResult {
     engineer_assessments?: number
     manual_review?: boolean
     manual_review_reason?: string
+    llm_failures?: string[]
   }
   document: UploadedDocument
   reprocess_required?: boolean

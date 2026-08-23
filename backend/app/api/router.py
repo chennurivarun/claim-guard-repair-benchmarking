@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict
 from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, Decimal
@@ -136,6 +137,8 @@ from app.services.vehicle_classification import (
     normalise_registration,
     validate_vehicle_classification,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 DatabaseSession = Annotated[Session, Depends(get_db)]
@@ -687,11 +690,26 @@ def run_document_pipeline(
     try:
         run = process_document(db, document)
         db.commit()
-    except Exception as exc:
+    except ValueError as exc:
+        # Validation errors carry messages written for the handler; pass them through.
         db.rollback()
         raise HTTPException(
             status_code=422,
             detail={"code": "PDF_PROCESSING_FAILED", "message": str(exc)},
+        ) from exc
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Document processing failed for document %s", document_id)
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "PDF_PROCESSING_FAILED",
+                "message": (
+                    "The document could not be processed because of an internal "
+                    "error. The uploaded file has been kept safely - try "
+                    "processing it again, and contact support if this repeats."
+                ),
+            },
         ) from exc
     return {
         "run_id": run.id,

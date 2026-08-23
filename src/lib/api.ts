@@ -368,12 +368,42 @@ export function fetchHistoricalObservation(
   )
 }
 
-export function runClaimComparison(caseReference: string) {
+export interface ComparisonRunPayload {
+  status: string
+  line_count: number
+  mapped_count: number
+  challenged_line_count: number
+  ai_status: string
+  ai_failure_code: string | null
+}
+
+export function runClaimComparison(
+  caseReference: string
+): Promise<ComparisonRunPayload> {
   return requestJson(
     `/api/v1/claims/${encodeURIComponent(caseReference)}/compare`,
     { method: "POST" },
     120_000
   )
+}
+
+/** Plain-language explanation for an AI failure code, or null when the run was
+ * fine (or AI is intentionally not configured). Shown as an informational
+ * notice, never an error: the deterministic pipeline has already completed. */
+export function friendlyAiUnavailableMessage(
+  failureCode: string | null | undefined
+): string | null {
+  if (!failureCode) return null
+  switch (failureCode) {
+    case "LLM_RATE_LIMITED":
+      return "The AI service reached its rate limit, so this run used the standard method only. Wait a minute and run it again to add AI assistance."
+    case "LLM_TIMEOUT":
+      return "The AI service took too long to respond, so this run used the standard method only. Running it again usually succeeds."
+    case "LLM_AUTH_ERROR":
+      return "The AI service rejected the configured key, so this run used the standard method only. Check CLAIM_GUARD_LLM_API_KEY in backend/.env."
+    default:
+      return "The AI service was unavailable, so this run used the standard method only. Results are still valid; run again later to add AI assistance."
+  }
 }
 
 export function fetchBenchmarkDashboard(filters?: {
