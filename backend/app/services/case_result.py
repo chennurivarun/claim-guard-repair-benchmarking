@@ -1549,6 +1549,16 @@ def build_claim_workspace(
                 "queryText": task.query_text,
                 "status": _display_status(suggestion.status if suggestion else task.status),
                 "sourceAllowListVersion": task.source_allow_list_version,
+                # Task B2: distinguish machine-staged proposals (from an unmatched
+                # priced invoice line) from reviewer-triggered research in the UI.
+                "initiatedAutomatically": task.initiated_automatically,
+                "sourceType": (
+                    ((suggestion.raw_suggestion_json or {}).get("workflow") or {}).get(
+                        "source_type"
+                    )
+                    if suggestion
+                    else None
+                ),
                 "candidate": suggestion.suggested_canonical_name if suggestion else None,
                 "itemType": _enum_value(suggestion.suggested_item_type) if suggestion else None,
                 "category": suggestion.suggested_category if suggestion else None,
