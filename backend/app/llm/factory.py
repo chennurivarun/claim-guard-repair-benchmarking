@@ -66,3 +66,21 @@ def build_invoice_vision_extractor(settings: Settings) -> MultimodalInvoiceExtra
         _build_client(settings, model_id=model_id),
         max_pages=settings.llm_vision_max_pages,
     )
+
+
+def build_invoice_text_extractor(settings: Settings) -> MultimodalInvoiceExtractor | None:
+    """Build the text-only "universal reader" tier; on by default once an LLM is configured.
+
+    Unlike the vision extractor, this tier never needs a vision-capable model or rendered
+    page images, so it can recover documents even when llm_vision_enabled stays False.
+    """
+
+    if not settings.llm_text_extraction_enabled or llm_configuration_status(settings) != "configured":
+        return None
+    model_id = settings.llm_model.strip()
+    if not model_id:
+        return None
+    return MultimodalInvoiceExtractor(
+        _build_client(settings, model_id=model_id),
+        max_pages=settings.llm_vision_max_pages,
+    )

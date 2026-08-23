@@ -44,7 +44,7 @@ from app.extraction.calculation_validator import validate_invoice
 from app.extraction.docx_ingest import docx_to_pdf_bytes
 from app.extraction.engineer_assessment_parser import parse_engineer_assessment
 from app.extraction.pdf_pipeline import PDFPipeline, PipelineConfig
-from app.llm.factory import build_invoice_vision_extractor
+from app.llm.factory import build_invoice_text_extractor, build_invoice_vision_extractor
 from app.models import (
     AssessmentOperation,
     Case,
@@ -421,14 +421,17 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
     output_dir = Path(settings.storage_dir) / "cases" / case.id / document.sha256[:12] / "pages"
     cloud_ocr = _build_cloud_ocr(settings)
     vision_extractor = build_invoice_vision_extractor(settings)
+    text_extractor = build_invoice_text_extractor(settings)
     pipeline = PDFPipeline(
         PipelineConfig(
             max_pages=settings.max_pdf_pages,
             ocr_enabled=settings.document_ocr_provider in {"auto", "tesseract"},
             vision_max_batches=settings.llm_vision_max_batches,
+            text_max_batches=settings.llm_text_max_batches,
         ),
         cloud_ocr=cloud_ocr,
         vision_extractor=vision_extractor,
+        text_extractor=text_extractor,
     )
     try:
         analysis = pipeline.analyse(document.storage_path, output_dir)
@@ -498,47 +501,59 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
                 assessment_confidence = extracted_assessment.extraction_confidence
                 assessment_payload = extracted_assessment.model_dump(mode="json")
             else:
-                raise ValueError(
-                    "Engineer assessment extraction did not produce usable repair operations."
+                # Deterministic parsing, vision, and the text-only LLM tier all failed to
+                # produce usable repair operations. This must never dead-end the document:
+                # fall through to manual review instead of failing the whole upload.
+                assessment_fields = None
+                assessment_operations = []
+                assessment_confidence = None
+                assessment_payload = None
+
+            if assessment_fields is not None:
+                assessment_fields["damage_areas_json"] = assessment_fields.pop(
+                    "damage_areas", None
                 )
-            assessment_fields["damage_areas_json"] = assessment_fields.pop(
-                "damage_areas", None
-            )
-            assessment = EngineerAssessment(
-                case_id=case.id,
-                document_id=document.id,
-                extraction_confidence=assessment_confidence,
-                review_status=(
-                    ReviewStatus.APPROVED
-                    if assessment_confidence > settings.auto_accept_confidence_threshold
-                    else ReviewStatus.PENDING
-                ),
-                extraction_payload_json=assessment_payload,
-                **assessment_fields,
-            )
-            session.add(assessment)
-            session.flush()
-            for operation in assessment_operations:
-                page_row = page_rows.get(operation.page_number)
-                session.add(
-                    AssessmentOperation(
-                        assessment_id=assessment.id,
-                        sequence_no=operation.sequence_no,
-                        category=operation.category,
-                        operation_code=operation.code,
-                        part_number=getattr(operation, "part_number", None),
-                        raw_description=operation.description,
-                        normalised_description=normalise_operation(operation.description),
-                        work_units=operation.work_units,
-                        hours=operation.hours,
-                        quantity=operation.quantity,
-                        unit_price_net=operation.unit_price,
-                        total_net=operation.total,
-                        source_page_id=page_row.id if page_row else None,
-                        extraction_confidence=assessment_confidence,
+                assessment = EngineerAssessment(
+                    case_id=case.id,
+                    document_id=document.id,
+                    extraction_confidence=assessment_confidence,
+                    review_status=(
+                        ReviewStatus.APPROVED
+                        if assessment_confidence > settings.auto_accept_confidence_threshold
+                        else ReviewStatus.PENDING
+                    ),
+                    extraction_payload_json=assessment_payload,
+                    **assessment_fields,
+                )
+                session.add(assessment)
+                session.flush()
+                for operation in assessment_operations:
+                    page_row = page_rows.get(operation.page_number)
+                    session.add(
+                        AssessmentOperation(
+                            assessment_id=assessment.id,
+                            sequence_no=operation.sequence_no,
+                            category=operation.category,
+                            operation_code=operation.code,
+                            part_number=getattr(operation, "part_number", None),
+                            raw_description=operation.description,
+                            normalised_description=normalise_operation(operation.description),
+                            work_units=operation.work_units,
+                            hours=operation.hours,
+                            quantity=operation.quantity,
+                            unit_price_net=operation.unit_price,
+                            total_net=operation.total,
+                            source_page_id=page_row.id if page_row else None,
+                            extraction_confidence=assessment_confidence,
+                        )
                     )
+                session.flush()
+            else:
+                analysis.manual_review_reason = (
+                    analysis.manual_review_reason
+                    or "Engineer assessment could not be parsed automatically; manual "
+                    "review required."
                 )
-            session.flush()
         elif analysis.invoices:
             document.document_kind = DocumentKind.REPAIR_INVOICE
         else:
@@ -735,7 +750,9 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
         if analysis.manual_review_reason:
             run.metrics_json["manual_review"] = True
             run.metrics_json["manual_review_reason"] = analysis.manual_review_reason
-        if engineer_pages and not analysis.invoices:
+        if analysis.llm_failures:
+            run.metrics_json["llm_failures"] = analysis.llm_failures
+        if engineer_pages and not analysis.invoices and assessment_fields is not None:
             run.metrics_json["engineer_assessments"] = 1
     except Exception as exc:
         document_id = document.id

@@ -65,6 +65,17 @@ class ExtractedLine(BaseModel):
     derived_net: bool = False
     source: FieldSource
 
+    @property
+    def benchmarkable(self) -> bool:
+        """Return whether this single line carries priced part evidence for benchmarking."""
+
+        return (
+            bool(self.raw_description.strip())
+            and (self.item_kind.casefold() == "part" or bool(self.part_number))
+            and self.line_total_net is not None
+            and self.line_total_net > 0
+        )
+
 
 class InvoiceTotals(BaseModel):
     model_config = ConfigDict(json_encoders={Decimal: str})
@@ -161,13 +172,7 @@ class ExtractedInvoice(BaseModel):
     def has_benchmarkable_part_lines(self) -> bool:
         """Return whether the invoice contains priced part evidence for benchmarking."""
 
-        return any(
-            bool(line.raw_description.strip())
-            and (line.item_kind.casefold() == "part" or bool(line.part_number))
-            and line.line_total_net is not None
-            and line.line_total_net > 0
-            for line in self.line_items
-        )
+        return any(line.benchmarkable for line in self.line_items)
 
 
 class EngineerAssessmentFields(BaseModel):
@@ -253,6 +258,7 @@ class DocumentAnalysis(BaseModel):
     invoices: list[ExtractedInvoice] = Field(default_factory=list)
     engineer_assessments: list[ExtractedEngineerAssessment] = Field(default_factory=list)
     manual_review_reason: str | None = None
+    llm_failures: list[str] = Field(default_factory=list)
 
 
 class MathFinding(BaseModel):

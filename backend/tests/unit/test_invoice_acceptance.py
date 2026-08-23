@@ -85,7 +85,10 @@ def test_vat_only_fragment_is_routed_to_manual_review(
 
     analysis = pipeline.analyse(source, tmp_path / "pages")
 
-    assert analysis.invoices == []
+    # The invoice is retained (nothing is discarded) but still routed to manual
+    # review because it carries no benchmarkable line evidence.
+    assert len(analysis.invoices) == 1
+    assert analysis.invoices[0].line_items == []
     assert analysis.manual_review_reason == (
         "Line-item information is not available. The invoice appears to be "
         "rolled up and cannot be benchmarked automatically."
