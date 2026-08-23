@@ -21,7 +21,6 @@ import {
   ExtractedInvoiceScreen,
   UploadProcessingScreen,
 } from "@/features/claim-guard/screens-liability-documents"
-import { OverviewScreen } from "@/features/claim-guard/screens-overview"
 import { ReviewFindingsScreen } from "@/features/claim-guard/screens-review-findings"
 import { BenchmarkDashboardScreen } from "@/features/claim-guard/screens-benchmark-dashboard"
 import { KnowledgeGraphScreen } from "@/features/claim-guard/screens-knowledge-graph"
@@ -191,6 +190,28 @@ export function App() {
     (total, invoice) => total + (invoice.challenge_review?.unresolved ?? 0),
     0
   )
+  const challengedInvoices = invoices.filter(
+    (invoice) => (invoice.challenge_review?.positive ?? 0) > 0
+  )
+  // The Review findings screen only makes sense for invoices with a positive
+  // price challenge; every other screen keeps the full uploaded-invoice list.
+  const invoiceSelectorOptions =
+    activeScreen === "price-comparison" ? challengedInvoices : invoices
+
+  useEffect(() => {
+    if (activeScreen !== "price-comparison") return
+    const qualifying = invoices.filter(
+      (invoice) => (invoice.challenge_review?.positive ?? 0) > 0
+    )
+    if (!qualifying.length) return
+    if (qualifying.some((invoice) => invoice.id === workspace.invoice.id)) {
+      return
+    }
+    void handleInvoiceSelection(qualifying[0].id)
+    // handleInvoiceSelection is a stable function declaration recreated each
+    // render; the guards above already prevent redundant or looping calls.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeScreen, invoices, workspace.invoice.id])
 
   function applyWorkspace(nextWorkspace: ClaimWorkspace) {
     setWorkspace(nextWorkspace)
@@ -736,20 +757,6 @@ export function App() {
 
   let screen
   switch (activeScreen) {
-    case "claim-liability":
-      screen = (
-        <OverviewScreen
-          key={`${workspace.liability.status}-${workspace.liability.humanConfirmed}-${workspace.liability.rationale ?? ""}`}
-          workspace={operationalWorkspace}
-          status={liabilityStatus}
-          confirmed={liabilityConfirmed}
-          onStatusChange={changeLiabilityStatus}
-          onConfirm={(decision) => void handleLiabilityConfirmation(decision)}
-          onReviewFindings={() => navigate("price-comparison")}
-          confirming={liabilitySaving}
-        />
-      )
-      break
     case "upload-processing":
       screen = (
         <UploadProcessingScreen
@@ -839,11 +846,18 @@ export function App() {
               ? pendingReviewInvoice.invoice_number || "another invoice"
               : null
           }
+          liabilityStatus={liabilityStatus}
+          liabilityConfirmed={liabilityConfirmed}
+          liabilityConfirming={liabilitySaving}
+          onLiabilityStatusChange={changeLiabilityStatus}
+          onConfirmLiability={(decision) =>
+            void handleLiabilityConfirmation(decision)
+          }
+          onDecision={handleChallengeDecision}
           onFinalise={() => void handleChallengeFinalise()}
           onSettlement={() => setSettlementOpen(true)}
           onDownload={handleReport}
           onBackToFindings={() => navigate("price-comparison")}
-          onReviewLiability={() => navigate("claim-liability")}
           onReviewPendingInvoice={
             pendingReviewInvoice
               ? () => {
@@ -896,13 +910,30 @@ export function App() {
         liabilityStatus={liabilityStatus}
         apiMode={apiMode}
       >
-        {invoices.length > 1 ? (
+        {activeScreen === "price-comparison" &&
+        invoices.length > 0 &&
+        !challengedInvoices.length ? (
+          <div className="mb-4 rounded-lg border border-dashed bg-card px-4 py-6 text-center">
+            <p className="text-sm font-medium">
+              No invoices with price challenges yet
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              None of the uploaded invoices in this claim have a positive
+              price challenge to review.
+            </p>
+          </div>
+        ) : invoiceSelectorOptions.length > 1 ? (
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-card px-4 py-3">
             <div>
-              <p className="text-sm font-medium">Uploaded invoices</p>
+              <p className="text-sm font-medium">
+                {activeScreen === "price-comparison"
+                  ? "Challenged invoices"
+                  : "Uploaded invoices"}
+              </p>
               <p className="text-xs text-muted-foreground">
-                Switch invoice details; benchmarking uses all uploaded invoices
-                in this claim batch.
+                {activeScreen === "price-comparison"
+                  ? "Only invoices with a positive price challenge are shown here."
+                  : "Switch invoice details; benchmarking uses all uploaded invoices in this claim batch."}
               </p>
             </div>
             <select
@@ -914,7 +945,7 @@ export function App() {
               }
               aria-label="Select uploaded invoice"
             >
-              {invoices.map((invoice, index) => (
+              {invoiceSelectorOptions.map((invoice, index) => (
                 <option key={invoice.id} value={invoice.id}>
                   {invoiceDisplayLabel(invoice, index)}
                 </option>

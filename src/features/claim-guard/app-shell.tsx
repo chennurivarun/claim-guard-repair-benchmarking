@@ -67,7 +67,6 @@ const primaryNavigation = [
 }>
 
 const administration = [
-  { id: "claim-liability", label: "Claim details", icon: LayoutDashboardIcon },
   { id: "document-pages", label: "Source document", icon: FileScanIcon },
   {
     id: "ontology-mapping",

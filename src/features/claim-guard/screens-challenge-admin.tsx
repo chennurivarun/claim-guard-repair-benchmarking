@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import {
   ArrowRightIcon,
   BadgeCheckIcon,
@@ -95,6 +95,11 @@ import type {
   PriceObservationRecord,
   ResearchQueueItem,
 } from "./types"
+import {
+  fetchHistoricalObservation,
+  getApiErrorMessage,
+  type HistoricalObservationPayload,
+} from "@/lib/api"
 
 function ChallengeSummary({ workspace }: { workspace: ClaimWorkspace }) {
   return (
@@ -158,6 +163,135 @@ function differenceLabel(value?: number | null) {
   return `Difference ${sign}${formatMoney(Math.abs(value))}`
 }
 
+const HISTORICAL_OBSERVATION_PATH_PREFIX = "/api/v1/historical-observations/"
+
+function HistoricalObservationDialog({
+  observationId,
+  onClose,
+}: {
+  observationId: string | null
+  onClose: () => void
+}) {
+  const [record, setRecord] = useState<HistoricalObservationPayload | null>(
+    null
+  )
+  const [error, setError] = useState<string | null>(null)
+
+  // HistoricalObservationDialog is remounted per observation id (see the
+  // `key` on its call site), so a fresh mount always starts from the initial
+  // record/error state below and this effect only ever needs to populate it.
+  useEffect(() => {
+    if (!observationId) return
+    let active = true
+    fetchHistoricalObservation(observationId)
+      .then((result) => {
+        if (active) setRecord(result)
+      })
+      .catch((reason) => {
+        if (active) setError(getApiErrorMessage(reason))
+      })
+    return () => {
+      active = false
+    }
+  }, [observationId])
+
+  const loading = observationId !== null && !record && !error
+
+  const vehicle = record?.vehicle
+    ? [
+        record.vehicle.make,
+        record.vehicle.model,
+        record.vehicle.variant,
+        record.vehicle.year,
+      ]
+        .filter(Boolean)
+        .join(" ")
+    : ""
+
+  return (
+    <Dialog
+      open={observationId !== null}
+      onOpenChange={(open) => !open && onClose()}
+    >
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Historical source record</DialogTitle>
+          <DialogDescription>
+            Persisted historical claim observation used as comparison
+            evidence.
+          </DialogDescription>
+        </DialogHeader>
+        {loading ? (
+          <p className="text-sm text-muted-foreground">
+            Loading source record…
+          </p>
+        ) : error ? (
+          <Alert variant="destructive">
+            <AlertTitle>Source record unavailable</AlertTitle>
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        ) : record ? (
+          <div className="grid gap-4 text-sm">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <p className="text-xs text-muted-foreground">
+                  Claim reference
+                </p>
+                <p className="font-medium">
+                  {record.claim_reference ?? "—"}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Invoice date</p>
+                <p className="font-medium">{record.invoice_date ?? "—"}</p>
+              </div>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Description</p>
+              <p className="font-medium">{record.description ?? "—"}</p>
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <p className="text-xs text-muted-foreground">
+                  Line total (net)
+                </p>
+                <p className="font-medium tabular-nums">
+                  {formatMoney(record.line_total_net ?? undefined)}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">
+                  Approved (net)
+                </p>
+                <p className="font-medium tabular-nums">
+                  {formatMoney(record.approved_amount_net ?? undefined)}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">
+                  Settled (net)
+                </p>
+                <p className="font-medium tabular-nums">
+                  {formatMoney(record.settled_amount_net ?? undefined)}
+                </p>
+              </div>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Vehicle</p>
+              <p className="font-medium">{vehicle || "—"}</p>
+            </div>
+            {record.source_record_id ? (
+              <p className="text-xs text-muted-foreground">
+                Source record ID: {record.source_record_id}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 export function LineEvidenceSheet({
   line,
   onClose,
@@ -174,6 +308,7 @@ export function LineEvidenceSheet({
       p90.percentageDifference > p90ThresholdPct &&
       p90.difference >= MINIMUM_CHALLENGE_AMOUNT
   )
+  const [observationId, setObservationId] = useState<string | null>(null)
   return (
     <Sheet open={line !== null} onOpenChange={(open) => !open && onClose()}>
       <SheetContent className="w-full sm:max-w-2xl">
@@ -473,15 +608,41 @@ export function LineEvidenceSheet({
                                 </p>
                               </div>
                               {sourceReference ? (
-                                <a
-                                  href={sourceReference}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-primary underline-offset-4 hover:underline"
-                                >
-                                  Open source record
-                                  <ExternalLinkIcon className="size-3" />
-                                </a>
+                                sourceReference.startsWith("http") ? (
+                                  <a
+                                    href={sourceReference}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-primary underline-offset-4 hover:underline"
+                                  >
+                                    Open source record
+                                    <ExternalLinkIcon className="size-3" />
+                                  </a>
+                                ) : sourceReference.startsWith(
+                                    HISTORICAL_OBSERVATION_PATH_PREFIX
+                                  ) ? (
+                                  <Button
+                                    type="button"
+                                    variant="link"
+                                    size="sm"
+                                    className="mt-2 h-auto p-0 text-xs font-medium"
+                                    onClick={() =>
+                                      setObservationId(
+                                        sourceReference.slice(
+                                          HISTORICAL_OBSERVATION_PATH_PREFIX.length
+                                        )
+                                      )
+                                    }
+                                  >
+                                    View source record
+                                    <ExternalLinkIcon className="size-3" />
+                                  </Button>
+                                ) : (
+                                  <p className="mt-2 flex items-center gap-1 text-xs break-words text-muted-foreground">
+                                    <FileTextIcon className="size-3 shrink-0" />
+                                    {sourceReference}
+                                  </p>
+                                )
                               ) : null}
                             </div>
                           )
@@ -499,6 +660,11 @@ export function LineEvidenceSheet({
           </ScrollArea>
         ) : null}
       </SheetContent>
+      <HistoricalObservationDialog
+        key={observationId ?? "closed"}
+        observationId={observationId}
+        onClose={() => setObservationId(null)}
+      />
     </Sheet>
   )
 }

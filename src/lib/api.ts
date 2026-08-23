@@ -127,6 +127,25 @@ export interface BenchmarkDashboardPayload {
   }
 }
 
+export interface HistoricalObservationPayload {
+  id: string
+  claim_reference: string | null
+  source_record_id: string | null
+  invoice_date: string | null
+  description: string | null
+  line_total_net: number | null
+  approved_amount_net: number | null
+  settled_amount_net: number | null
+  vehicle: {
+    make: string | null
+    model: string | null
+    variant: string | null
+    year: number | null
+    class: string | null
+  }
+  source: Record<string, unknown>
+}
+
 export interface DataReadinessPayload {
   ready: boolean
   ontology_items: number
@@ -333,6 +352,14 @@ export function fetchEngineerAssessments(
 
 export function fetchDataReadiness(): Promise<DataReadinessPayload> {
   return requestJson("/api/v1/readiness")
+}
+
+export function fetchHistoricalObservation(
+  observationId: string
+): Promise<HistoricalObservationPayload> {
+  return requestJson(
+    `/api/v1/historical-observations/${encodeURIComponent(observationId)}`
+  )
 }
 
 export function runClaimComparison(caseReference: string) {
