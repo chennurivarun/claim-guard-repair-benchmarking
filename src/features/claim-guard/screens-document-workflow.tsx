@@ -310,12 +310,14 @@ export function UploadProcessingWorkflow({
   onProcessed,
   onContinue,
   onOpenOntologyLibrary,
+  onOpenManualReview,
 }: {
   caseReference: string
   finalised: boolean
   onProcessed: () => Promise<void>
   onContinue: () => void
   onOpenOntologyLibrary: () => void
+  onOpenManualReview?: (documentId: string) => void
 }) {
   const [pages, setPages] = useState<DocumentPageRecord[]>([])
   const [documents, setDocuments] = useState<UploadedDocument[]>([])
@@ -666,6 +668,7 @@ export function UploadProcessingWorkflow({
             documents={manualReviewDocuments}
             emptyMessage="No documents currently require manual review."
             manualReview
+            onOpenManualReview={onOpenManualReview}
           />
         </TabsContent>
       </Tabs>
@@ -711,10 +714,12 @@ function DocumentQueue({
   documents,
   emptyMessage,
   manualReview = false,
+  onOpenManualReview,
 }: {
   documents: UploadedDocument[]
   emptyMessage: string
   manualReview?: boolean
+  onOpenManualReview?: (documentId: string) => void
 }) {
   return (
     <DataCard
@@ -749,7 +754,18 @@ function DocumentQueue({
                 </TableCell>
                 <TableCell>
                   <div className="flex justify-end">
-                    <StatusBadge status={manualReview ? "MANUAL REVIEW" : "READY"} />
+                    {manualReview && onOpenManualReview ? (
+                      <button
+                        type="button"
+                        onClick={() => onOpenManualReview(document.id)}
+                        className="cursor-pointer"
+                        aria-label={`Open manual review for ${document.filename}`}
+                      >
+                        <StatusBadge status="MANUAL REVIEW" />
+                      </button>
+                    ) : (
+                      <StatusBadge status={manualReview ? "MANUAL REVIEW" : "READY"} />
+                    )}
                   </div>
                 </TableCell>
               </TableRow>

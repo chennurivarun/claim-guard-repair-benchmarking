@@ -39,7 +39,9 @@ import {
 
 import {
   ChallengeDecisionDialog,
+  InlineMappingApproval,
   LineEvidenceSheet,
+  type ResearchFormValues,
 } from "./screens-challenge-admin"
 import { formatMoney } from "./format"
 import { documentImageUrl } from "./document-api"
@@ -49,6 +51,7 @@ import type { ClaimWorkspace, InvoiceLine } from "./types"
 import {
   fetchEngineerAssessments,
   type EngineerAssessmentPayload,
+  type MappingDecisionInput,
 } from "@/lib/api"
 
 type DecisionMode = "approve" | "reject" | "edit"
@@ -280,6 +283,10 @@ export function ReviewFindingsScreen({
   onDecision,
   onInspect,
   onContinue,
+  onMappingDecision,
+  mappingSavingLineId,
+  onProposeNewItem,
+  researchSaving,
 }: {
   workspace: ClaimWorkspace
   p90ThresholdPct: number
@@ -295,7 +302,15 @@ export function ReviewFindingsScreen({
   ) => Promise<void>
   onInspect: (line: InvoiceLine) => void
   onContinue: () => void
+  onMappingDecision?: (
+    line: InvoiceLine,
+    input: Omit<MappingDecisionInput, "actor">
+  ) => Promise<void>
+  mappingSavingLineId?: string | null
+  onProposeNewItem?: (line: InvoiceLine, values: ResearchFormValues) => Promise<void>
+  researchSaving?: boolean
 }) {
+  const ontologyOptions = workspace.ontologyBank?.items ?? []
   const challenged = workspace.lines
     .filter((line) => line.challenge > 0)
     .sort((a, b) => b.challenge - a.challenge)
@@ -366,6 +381,11 @@ export function ReviewFindingsScreen({
           line={evidenceLine}
           p90ThresholdPct={p90ThresholdPct}
           onClose={() => setEvidenceLine(null)}
+          ontologyOptions={ontologyOptions}
+          mappingSaving={mappingSavingLineId === evidenceLine?.id}
+          onMappingDecision={onMappingDecision}
+          researchSaving={researchSaving}
+          onProposeNewItem={onProposeNewItem}
         />
       </>
     )
@@ -402,17 +422,29 @@ export function ReviewFindingsScreen({
       <EngineerAssessmentCard assessment={engineerAssessment} />
 
       {!mappingApproved ? (
-        <Alert>
-          <InfoIcon />
-          <AlertTitle>
-            Provisional finding: repair item match needs approval
-          </AlertTitle>
-          <AlertDescription>
-            Approve this line&apos;s repair item match in Repair item matching
-            before making a challenge decision. The price evidence remains
-            visible for review, but it is not yet actionable.
-          </AlertDescription>
-        </Alert>
+        <div className="flex flex-col gap-3">
+          <Alert>
+            <InfoIcon />
+            <AlertTitle>
+              Provisional finding: repair item match needs approval
+            </AlertTitle>
+            <AlertDescription>
+              Approve, change, or propose a new repair item match below before
+              making a challenge decision. The price evidence remains visible
+              for review, but it is not yet actionable.
+            </AlertDescription>
+          </Alert>
+          {onMappingDecision ? (
+            <InlineMappingApproval
+              line={line}
+              ontologyOptions={ontologyOptions}
+              mappingSaving={mappingSavingLineId === line.id}
+              onMappingDecision={onMappingDecision}
+              researchSaving={researchSaving}
+              onProposeNewItem={onProposeNewItem}
+            />
+          ) : null}
+        </div>
       ) : null}
 
       <div className="grid min-w-0 gap-6 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.65fr)]">
@@ -747,6 +779,11 @@ export function ReviewFindingsScreen({
         line={evidenceLine}
         p90ThresholdPct={p90ThresholdPct}
         onClose={() => setEvidenceLine(null)}
+        ontologyOptions={ontologyOptions}
+        mappingSaving={mappingSavingLineId === evidenceLine?.id}
+        onMappingDecision={onMappingDecision}
+        researchSaving={researchSaving}
+        onProposeNewItem={onProposeNewItem}
       />
       <ChallengeDecisionDialog
         key={`${decisionLine?.id ?? "closed"}-${decisionMode ?? "none"}`}

@@ -153,6 +153,7 @@ export function App() {
   )
   const [comparisonSaving, setComparisonSaving] = useState(false)
   const [invoices, setInvoices] = useState<ClaimInvoiceSummary[]>([])
+  const [focusDocumentId, setFocusDocumentId] = useState<string | null>(null)
   const [p90ThresholdPct, setP90ThresholdPct] = useState(10)
   const operationalWorkspace = useMemo(
     () => applyP90Policy(workspace, p90ThresholdPct),
@@ -228,6 +229,11 @@ export function App() {
 
   function navigate(screen: ScreenId) {
     setActiveScreen(screen)
+  }
+
+  function openManualReview(documentId: string) {
+    setFocusDocumentId(documentId)
+    navigate("missing-items")
   }
 
   function changeLiabilityStatus(status: LiabilityStatus) {
@@ -767,6 +773,7 @@ export function App() {
           }}
           onContinue={() => navigate("benchmark-dashboard")}
           onOpenOntologyLibrary={() => navigate("ontology-bank")}
+          onOpenManualReview={openManualReview}
         />
       )
       break
@@ -816,6 +823,10 @@ export function App() {
           onDecision={handleChallengeDecision}
           onInspect={inspectLine}
           onContinue={() => navigate("challenge-review")}
+          onMappingDecision={handleMappingDecision}
+          mappingSavingLineId={mappingSavingLineId}
+          onProposeNewItem={handleResearch}
+          researchSaving={researchSaving}
         />
       )
       break
@@ -827,6 +838,7 @@ export function App() {
           saving={researchSaving}
           onResearch={handleResearch}
           onApprove={handleResearchApproval}
+          focusDocumentId={focusDocumentId}
         />
       )
       break
@@ -854,6 +866,10 @@ export function App() {
             void handleLiabilityConfirmation(decision)
           }
           onDecision={handleChallengeDecision}
+          onMappingDecision={handleMappingDecision}
+          mappingSavingLineId={mappingSavingLineId}
+          onProposeNewItem={handleResearch}
+          researchSaving={researchSaving}
           onFinalise={() => void handleChallengeFinalise()}
           onSettlement={() => setSettlementOpen(true)}
           onDownload={handleReport}

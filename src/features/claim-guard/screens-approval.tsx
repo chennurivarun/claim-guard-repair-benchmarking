@@ -48,9 +48,11 @@ import { isMappingApproved } from "./mapping-rules"
 import {
   ChallengeDecisionDialog,
   LineEvidenceSheet,
+  type ResearchFormValues,
 } from "./screens-challenge-admin"
 import type { ClaimWorkspace, InvoiceLine, LiabilityStatus } from "./types"
 import { LIABILITY_STATUSES } from "./types"
+import type { MappingDecisionInput } from "@/lib/api"
 
 function LiabilityConfirmationPanel({
   workspace,
@@ -227,6 +229,10 @@ export function ApprovalScreen({
   onDownload,
   onBackToFindings,
   onReviewPendingInvoice,
+  onMappingDecision,
+  mappingSavingLineId,
+  onProposeNewItem,
+  researchSaving,
 }: {
   workspace: ClaimWorkspace
   p90ThresholdPct: number
@@ -258,6 +264,13 @@ export function ApprovalScreen({
   onDownload: (format: "docx" | "pdf") => void
   onBackToFindings: () => void
   onReviewPendingInvoice?: () => void
+  onMappingDecision?: (
+    line: InvoiceLine,
+    input: Omit<MappingDecisionInput, "actor">
+  ) => Promise<void>
+  mappingSavingLineId?: string | null
+  onProposeNewItem?: (line: InvoiceLine, values: ResearchFormValues) => Promise<void>
+  researchSaving?: boolean
 }) {
   const [evidenceLine, setEvidenceLine] = useState<InvoiceLine | null>(null)
   const [decisionLine, setDecisionLine] = useState<InvoiceLine | null>(null)
@@ -637,6 +650,11 @@ export function ApprovalScreen({
         line={evidenceLine}
         p90ThresholdPct={p90ThresholdPct}
         onClose={() => setEvidenceLine(null)}
+        ontologyOptions={workspace.ontologyBank?.items ?? []}
+        mappingSaving={mappingSavingLineId === evidenceLine?.id}
+        onMappingDecision={onMappingDecision}
+        researchSaving={researchSaving}
+        onProposeNewItem={onProposeNewItem}
       />
       <ChallengeDecisionDialog
         key={`${decisionLine?.id ?? "closed"}-${decisionMode ?? "none"}`}

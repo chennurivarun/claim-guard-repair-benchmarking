@@ -73,7 +73,7 @@ const administration = [
     label: "Repair item matching",
     icon: FolderSearch2Icon,
   },
-  { id: "missing-items", label: "Unmatched items", icon: GaugeIcon },
+  { id: "missing-items", label: "Manual review", icon: GaugeIcon },
   { id: "ontology-bank", label: "External price library", icon: LibraryBigIcon },
   { id: "knowledge-graph", label: "Knowledge graph", icon: Share2Icon },
 ] satisfies Array<{
