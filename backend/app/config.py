@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     llm_api_version: str = "2024-10-21"
     llm_timeout_seconds: float = Field(default=20.0, gt=0, le=120)
     llm_max_attempts: int = Field(default=2, ge=1, le=3)
+    # Independent of vision/text extraction: a document that finishes manual
+    # review should still get a plain-English briefing, even if extraction
+    # tiers are disabled for cost or policy reasons.
+    llm_briefing_enabled: bool = True
 
 
 @lru_cache(maxsize=1)

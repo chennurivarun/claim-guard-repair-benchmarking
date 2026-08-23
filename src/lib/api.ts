@@ -157,6 +157,7 @@ export interface ClaimInvoiceSummary {
   id: string
   invoice_number: string | null
   invoice_date: string | null
+  document_id?: string
   document_filename: string
   supplier_name: string | null
   totals: {
@@ -465,6 +466,45 @@ export function correctInvoiceLine(lineId: string, input: LineCorrectionInput) {
       line_total_net: input.lineTotalNet,
     }),
   })
+}
+
+export interface ManualLineInput {
+  description: string
+  quantity?: number
+  unit?: string
+  unitPriceNet?: number
+  lineTotalNet: number
+  vatRate?: number
+  itemKind?: string
+  partNumber?: string
+  pageNumber?: number
+  recordedBy: string
+}
+
+export function addManualInvoiceLine(
+  caseReference: string,
+  invoiceId: string,
+  input: ManualLineInput
+) {
+  return requestJson(
+    `/api/v1/claims/${encodeURIComponent(caseReference)}/invoices/${encodeURIComponent(invoiceId)}/lines`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        description: input.description,
+        quantity: input.quantity,
+        unit: input.unit,
+        unit_price_net: input.unitPriceNet,
+        line_total_net: input.lineTotalNet,
+        vat_rate: input.vatRate,
+        item_kind: input.itemKind ?? "part",
+        part_number: input.partNumber,
+        page_number: input.pageNumber,
+        recorded_by: input.recordedBy,
+      }),
+    }
+  )
 }
 
 export function decideExtractionLine(

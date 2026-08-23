@@ -16,10 +16,12 @@ import {
   FlaskConicalIcon,
   InfoIcon,
   PencilLineIcon,
+  PlusIcon,
   SearchIcon,
   ShieldCheckIcon,
   XCircleIcon,
 } from "lucide-react"
+import { toast } from "sonner"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -82,6 +84,7 @@ import { Textarea } from "@/components/ui/textarea"
 
 import { CalculationBreakdown } from "./calculation-breakdown"
 import { auditEvents, ontologyVersions } from "./demo-data"
+import { DocumentBriefingButton } from "./document-briefing"
 import {
   documentApiErrorMessage,
   documentImageUrl,
@@ -104,6 +107,15 @@ import {
   ScreenHeading,
   StatusBadge,
 } from "./shared"
+import {
+  addManualInvoiceLine,
+  fetchClaimInvoices,
+  fetchHistoricalObservation,
+  getApiErrorMessage,
+  type ClaimInvoiceSummary,
+  type HistoricalObservationPayload,
+  type MappingDecisionInput,
+} from "@/lib/api"
 import { cn } from "@/lib/utils"
 import type {
   ClaimWorkspace,
@@ -112,12 +124,6 @@ import type {
   PriceObservationRecord,
   ResearchQueueItem,
 } from "./types"
-import {
-  fetchHistoricalObservation,
-  getApiErrorMessage,
-  type HistoricalObservationPayload,
-  type MappingDecisionInput,
-} from "@/lib/api"
 
 function ChallengeSummary({ workspace }: { workspace: ClaimWorkspace }) {
   return (
@@ -1440,41 +1446,279 @@ function ResearchDialog({
   )
 }
 
+const MANUAL_LINE_ACTOR = "pilot.handler"
+
+const MANUAL_LINE_ITEM_KIND_OPTIONS = [
+  { value: "part", label: "Part" },
+  { value: "labour", label: "Labour" },
+  { value: "paint", label: "Paint" },
+  { value: "service", label: "Service" },
+  { value: "disposal", label: "Disposal" },
+  { value: "consumable", label: "Consumable" },
+  { value: "unknown", label: "Other" },
+] as const
+
+interface ManualLineFormValues {
+  description: string
+  quantity: string
+  unit: string
+  lineTotalNet: string
+  vatRate: string
+  partNumber: string
+  itemKind: string
+}
+
+const EMPTY_MANUAL_LINE_FORM: ManualLineFormValues = {
+  description: "",
+  quantity: "1",
+  unit: "each",
+  lineTotalNet: "",
+  vatRate: "20",
+  partNumber: "",
+  itemKind: "part",
+}
+
+function ManualLineEntryDialog({
+  document,
+  invoice,
+  open,
+  onOpenChange,
+  onSubmit,
+  saving,
+}: {
+  document: UploadedDocument | null
+  invoice: ClaimInvoiceSummary | null
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onSubmit: (
+    invoice: ClaimInvoiceSummary,
+    values: ManualLineFormValues
+  ) => Promise<void>
+  saving: boolean
+}) {
+  const [values, setValues] = useState<ManualLineFormValues>(
+    EMPTY_MANUAL_LINE_FORM
+  )
+
+  const lineTotalValue = Number(values.lineTotalNet)
+  const invalid =
+    !values.description.trim() ||
+    !Number.isFinite(lineTotalValue) ||
+    lineTotalValue <= 0
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Add line manually</DialogTitle>
+          <DialogDescription>
+            {document?.filename} · recorded as a handler-approved line so it
+            flows into mapping and comparison on the next run.
+          </DialogDescription>
+        </DialogHeader>
+
+        <FieldGroup>
+          <Field data-invalid={!values.description.trim()}>
+            <FieldLabel htmlFor="manual-line-description">
+              Description
+            </FieldLabel>
+            <Input
+              id="manual-line-description"
+              value={values.description}
+              onChange={(event) =>
+                setValues((current) => ({
+                  ...current,
+                  description: event.target.value,
+                }))
+              }
+              aria-invalid={!values.description.trim()}
+              aria-required="true"
+            />
+          </Field>
+          <FieldGroup className="grid sm:grid-cols-2">
+            <Field>
+              <FieldLabel htmlFor="manual-line-quantity">Quantity</FieldLabel>
+              <Input
+                id="manual-line-quantity"
+                type="number"
+                min="0"
+                step="0.01"
+                value={values.quantity}
+                onChange={(event) =>
+                  setValues((current) => ({
+                    ...current,
+                    quantity: event.target.value,
+                  }))
+                }
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="manual-line-unit">Unit</FieldLabel>
+              <Input
+                id="manual-line-unit"
+                value={values.unit}
+                onChange={(event) =>
+                  setValues((current) => ({
+                    ...current,
+                    unit: event.target.value,
+                  }))
+                }
+              />
+            </Field>
+          </FieldGroup>
+          <FieldGroup className="grid sm:grid-cols-2">
+            <Field
+              data-invalid={
+                !Number.isFinite(lineTotalValue) || lineTotalValue <= 0
+              }
+            >
+              <FieldLabel htmlFor="manual-line-total">Net total</FieldLabel>
+              <Input
+                id="manual-line-total"
+                type="number"
+                min="0.01"
+                step="0.01"
+                value={values.lineTotalNet}
+                onChange={(event) =>
+                  setValues((current) => ({
+                    ...current,
+                    lineTotalNet: event.target.value,
+                  }))
+                }
+                aria-invalid={
+                  !Number.isFinite(lineTotalValue) || lineTotalValue <= 0
+                }
+                aria-required="true"
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="manual-line-vat">VAT rate %</FieldLabel>
+              <Input
+                id="manual-line-vat"
+                type="number"
+                min="0"
+                max="100"
+                step="0.01"
+                value={values.vatRate}
+                onChange={(event) =>
+                  setValues((current) => ({
+                    ...current,
+                    vatRate: event.target.value,
+                  }))
+                }
+              />
+            </Field>
+          </FieldGroup>
+          <FieldGroup className="grid sm:grid-cols-2">
+            <Field>
+              <FieldLabel htmlFor="manual-line-kind">Item kind</FieldLabel>
+              <Select
+                value={values.itemKind}
+                onValueChange={(value) =>
+                  setValues((current) => ({ ...current, itemKind: value }))
+                }
+              >
+                <SelectTrigger id="manual-line-kind">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {MANUAL_LINE_ITEM_KIND_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="manual-line-part-number">
+                Part number
+              </FieldLabel>
+              <Input
+                id="manual-line-part-number"
+                value={values.partNumber}
+                onChange={(event) =>
+                  setValues((current) => ({
+                    ...current,
+                    partNumber: event.target.value,
+                  }))
+                }
+              />
+            </Field>
+          </FieldGroup>
+        </FieldGroup>
+
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            disabled={saving}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            disabled={invalid || saving || !invoice}
+            onClick={() => invoice && void onSubmit(invoice, values)}
+          >
+            {saving ? "Adding…" : "Add line"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function ManualReviewDocumentsSection({
   caseReference,
   focusDocumentId,
+  enabled = true,
 }: {
   caseReference: string
   focusDocumentId?: string | null
+  enabled?: boolean
 }) {
   const [documents, setDocuments] = useState<UploadedDocument[]>([])
   const [pages, setPages] = useState<DocumentPageRecord[]>([])
+  const [invoices, setInvoices] = useState<ClaimInvoiceSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [viewerPage, setViewerPage] = useState<DocumentPageRecord | null>(null)
+  const [lineEntryDocument, setLineEntryDocument] =
+    useState<UploadedDocument | null>(null)
+  const [lineEntrySaving, setLineEntrySaving] = useState(false)
   const rowRefs = useRef<Record<string, HTMLDivElement | null>>({})
 
-  useEffect(() => {
-    let active = true
+  const loadDocumentsAndInvoices = (isActive?: () => boolean) => {
     Promise.all([
       fetchCaseDocuments(caseReference),
       fetchDocumentPages(caseReference),
+      fetchClaimInvoices(caseReference),
     ])
-      .then(([documentRecords, pageRecords]) => {
-        if (!active) return
+      .then(([documentRecords, pageRecords, invoiceRecords]) => {
+        if (isActive && !isActive()) return
         setDocuments(documentRecords)
         setPages(pageRecords)
+        setInvoices(invoiceRecords)
         setLoadError(null)
       })
       .catch((error: unknown) => {
-        if (active) setLoadError(documentApiErrorMessage(error))
+        if (!isActive || isActive())
+          setLoadError(documentApiErrorMessage(error))
       })
       .finally(() => {
-        if (active) setLoading(false)
+        if (!isActive || isActive()) setLoading(false)
       })
+  }
+
+  useEffect(() => {
+    let active = true
+    loadDocumentsAndInvoices(() => active)
     return () => {
       active = false
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [caseReference])
 
   useEffect(() => {
@@ -1486,6 +1730,41 @@ function ManualReviewDocumentsSection({
   const reviewDocuments = documents.filter(
     (document) => document.manual_review || document.status === "failed"
   )
+  const invoiceByDocumentId = new Map(
+    invoices
+      .filter((invoice) => invoice.document_id)
+      .map((invoice) => [invoice.document_id as string, invoice])
+  )
+
+  const handleManualLineSubmit = async (
+    invoice: ClaimInvoiceSummary,
+    values: ManualLineFormValues
+  ) => {
+    setLineEntrySaving(true)
+    try {
+      await addManualInvoiceLine(caseReference, invoice.id, {
+        description: values.description.trim(),
+        quantity: values.quantity ? Number(values.quantity) : undefined,
+        unit: values.unit.trim() || undefined,
+        lineTotalNet: Number(values.lineTotalNet),
+        vatRate: values.vatRate ? Number(values.vatRate) : undefined,
+        itemKind: values.itemKind,
+        partNumber: values.partNumber.trim() || undefined,
+        recordedBy: MANUAL_LINE_ACTOR,
+      })
+      toast.success("Line added", {
+        description: `${values.description} was added to ${invoice.document_filename}.`,
+      })
+      setLineEntryDocument(null)
+      loadDocumentsAndInvoices()
+    } catch (error) {
+      toast.error("Could not add line", {
+        description: getApiErrorMessage(error),
+      })
+    } finally {
+      setLineEntrySaving(false)
+    }
+  }
 
   return (
     <DataCard
@@ -1526,7 +1805,13 @@ function ManualReviewDocumentsSection({
               >
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="font-medium">{document.filename}</p>
+                    <div className="flex items-center gap-1">
+                      <p className="font-medium">{document.filename}</p>
+                      <DocumentBriefingButton
+                        filename={document.filename}
+                        briefing={document.review_briefing}
+                      />
+                    </div>
                     <p className="mt-1 text-xs text-muted-foreground">
                       {document.page_count ?? 0} page
                       {document.page_count === 1 ? "" : "s"} ·{" "}
@@ -1546,7 +1831,7 @@ function ManualReviewDocumentsSection({
                   />
                   <p className="text-muted-foreground">
                     {document.manual_review_reason ??
-                      "No further detail was returned for this document. A future release will summarise this automatically as an AI briefing."}
+                      "No further detail was returned for this document. Open the info icon above for the AI briefing, if one is available."}
                   </p>
                 </div>
                 {documentPages.length ? (
@@ -1573,20 +1858,43 @@ function ManualReviewDocumentsSection({
                     No page images are available for this document yet.
                   </p>
                 )}
+                <div className="mt-3 flex items-center justify-between gap-2 border-t pt-3">
+                  <p className="text-xs text-muted-foreground">
+                    {invoiceByDocumentId.has(document.id)
+                      ? "Add billable lines by hand; they flow into mapping and comparison on the next run."
+                      : "Awaiting an invoice record for this document before lines can be added."}
+                  </p>
+                  {invoiceByDocumentId.has(document.id) ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={!enabled}
+                      onClick={() => setLineEntryDocument(document)}
+                    >
+                      <PlusIcon data-icon="inline-start" />
+                      Add line manually
+                    </Button>
+                  ) : null}
+                </div>
               </div>
             )
           })}
         </div>
       )}
-      <Alert className="mt-4">
-        <InfoIcon />
-        <AlertTitle>Manual pricing entry is not yet available</AlertTitle>
-        <AlertDescription>
-          Manual line entry arrives with the next backend update. Once a
-          document&apos;s underlying issue is fixed, correct it from Source
-          document and reprocess to bring it back into benchmarking.
-        </AlertDescription>
-      </Alert>
+      <ManualLineEntryDialog
+        key={lineEntryDocument?.id ?? "closed-manual-line-dialog"}
+        document={lineEntryDocument}
+        invoice={
+          lineEntryDocument
+            ? invoiceByDocumentId.get(lineEntryDocument.id) ?? null
+            : null
+        }
+        open={lineEntryDocument !== null}
+        onOpenChange={(open) => !open && setLineEntryDocument(null)}
+        onSubmit={handleManualLineSubmit}
+        saving={lineEntrySaving}
+      />
       <Dialog
         open={viewerPage !== null}
         onOpenChange={(open) => !open && setViewerPage(null)}
@@ -1646,6 +1954,7 @@ export function MissingItemsScreen({
       <ManualReviewDocumentsSection
         caseReference={workspace.claim.id}
         focusDocumentId={focusDocumentId}
+        enabled={enabled}
       />
       <Alert>
         <FlaskConicalIcon />

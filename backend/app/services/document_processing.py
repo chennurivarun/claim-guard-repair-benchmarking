@@ -22,6 +22,7 @@ from app.domain.liability import (
     claim_invoice_consistency,
 )
 from app.enums import (
+    AuditActorType,
     CaseStatus,
     CheckStatus,
     ClaimVehicleRole,
@@ -44,9 +45,15 @@ from app.extraction.calculation_validator import validate_invoice
 from app.extraction.docx_ingest import docx_to_pdf_bytes
 from app.extraction.engineer_assessment_parser import parse_engineer_assessment
 from app.extraction.pdf_pipeline import PDFPipeline, PipelineConfig
+from app.llm.document_briefing import (
+    DocumentBriefingPage,
+    build_document_briefing,
+    build_document_briefing_generator,
+)
 from app.llm.factory import build_invoice_text_extractor, build_invoice_vision_extractor
 from app.models import (
     AssessmentOperation,
+    AuditEvent,
     Case,
     ClaimConsistencyFinding,
     ClaimVehicle,
@@ -422,6 +429,7 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
     cloud_ocr = _build_cloud_ocr(settings)
     vision_extractor = build_invoice_vision_extractor(settings)
     text_extractor = build_invoice_text_extractor(settings)
+    briefing_generator = build_document_briefing_generator(settings)
     pipeline = PDFPipeline(
         PipelineConfig(
             max_pages=settings.max_pdf_pages,
@@ -729,9 +737,43 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
         if analysis.manual_review_reason:
             document_metadata["manual_review"] = True
             document_metadata["manual_review_reason"] = analysis.manual_review_reason
+            briefing_pages = [
+                DocumentBriefingPage(
+                    page_number=page_row.page_number,
+                    page_type=page_row.page_type.value,
+                    text=page_row.raw_text or "",
+                    classification_confidence=page_row.classification_confidence,
+                )
+                for page_row in sorted(page_rows.values(), key=lambda row: row.page_number)
+            ]
+            document.review_briefing_json = build_document_briefing(
+                briefing_generator,
+                pages=briefing_pages,
+                manual_review_reason=analysis.manual_review_reason,
+            )
+            session.add(
+                AuditEvent(
+                    case_id=case.id,
+                    processing_run_id=run.id,
+                    actor_type=AuditActorType.SYSTEM,
+                    actor_id="document_briefing_generator",
+                    event_type="DOCUMENT_BRIEFING_RECORDED",
+                    entity_type="document",
+                    entity_id=document.id,
+                    after_json={
+                        "fallback": document.review_briefing_json.get("fallback"),
+                        "manual_review_reason": analysis.manual_review_reason,
+                    },
+                    event_payload_json={
+                        "model": document.review_briefing_json.get("model"),
+                        "prompt_version": document.review_briefing_json.get("prompt_version"),
+                    },
+                )
+            )
         else:
             document_metadata.pop("manual_review", None)
             document_metadata.pop("manual_review_reason", None)
+            document.review_briefing_json = None
         if manual_page_corrections:
             document_metadata["reprocess_required"] = False
             document_metadata.pop("reprocess_reason", None)
@@ -806,6 +848,7 @@ def serialise_document(document: Document) -> dict[str, Any]:
         "status": document.upload_status.value,
         "page_count": document.page_count,
         "invoice_units": invoice_units,
+        "review_briefing": document.review_briefing_json,
         "reprocess_required": bool(metadata.get("reprocess_required")),
         "manual_review": manual_review,
         "manual_review_reason": metadata.get("manual_review_reason")

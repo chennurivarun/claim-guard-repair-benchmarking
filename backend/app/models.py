@@ -470,6 +470,7 @@ class Document(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
         String(36), ForeignKey("source_providers.id", ondelete="SET NULL"), nullable=True
     )
     metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    review_briefing_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     case: Mapped[Case] = relationship(back_populates="documents")
     pages: Mapped[list[DocumentPage]] = relationship(
