@@ -52,6 +52,26 @@ Against the live API on the P90 corpus (154 lines, 27 challenged case-wide):
 - Frontend: `npm run typecheck`, `lint`, `test`, `build` — all pass.
 - Migrations: `alembic upgrade head` through `20260823_0009`.
 
+## Addendum — full Auda flow with AI enabled (live, 23 Aug 2026)
+
+Provider: OpenRouter `stealth/ox-alpha` (free tier), configured via
+`openai_compatible`. Fresh database, real end-to-end run.
+
+| Step | Result |
+| --- | --- |
+| Rolled-up calculation invoice | **Fully automatic**: AI text tier extracted the priced calculation rows; no manual review needed |
+| Comparison with AI adjudicator | `ai_status: used`, no failures |
+| Unmatched lines → ontology proposals | All 4 extracted lines auto-staged with provenance |
+| One-click approval of "Total Parts" | New ontology version created; mapping went 0 → 4 lines MATCHED on re-compare |
+| Governance | Provisional prices contributed no challenges; approved observation priced its line correctly (billed = observed → Within) |
+| AI briefings | Real (fallback = false) and accurate — the Full Report briefing identified the assessment number, repairer, and vehicle; the photo-page briefing flagged poor scan quality and listed what a reviewer should verify |
+| Failure handling observed | One `LLM_INVALID_EXTRACTION` on the assessment schema degraded gracefully to manual review; free-tier 429 rate limits never failed a document |
+
+Hardening that came out of this run: tolerant JSON parsing and schema-in-prompt
+for loosely-conforming models; internal exceptions no longer leak to the UI;
+AI degradation now surfaces as a calm informational notice after comparisons
+and document batches.
+
 ## Outside the scope of this run (client inputs still required)
 
 - The Auda 2–7 format/invoice PDFs and `certificate.pdf` exist only on the client machine; the LLM text tier and briefing fallbacks that handle them are covered by unit/integration tests but not yet by those exact files.
