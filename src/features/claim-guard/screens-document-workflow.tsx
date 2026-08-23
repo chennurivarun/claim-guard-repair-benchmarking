@@ -68,12 +68,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
-import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "@/components/ui/tabs"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 import {
   correctDocumentPage,
@@ -315,7 +310,7 @@ export function UploadProcessingWorkflow({
 }: {
   caseReference: string
   finalised: boolean
-  onProcessed: () => Promise<void>
+  onProcessed: (preferredDocumentId?: string) => Promise<void>
   onContinue: () => void
   onOpenOntologyLibrary: () => void
   onOpenManualReview?: (documentId: string) => void
@@ -427,6 +422,7 @@ export function UploadProcessingWorkflow({
 
   async function handleUpload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    const form = event.currentTarget
     if (finalised) {
       setUploadError(
         "This case is finalised. Create a new case revision before uploading another invoice."
@@ -454,6 +450,8 @@ export function UploadProcessingWorkflow({
     )
     try {
       let latestResult: DocumentProcessingResult | null = null
+      let successfulFiles = 0
+      let failedFiles = 0
       for (const [index, file] of selectedFiles.entries()) {
         const batchRowId = `${index}:${file.name}`
         const itemProgress = Math.round((index / selectedFiles.length) * 85)
@@ -475,6 +473,7 @@ export function UploadProcessingWorkflow({
         try {
           const uploaded = await uploadCurrentDocument(file, caseReference)
           latestResult = await processUploadedDocument(uploaded.id)
+          successfulFiles += 1
           if (latestResult?.metrics?.llm_failures?.length) {
             const codes = Array.from(new Set(latestResult.metrics.llm_failures))
             const reason = codes.includes("LLM_AUTH_ERROR")
@@ -501,11 +500,10 @@ export function UploadProcessingWorkflow({
                     status: latestResult?.document.manual_review
                       ? "MANUAL REVIEW"
                       : "READY",
-                    detail:
-                      latestResult?.document.manual_review
-                        ? latestResult.document.manual_review_reason ??
-                          "No benchmarkable line items were detected."
-                        : latestResult?.document.kind === "engineer_assessment"
+                    detail: latestResult?.document.manual_review
+                      ? (latestResult.document.manual_review_reason ??
+                        "No benchmarkable line items were detected.")
+                      : latestResult?.document.kind === "engineer_assessment"
                         ? `Engineer assessment${latestResult.document.paired ? " · paired" : " · awaiting matching invoice"}`
                         : `${latestResult?.metrics?.invoice_units ?? 0} repair invoice unit(s)`,
                   }
@@ -513,6 +511,7 @@ export function UploadProcessingWorkflow({
             )
           )
         } catch (error) {
+          failedFiles += 1
           setBatchRows((current) =>
             current.map((row) =>
               row.id === batchRowId
@@ -539,13 +538,29 @@ export function UploadProcessingWorkflow({
       if (latestResult) {
         // The batch itself succeeded; downstream refresh/comparison problems
         // are surfaced by their owners and must not strand the bar at 90%.
-        await onProcessed().catch(() => undefined)
+        await onProcessed(latestResult.document.id).catch(() => undefined)
       }
       setProgress(100)
-      setProgressMessage("Batch processing complete")
-      toast.success("Document batch processing completed", {
-        description: `${selectedFiles.length} file${selectedFiles.length === 1 ? "" : "s"} checked. Review each status below.`,
-      })
+      setProgressMessage(
+        failedFiles
+          ? "Batch completed with files needing attention"
+          : "Batch processing complete"
+      )
+      if (successfulFiles) {
+        form.reset()
+        setSelectedFiles([])
+      }
+      if (failedFiles) {
+        const message = `${failedFiles} of ${selectedFiles.length} file${selectedFiles.length === 1 ? "" : "s"} could not be read. See the Document batch table for the exact reason and retry those files.`
+        setUploadError(message)
+        toast.warning("Some documents could not be processed", {
+          description: message,
+        })
+      } else {
+        toast.success("Document batch processing completed", {
+          description: `${successfulFiles} file${successfulFiles === 1 ? "" : "s"} processed. The newest scanned invoice is now selected in Review findings.`,
+        })
+      }
     } catch (error) {
       setUploadError(documentApiErrorMessage(error))
       setProgress(0)
@@ -765,7 +780,9 @@ function DocumentQueue({
 }) {
   return (
     <DataCard
-      title={manualReview ? "Unprocessed for human review" : "Ready for benchmarking"}
+      title={
+        manualReview ? "Unprocessed for human review" : "Ready for benchmarking"
+      }
       description={
         manualReview
           ? "These documents are retained but excluded from automatic benchmarking."
@@ -776,7 +793,9 @@ function DocumentQueue({
         <TableHeader>
           <TableRow>
             <TableHead>Document</TableHead>
-            <TableHead>{manualReview ? "Why it needs review" : "Result"}</TableHead>
+            <TableHead>
+              {manualReview ? "Why it needs review" : "Result"}
+            </TableHead>
             <TableHead className="text-right">Status</TableHead>
           </TableRow>
         </TableHeader>
@@ -797,7 +816,8 @@ function DocumentQueue({
                 </TableCell>
                 <TableCell className="text-muted-foreground">
                   {manualReview
-                    ? document.manual_review_reason ?? "Line-item information is unavailable."
+                    ? (document.manual_review_reason ??
+                      "Line-item information is unavailable.")
                     : `${document.page_count ?? 0} page${document.page_count === 1 ? "" : "s"} · ${
                         (document.invoice_units ?? 0) > 0
                           ? "Repair Invoice"
@@ -816,7 +836,9 @@ function DocumentQueue({
                         <StatusBadge status="MANUAL REVIEW" />
                       </button>
                     ) : (
-                      <StatusBadge status={manualReview ? "MANUAL REVIEW" : "READY"} />
+                      <StatusBadge
+                        status={manualReview ? "MANUAL REVIEW" : "READY"}
+                      />
                     )}
                   </div>
                 </TableCell>
@@ -824,7 +846,10 @@ function DocumentQueue({
             ))
           ) : (
             <TableRow>
-              <TableCell colSpan={3} className="py-8 text-center text-muted-foreground">
+              <TableCell
+                colSpan={3}
+                className="py-8 text-center text-muted-foreground"
+              >
                 {emptyMessage}
               </TableCell>
             </TableRow>

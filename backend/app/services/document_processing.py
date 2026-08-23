@@ -752,6 +752,41 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
                 invoice_descriptions=tuple(line.raw_description for line in extracted.line_items),
             )
 
+        if not analysis.invoices and analysis.manual_review_reason:
+            # A fully unreadable document still needs an invoice container so a
+            # handler can enter billable lines from the page images. Without
+            # this shell the Manual review UI has a document but no invoice_id,
+            # making its manual-entry action impossible.
+            placeholder_invoice = Invoice(
+                case_id=case.id,
+                document_id=document.id,
+                document_group_id="manual-review",
+                document_role=InvoiceDocumentRole.INVOICE,
+                currency="GBP",
+                extraction_method=ExtractionMethod.PENDING,
+                extraction_confidence=0.0,
+                review_status=ReviewStatus.NEEDS_REVIEW,
+                page_numbers_json=sorted(page_rows),
+                extraction_payload_json={
+                    "manual_entry_placeholder": True,
+                    "manual_review_reason": analysis.manual_review_reason,
+                },
+            )
+            session.add(placeholder_invoice)
+            session.flush()
+            if page_rows:
+                session.execute(
+                    invoice_page_links.insert(),
+                    [
+                        {
+                            "invoice_id": placeholder_invoice.id,
+                            "page_id": page_rows[number].id,
+                            "page_order": order,
+                        }
+                        for order, number in enumerate(sorted(page_rows), start=1)
+                    ],
+                )
+
         pair_case_assessments(session, case.id)
 
         document.upload_status = UploadStatus.READY

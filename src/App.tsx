@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Toaster } from "@/components/ui/sonner"
 import { AppShell } from "@/features/claim-guard/app-shell"
 import { demoWorkspace } from "@/features/claim-guard/demo-data"
@@ -158,21 +159,39 @@ export function App() {
   const [focusDocumentId, setFocusDocumentId] = useState<string | null>(null)
   const [p90ThresholdPct, setP90ThresholdPct] = useState(10)
   const [thresholdApplying, setThresholdApplying] = useState(false)
+  const [apiError, setApiError] = useState<string | null>(null)
+  const [apiConnecting, setApiConnecting] = useState(true)
 
-  useEffect(() => {
-    void loadClaimWorkspace(p90ThresholdPct).then((result) => {
+  async function finishApiConnection(
+    result: Awaited<ReturnType<typeof loadClaimWorkspace>>
+  ) {
+    try {
       setWorkspace(result.workspace)
       setApiMode(result.mode)
       setLiabilityStatus(result.workspace.liability.status)
       setLiabilityConfirmed(result.workspace.liability.humanConfirmed)
       if (result.errorMessage) {
+        setApiError(result.errorMessage)
+        setInvoices([])
         toast.error("ClaimGuard API is not ready", {
-          description: `${result.errorMessage} Demo data is shown read-only.`,
+          description: `${result.errorMessage} Live invoice data is hidden until the connection is restored.`,
         })
       } else {
-        void fetchClaimInvoices(result.workspace.claim.id).then(setInvoices)
+        setInvoices(await fetchClaimInvoices(result.workspace.claim.id))
+        setApiError(null)
       }
-    })
+    } finally {
+      setApiConnecting(false)
+    }
+  }
+
+  async function connectToApi() {
+    setApiConnecting(true)
+    await finishApiConnection(await loadClaimWorkspace(p90ThresholdPct))
+  }
+
+  useEffect(() => {
+    void loadClaimWorkspace(p90ThresholdPct).then(finishApiConnection)
     // Only the initial p90ThresholdPct matters here; later changes are
     // handled by the dedicated threshold-refetch effect below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -850,17 +869,29 @@ export function App() {
         <UploadProcessingScreen
           caseReference={workspace.claim.id}
           finalised={caseFinalised}
-          onProcessed={async () => {
+          onProcessed={async (preferredDocumentId) => {
+            const latestInvoices = await fetchClaimInvoices(workspace.claim.id)
+            const preferredInvoice = preferredDocumentId
+              ? latestInvoices.find(
+                  (invoice) => invoice.document_id === preferredDocumentId
+                )
+              : undefined
+            setInvoices(latestInvoices)
             try {
-              await refreshComparison()
+              await refreshComparison(preferredInvoice?.id)
             } catch (error) {
               // The documents are saved either way; never let a comparison
               // failure leave the invoice list and workspace stale.
-              await refreshWorkspace().catch(() => undefined)
-              toast.info("Documents saved; price comparison could not run yet", {
-                description: getApiErrorMessage(error),
-                duration: 9000,
-              })
+              await refreshWorkspace(preferredInvoice?.id).catch(
+                () => undefined
+              )
+              toast.info(
+                "Documents saved; price comparison could not run yet",
+                {
+                  description: getApiErrorMessage(error),
+                  duration: 9000,
+                }
+              )
             }
           }}
           onContinue={() => navigate("benchmark-dashboard")}
@@ -1019,74 +1050,104 @@ export function App() {
         liabilityStatus={liabilityStatus}
         apiMode={apiMode}
       >
-        {activeScreen === "price-comparison" &&
-        !invoices.length &&
-        !challengedInvoices.length ? (
-          <div className="mb-4 rounded-lg border border-dashed bg-card px-4 py-6 text-center">
-            <p className="text-sm font-medium">
-              No invoices with price challenges yet
-            </p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {invoices.length
-                ? "The uploaded invoices are either within the price thresholds or still waiting on manual review or repair-item matching. This page fills in as soon as a comparison finds a price worth challenging."
-                : "No invoices have been read for this claim yet. Upload documents first, then run the comparison."}
-            </p>
-            <div className="mt-4 flex flex-wrap justify-center gap-2">
+        {apiConnecting ? (
+          <Alert>
+            <AlertTitle>Connecting to ClaimGuard</AlertTitle>
+            <AlertDescription>
+              Loading live invoices, documents and benchmark data.
+            </AlertDescription>
+          </Alert>
+        ) : apiError ? (
+          <Alert variant="destructive">
+            <AlertTitle>Live ClaimGuard service is unavailable</AlertTitle>
+            <AlertDescription className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <span>
+                {apiError} Static pilot invoices and prices are hidden so they
+                cannot be mistaken for uploaded scan results.
+              </span>
               <Button
+                type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => navigate("missing-items")}
+                className="shrink-0"
+                onClick={() => void connectToApi()}
               >
-                Open Manual review
+                Retry connection
               </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => navigate("upload-processing")}
-              >
-                View documents
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => navigate("benchmark-dashboard")}
-              >
-                View benchmarks
-              </Button>
-            </div>
-          </div>
-        ) : invoiceSelectorOptions.length >= 1 ? (
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-card px-4 py-3">
-            <div>
-              <p className="text-sm font-medium">
-                {activeScreen === "price-comparison"
-                  ? "Review findings"
-                  : "Uploaded invoices"}
-              </p>
-              <p className="text-xs text-muted-foreground">
-                {activeScreen === "price-comparison"
-                  ? "Every scanned invoice is listed; invoices with price challenges appear first."
-                  : "Switch invoice details; benchmarking uses all uploaded invoices in this claim batch."}
-              </p>
-            </div>
-            <select
-              className="h-9 min-w-56 rounded-md border bg-background px-3 text-sm"
-              value={workspace.invoice.id}
-              disabled={comparisonSaving}
-              onChange={(event) =>
-                void handleInvoiceSelection(event.target.value)
-              }
-              aria-label="Select uploaded invoice"
-            >
-              {invoiceSelectorOptions.map((invoice, index) => (
-                <option key={invoice.id} value={invoice.id}>
-                  {invoiceDisplayLabel(invoice, index)}
-                </option>
-              ))}
-            </select>
-          </div>
-        ) : null}
-        {screen}
+            </AlertDescription>
+          </Alert>
+        ) : (
+          <>
+            {activeScreen === "price-comparison" &&
+            !invoices.length &&
+            !challengedInvoices.length ? (
+              <div className="mb-4 rounded-lg border border-dashed bg-card px-4 py-6 text-center">
+                <p className="text-sm font-medium">
+                  No invoices with price challenges yet
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {invoices.length
+                    ? "The uploaded invoices are either within the price thresholds or still waiting on manual review or repair-item matching. This page fills in as soon as a comparison finds a price worth challenging."
+                    : "No invoices have been read for this claim yet. Upload documents first, then run the comparison."}
+                </p>
+                <div className="mt-4 flex flex-wrap justify-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => navigate("missing-items")}
+                  >
+                    Open Manual review
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => navigate("upload-processing")}
+                  >
+                    View documents
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => navigate("benchmark-dashboard")}
+                  >
+                    View benchmarks
+                  </Button>
+                </div>
+              </div>
+            ) : invoiceSelectorOptions.length >= 1 ? (
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-card px-4 py-3">
+                <div>
+                  <p className="text-sm font-medium">
+                    {activeScreen === "price-comparison"
+                      ? "Review findings"
+                      : "Uploaded invoices"}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {activeScreen === "price-comparison"
+                      ? "Every scanned invoice is listed; invoices with price challenges appear first."
+                      : "Switch invoice details; benchmarking uses all uploaded invoices in this claim batch."}
+                  </p>
+                </div>
+                <select
+                  className="h-9 min-w-56 rounded-md border bg-background px-3 text-sm"
+                  value={workspace.invoice.id}
+                  disabled={comparisonSaving}
+                  onChange={(event) =>
+                    void handleInvoiceSelection(event.target.value)
+                  }
+                  aria-label="Select uploaded invoice"
+                >
+                  {invoiceSelectorOptions.map((invoice, index) => (
+                    <option key={invoice.id} value={invoice.id}>
+                      {invoiceDisplayLabel(invoice, index)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : null}
+            {screen}
+          </>
+        )}
       </AppShell>
 
       <LineCorrectionSheet

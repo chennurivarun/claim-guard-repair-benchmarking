@@ -3,6 +3,7 @@ from __future__ import annotations
 from decimal import Decimal
 from pathlib import Path
 
+import fitz
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event, select
@@ -204,3 +205,55 @@ def test_manual_line_404_for_unknown_invoice(manual_line_env) -> None:
         },
     )
     assert response.status_code == 404
+
+
+def test_unreadable_document_creates_invoice_shell_for_manual_entry(
+    manual_line_env,
+) -> None:
+    test_client, _factory = manual_line_env
+    created = test_client.post(
+        "/api/v1/claims",
+        json={
+            "case_reference": "CG-MANUAL-EMPTY",
+            "claim_number": "CG-MANUAL-EMPTY",
+            "created_by": "pytest.handler",
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    blank = fitz.open()
+    blank.new_page()
+    pdf_bytes = blank.tobytes()
+    blank.close()
+    uploaded = test_client.post(
+        "/api/v1/claims/CG-MANUAL-EMPTY/documents",
+        files={"file": ("unreadable-scan.pdf", pdf_bytes, "application/pdf")},
+        data={"role": "current"},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+
+    processed = test_client.post(
+        f"/api/v1/documents/{uploaded.json()['id']}/process"
+    )
+    assert processed.status_code == 200, processed.text
+    assert processed.json()["document"]["manual_review"] is True
+
+    invoices = test_client.get(
+        "/api/v1/claims/CG-MANUAL-EMPTY/invoices"
+    ).json()
+    invoice = next(
+        item for item in invoices if item["document_id"] == uploaded.json()["id"]
+    )
+    assert invoice["lines"] == []
+
+    manual_line = test_client.post(
+        f"/api/v1/claims/CG-MANUAL-EMPTY/invoices/{invoice['id']}/lines",
+        json={
+            "description": "Front bumper part",
+            "line_total_net": "125.00",
+            "item_kind": "part",
+            "recorded_by": "pytest.handler",
+        },
+    )
+    assert manual_line.status_code == 201, manual_line.text
+    assert manual_line.json()["description"] == "Front bumper part"

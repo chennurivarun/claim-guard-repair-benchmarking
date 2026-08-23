@@ -228,6 +228,47 @@ const demoDashboard: BenchmarkDashboardPayload = {
   },
 }
 
+const emptyDashboard: BenchmarkDashboardPayload = {
+  summary: {
+    averageRepairCost: null,
+    averageLabourRate: null,
+    mostObservedItem: null,
+    observationCount: 0,
+    mostExpensiveRepairCategory: null,
+    mostExpensiveRepairAverage: null,
+  },
+  vehicleCategories: [],
+  benchmarks: [],
+  repairerTrends: [],
+  filterOptions: { vehicleClasses: [], repairItems: [] },
+  appliedFilters: {
+    vehicleClass: null,
+    ontologyItemId: null,
+    dateFrom: null,
+    dateTo: null,
+    minimumCount: 1,
+    challengeThresholdPct: 10,
+    minimumChallengeAmount: MINIMUM_CHALLENGE_AMOUNT,
+  },
+  dataQuality: {
+    invoiceObservationCount: 0,
+    validCostCount: 0,
+    invalidOrMissingCostCount: 0,
+    classifiedCount: 0,
+    unclassifiedCount: 0,
+    classifiedCoveragePct: 0,
+    latestObservationDate: null,
+  },
+  definitions: {
+    cost: "Invoice net line total, excluding estimates and credit notes.",
+    labour: "Explicit labour rate, or an hourly labour line where available.",
+    challengeGate:
+      "A P90 exception must exceed the selected percentage threshold and the £5.00 minimum positive variance.",
+    coverageNote: "No uploaded invoice observations are available yet.",
+    officialClasses: {},
+  },
+}
+
 function money(value: number | null, suffix = "") {
   return value === null
     ? "—"
@@ -302,8 +343,9 @@ export function BenchmarkDashboardScreen({
   thresholdApplying?: boolean
   onOpenKnowledgeGraph: () => void
 }) {
-  const [dashboard, setDashboard] =
-    useState<BenchmarkDashboardPayload>(demoDashboard)
+  const [dashboard, setDashboard] = useState<BenchmarkDashboardPayload>(
+    apiMode === "demo" ? demoDashboard : emptyDashboard
+  )
   const [loadError, setLoadError] = useState<string | null>(null)
   const [vehicleClass, setVehicleClass] = useState("all")
   const [repairItem, setRepairItem] = useState("all")
@@ -336,11 +378,12 @@ export function BenchmarkDashboardScreen({
         setDashboard(result)
         setLoadError(null)
       })
-      .catch(() =>
+      .catch(() => {
+        setDashboard(emptyDashboard)
         setLoadError(
-          "Live benchmark data could not be loaded. Showing the pilot example."
+          "Live benchmark data could not be loaded. No pilot or static prices are being shown."
         )
-      )
+      })
   }, [
     apiMode,
     challengeThreshold,
@@ -352,6 +395,10 @@ export function BenchmarkDashboardScreen({
 
   const selectedInvoiceBenchmarks = workspace.lines.filter(
     (line) => line.p90Benchmark
+  )
+  const challengedLineCount = dashboard.benchmarks.reduce(
+    (total, item) => total + item.exceptionCount,
+    0
   )
   const sortedBenchmarks = useMemo(
     () =>
@@ -575,6 +622,31 @@ export function BenchmarkDashboardScreen({
         </CardContent>
       </Card>
 
+      <div className="grid gap-4 sm:grid-cols-3" aria-label="Benchmark totals">
+        {[
+          ["Invoice observations", dashboard.summary.observationCount],
+          ["Benchmark groups", dashboard.benchmarks.length],
+          ["Challenged lines", challengedLineCount],
+        ].map(([label, value]) => (
+          <Card key={label}>
+            <CardContent className="p-5">
+              <p className="text-sm text-muted-foreground">{label}</p>
+              <p className="mt-2 text-3xl font-semibold tabular-nums">
+                {value}
+              </p>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+
+      {loadError ? (
+        <Alert variant="destructive">
+          <DatabaseIcon />
+          <AlertTitle>Benchmark service unavailable</AlertTitle>
+          <AlertDescription>{loadError}</AlertDescription>
+        </Alert>
+      ) : null}
+
       <DataCard
         title="Aggregate repair benchmark summary"
         description={`All uploaded invoices in this claim batch. Red counts require both more than ${challengeThreshold}% above the earlier-invoice P90 and at least ${preciseMoney(MINIMUM_CHALLENGE_AMOUNT)} difference.`}
@@ -617,104 +689,116 @@ export function BenchmarkDashboardScreen({
               </tr>
             </thead>
             <tbody>
-              {sortedBenchmarks.map((item) => (
-                <tr
-                  key={`${item.ontologyItemId}-${item.vehicleClass}`}
-                  className="border-b last:border-0"
-                >
-                  <td className="px-3 py-3 font-medium">
-                    <div>{item.item}</div>
-                    <details className="mt-1 text-xs font-normal text-muted-foreground">
-                      <summary className="cursor-pointer select-none hover:text-foreground">
-                        More statistics
-                      </summary>
-                      <div className="mt-2 grid min-w-[250px] grid-cols-2 gap-x-4 gap-y-1 rounded-md border bg-muted/30 p-2">
-                        <span>Mean</span>
-                        <span className="text-right tabular-nums">
-                          {money(item.statistics.mean)}
-                        </span>
-                        <span>Mode</span>
-                        <span className="text-right tabular-nums">
-                          {money(item.statistics.mode)}
-                        </span>
-                        <span>Observations</span>
-                        <span className="text-right tabular-nums">
-                          {item.statistics.count}
-                        </span>
-                        <span>Labour mean</span>
-                        <span className="text-right tabular-nums">
-                          {money(item.labourStatistics.mean)}
-                        </span>
-                        <span>Labour median</span>
-                        <span className="text-right tabular-nums">
-                          {money(item.labourStatistics.median)}
-                        </span>
-                        <span>Labour observations</span>
-                        <span className="text-right tabular-nums">
-                          {item.labourStatistics.count}
-                        </span>
-                      </div>
-                    </details>
-                  </td>
-                  <td className="px-3 py-3 text-muted-foreground">
-                    {item.vehicleClass}
-                  </td>
-                  <td className="px-3 py-3 text-right tabular-nums">
-                    {item.invoiceCount}
-                  </td>
-                  <td className="px-3 py-3 text-right tabular-nums">
-                    {money(item.statistics.min)}
-                  </td>
-                  <td className="px-3 py-3 text-right tabular-nums">
-                    {money(item.statistics.max)}
-                  </td>
-                  <td className="px-3 py-3 text-right tabular-nums">
-                    {money(item.statistics.median)}
-                  </td>
-                  <td className="bg-primary/5 px-3 py-3 text-right font-semibold tabular-nums">
-                    {money(item.statistics.p90 ?? null)}
-                  </td>
-                  <td className="bg-primary/5 px-3 py-3 text-right">
-                    {item.exceptionInvoiceCount > 0 ? (
+              {sortedBenchmarks.length ? (
+                sortedBenchmarks.map((item) => (
+                  <tr
+                    key={`${item.ontologyItemId}-${item.vehicleClass}`}
+                    className="border-b last:border-0"
+                  >
+                    <td className="px-3 py-3 font-medium">
+                      <div>{item.item}</div>
+                      <details className="mt-1 text-xs font-normal text-muted-foreground">
+                        <summary className="cursor-pointer select-none hover:text-foreground">
+                          More statistics
+                        </summary>
+                        <div className="mt-2 grid min-w-[250px] grid-cols-2 gap-x-4 gap-y-1 rounded-md border bg-muted/30 p-2">
+                          <span>Mean</span>
+                          <span className="text-right tabular-nums">
+                            {money(item.statistics.mean)}
+                          </span>
+                          <span>Mode</span>
+                          <span className="text-right tabular-nums">
+                            {money(item.statistics.mode)}
+                          </span>
+                          <span>Observations</span>
+                          <span className="text-right tabular-nums">
+                            {item.statistics.count}
+                          </span>
+                          <span>Labour mean</span>
+                          <span className="text-right tabular-nums">
+                            {money(item.labourStatistics.mean)}
+                          </span>
+                          <span>Labour median</span>
+                          <span className="text-right tabular-nums">
+                            {money(item.labourStatistics.median)}
+                          </span>
+                          <span>Labour observations</span>
+                          <span className="text-right tabular-nums">
+                            {item.labourStatistics.count}
+                          </span>
+                        </div>
+                      </details>
+                    </td>
+                    <td className="px-3 py-3 text-muted-foreground">
+                      {item.vehicleClass}
+                    </td>
+                    <td className="px-3 py-3 text-right tabular-nums">
+                      {item.invoiceCount}
+                    </td>
+                    <td className="px-3 py-3 text-right tabular-nums">
+                      {money(item.statistics.min)}
+                    </td>
+                    <td className="px-3 py-3 text-right tabular-nums">
+                      {money(item.statistics.max)}
+                    </td>
+                    <td className="px-3 py-3 text-right tabular-nums">
+                      {money(item.statistics.median)}
+                    </td>
+                    <td className="bg-primary/5 px-3 py-3 text-right font-semibold tabular-nums">
+                      {money(item.statistics.p90 ?? null)}
+                    </td>
+                    <td className="bg-primary/5 px-3 py-3 text-right">
+                      {item.exceptionInvoiceCount > 0 ? (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-auto border-destructive/40 py-1 text-destructive hover:text-destructive"
+                          onClick={() => showExceptions(item)}
+                        >
+                          <EyeIcon aria-hidden />
+                          {item.exceptionInvoiceCount} invoice
+                          {item.exceptionInvoiceCount === 1 ? "" : "s"} ·{" "}
+                          {item.exceptionCount} line
+                          {item.exceptionCount === 1 ? "" : "s"}
+                        </Button>
+                      ) : (
+                        <Badge variant="outline">0</Badge>
+                      )}
+                    </td>
+                    <td
+                      className={`bg-destructive/5 px-3 py-3 text-right font-semibold tabular-nums ${
+                        item.exceptionCount > 0
+                          ? "text-destructive"
+                          : "text-muted-foreground"
+                      }`}
+                    >
+                      {preciseMoney(totalChallengeAmount(item))}
+                    </td>
+                    <td className="px-3 py-3 text-right">
                       <Button
                         type="button"
                         size="sm"
                         variant="outline"
-                        className="h-auto border-destructive/40 py-1 text-destructive hover:text-destructive"
-                        onClick={() => showExceptions(item)}
+                        onClick={() => showSources(item)}
                       >
                         <EyeIcon aria-hidden />
-                        {item.exceptionInvoiceCount} invoice
-                        {item.exceptionInvoiceCount === 1 ? "" : "s"} ·{" "}
-                        {item.exceptionCount} line
-                        {item.exceptionCount === 1 ? "" : "s"}
+                        View {item.invoiceCount}
                       </Button>
-                    ) : (
-                      <Badge variant="outline">0</Badge>
-                    )}
-                  </td>
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
                   <td
-                    className={`bg-destructive/5 px-3 py-3 text-right font-semibold tabular-nums ${
-                      item.exceptionCount > 0
-                        ? "text-destructive"
-                        : "text-muted-foreground"
-                    }`}
+                    colSpan={10}
+                    className="px-3 py-8 text-center text-muted-foreground"
                   >
-                    {preciseMoney(totalChallengeAmount(item))}
-                  </td>
-                  <td className="px-3 py-3 text-right">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={() => showSources(item)}
-                    >
-                      <EyeIcon aria-hidden />
-                      View {item.invoiceCount}
-                    </Button>
+                    No benchmark observations yet. Values remain at zero until
+                    uploaded invoice lines are mapped and compared.
                   </td>
                 </tr>
-              ))}
+              )}
             </tbody>
           </table>
         </div>
