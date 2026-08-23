@@ -64,11 +64,19 @@ class Settings(BaseSettings):
     llm_vision_enabled: bool = False
     llm_vision_max_pages: int = Field(default=8, ge=1, le=20)
     llm_vision_max_batches: int = Field(default=3, ge=1, le=10)
+    # Text-only "universal reader" tier: no page images, so it can run even when
+    # llm_vision_enabled stays False. Gated only by having a configured LLM provider.
+    llm_text_extraction_enabled: bool = True
+    llm_text_max_batches: int = Field(default=3, ge=1, le=10)
     llm_api_key: SecretStr | None = None
     llm_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
     llm_api_version: str = "2024-10-21"
     llm_timeout_seconds: float = Field(default=20.0, gt=0, le=120)
     llm_max_attempts: int = Field(default=2, ge=1, le=3)
+    # Independent of vision/text extraction: a document that finishes manual
+    # review should still get a plain-English briefing, even if extraction
+    # tiers are disabled for cost or policy reasons.
+    llm_briefing_enabled: bool = True
 
 
 @lru_cache(maxsize=1)

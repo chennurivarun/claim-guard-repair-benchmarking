@@ -127,6 +127,25 @@ export interface BenchmarkDashboardPayload {
   }
 }
 
+export interface HistoricalObservationPayload {
+  id: string
+  claim_reference: string | null
+  source_record_id: string | null
+  invoice_date: string | null
+  description: string | null
+  line_total_net: number | null
+  approved_amount_net: number | null
+  settled_amount_net: number | null
+  vehicle: {
+    make: string | null
+    model: string | null
+    variant: string | null
+    year: number | null
+    class: string | null
+  }
+  source: Record<string, unknown>
+}
+
 export interface DataReadinessPayload {
   ready: boolean
   ontology_items: number
@@ -138,6 +157,7 @@ export interface ClaimInvoiceSummary {
   id: string
   invoice_number: string | null
   invoice_date: string | null
+  document_id?: string
   document_filename: string
   supplier_name: string | null
   totals: {
@@ -307,9 +327,14 @@ export function getApiErrorMessage(error: unknown) {
 
 export function fetchClaimWorkspace(
   caseReference = DEFAULT_CASE_REFERENCE,
-  invoiceId?: string
+  invoiceId?: string,
+  p90ThresholdPct?: number
 ): Promise<ClaimWorkspace> {
-  const query = invoiceId ? `?invoice_id=${encodeURIComponent(invoiceId)}` : ""
+  const params = new URLSearchParams()
+  if (invoiceId) params.set("invoice_id", invoiceId)
+  if (p90ThresholdPct !== undefined)
+    params.set("p90_threshold_pct", String(p90ThresholdPct))
+  const query = params.size ? `?${params.toString()}` : ""
   return requestJson(
     `/api/v1/claims/${encodeURIComponent(caseReference)}/workspace${query}`
   )
@@ -335,6 +360,14 @@ export function fetchDataReadiness(): Promise<DataReadinessPayload> {
   return requestJson("/api/v1/readiness")
 }
 
+export function fetchHistoricalObservation(
+  observationId: string
+): Promise<HistoricalObservationPayload> {
+  return requestJson(
+    `/api/v1/historical-observations/${encodeURIComponent(observationId)}`
+  )
+}
+
 export function runClaimComparison(caseReference: string) {
   return requestJson(
     `/api/v1/claims/${encodeURIComponent(caseReference)}/compare`,
@@ -351,18 +384,14 @@ export function fetchBenchmarkDashboard(filters?: {
   challengeThresholdPct?: number
 }): Promise<BenchmarkDashboardPayload> {
   const query = new URLSearchParams()
-  if (filters?.caseReference)
-    query.set("case_reference", filters.caseReference)
+  if (filters?.caseReference) query.set("case_reference", filters.caseReference)
   if (filters?.vehicleClass) query.set("vehicle_class", filters.vehicleClass)
   if (filters?.ontologyItemId)
     query.set("ontology_item_id", filters.ontologyItemId)
   if (filters?.minimumCount)
     query.set("minimum_count", String(filters.minimumCount))
   if (filters?.challengeThresholdPct !== undefined)
-    query.set(
-      "challenge_threshold_pct",
-      String(filters.challengeThresholdPct)
-    )
+    query.set("challenge_threshold_pct", String(filters.challengeThresholdPct))
   const suffix = query.size ? `?${query.toString()}` : ""
   return requestJson(`/api/v1/benchmarks/dashboard${suffix}`)
 }
@@ -379,9 +408,18 @@ export function fetchBenchmarkObservations(
   )
 }
 
-export async function loadClaimWorkspace(): Promise<ApiWorkspaceResult> {
+export async function loadClaimWorkspace(
+  p90ThresholdPct?: number
+): Promise<ApiWorkspaceResult> {
   try {
-    return { workspace: await fetchClaimWorkspace(), mode: "api" }
+    return {
+      workspace: await fetchClaimWorkspace(
+        undefined,
+        undefined,
+        p90ThresholdPct
+      ),
+      mode: "api",
+    }
   } catch (error) {
     return {
       workspace: demoWorkspace,
@@ -428,6 +466,45 @@ export function correctInvoiceLine(lineId: string, input: LineCorrectionInput) {
       line_total_net: input.lineTotalNet,
     }),
   })
+}
+
+export interface ManualLineInput {
+  description: string
+  quantity?: number
+  unit?: string
+  unitPriceNet?: number
+  lineTotalNet: number
+  vatRate?: number
+  itemKind?: string
+  partNumber?: string
+  pageNumber?: number
+  recordedBy: string
+}
+
+export function addManualInvoiceLine(
+  caseReference: string,
+  invoiceId: string,
+  input: ManualLineInput
+) {
+  return requestJson(
+    `/api/v1/claims/${encodeURIComponent(caseReference)}/invoices/${encodeURIComponent(invoiceId)}/lines`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        description: input.description,
+        quantity: input.quantity,
+        unit: input.unit,
+        unit_price_net: input.unitPriceNet,
+        line_total_net: input.lineTotalNet,
+        vat_rate: input.vatRate,
+        item_kind: input.itemKind ?? "part",
+        part_number: input.partNumber,
+        page_number: input.pageNumber,
+        recorded_by: input.recordedBy,
+      }),
+    }
+  )
 }
 
 export function decideExtractionLine(

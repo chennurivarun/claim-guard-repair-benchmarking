@@ -22,6 +22,7 @@ from app.domain.liability import (
     claim_invoice_consistency,
 )
 from app.enums import (
+    AuditActorType,
     CaseStatus,
     CheckStatus,
     ClaimVehicleRole,
@@ -41,11 +42,18 @@ from app.enums import (
 )
 from app.extraction.azure_document_intelligence import AzureDocumentIntelligenceOCR
 from app.extraction.calculation_validator import validate_invoice
+from app.extraction.docx_ingest import docx_to_pdf_bytes
 from app.extraction.engineer_assessment_parser import parse_engineer_assessment
 from app.extraction.pdf_pipeline import PDFPipeline, PipelineConfig
-from app.llm.factory import build_invoice_vision_extractor
+from app.llm.document_briefing import (
+    DocumentBriefingPage,
+    build_document_briefing,
+    build_document_briefing_generator,
+)
+from app.llm.factory import build_invoice_text_extractor, build_invoice_vision_extractor
 from app.models import (
     AssessmentOperation,
+    AuditEvent,
     Case,
     ClaimConsistencyFinding,
     ClaimVehicle,
@@ -140,12 +148,44 @@ def normalise_document_upload(filename: str, content: bytes) -> NormalisedDocume
     if not content.startswith(signature):
         raise ValueError(f"The uploaded {suffix[1:].upper()} file signature is invalid.")
 
+    stored_name = f"{Path(safe_name).stem}.pdf"
     executable = shutil.which("soffice") or shutil.which("libreoffice")
-    if not executable:
-        raise ValueError(
-            "Word document conversion is unavailable. Install LibreOffice on the "
-            "backend host, or upload the document as PDF."
-        )
+
+    if suffix == ".doc":
+        # Legacy binary .doc cannot be parsed by python-docx; LibreOffice is required.
+        if not executable:
+            raise ValueError(
+                "DOC (legacy) files require LibreOffice to convert. Install LibreOffice "
+                "on the backend host, or upload the document as PDF or DOCX -- DOCX "
+                "uploads work without LibreOffice."
+            )
+        pdf_content = _convert_with_libreoffice(executable, suffix, content)
+        return NormalisedDocumentUpload(pdf_content, stored_name, "doc")
+
+    # .docx: prefer LibreOffice's higher-fidelity conversion when it is present,
+    # but fall back to the pure-Python reportlab renderer otherwise or on failure.
+    pdf_content: bytes | None = None
+    source_format = "docx-python"
+    if executable:
+        try:
+            pdf_content = _convert_with_libreoffice(executable, suffix, content)
+            source_format = "docx-libreoffice"
+        except ValueError:
+            pdf_content = None
+    if pdf_content is None:
+        try:
+            pdf_content = docx_to_pdf_bytes(content)
+        except Exception as exc:
+            raise ValueError(f"DOCX document could not be read: {exc}") from exc
+        if len(pdf_content) > settings.max_upload_bytes:
+            raise ValueError(
+                f"Converted PDF exceeds the {settings.max_upload_bytes}-byte upload limit."
+            )
+    return NormalisedDocumentUpload(pdf_content, stored_name, source_format)
+
+
+def _convert_with_libreoffice(executable: str, suffix: str, content: bytes) -> bytes:
+    """Convert a .doc/.docx payload to PDF bytes via a headless LibreOffice process."""
 
     with TemporaryDirectory(prefix="claimguard-upload-") as directory:
         temp = Path(directory)
@@ -188,8 +228,7 @@ def normalise_document_upload(filename: str, content: bytes) -> NormalisedDocume
             raise ValueError(
                 f"Converted PDF exceeds the {settings.max_upload_bytes}-byte upload limit."
             )
-        stored_name = f"{Path(safe_name).stem}.pdf"
-        return NormalisedDocumentUpload(pdf_content, stored_name, suffix[1:])
+        return pdf_content
 
 
 def _enum_or(enum_type, value: str, fallback):
@@ -389,14 +428,18 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
     output_dir = Path(settings.storage_dir) / "cases" / case.id / document.sha256[:12] / "pages"
     cloud_ocr = _build_cloud_ocr(settings)
     vision_extractor = build_invoice_vision_extractor(settings)
+    text_extractor = build_invoice_text_extractor(settings)
+    briefing_generator = build_document_briefing_generator(settings)
     pipeline = PDFPipeline(
         PipelineConfig(
             max_pages=settings.max_pdf_pages,
             ocr_enabled=settings.document_ocr_provider in {"auto", "tesseract"},
             vision_max_batches=settings.llm_vision_max_batches,
+            text_max_batches=settings.llm_text_max_batches,
         ),
         cloud_ocr=cloud_ocr,
         vision_extractor=vision_extractor,
+        text_extractor=text_extractor,
     )
     try:
         analysis = pipeline.analyse(document.storage_path, output_dir)
@@ -466,52 +509,65 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
                 assessment_confidence = extracted_assessment.extraction_confidence
                 assessment_payload = extracted_assessment.model_dump(mode="json")
             else:
-                raise ValueError(
-                    "Engineer assessment extraction did not produce usable repair operations."
+                # Deterministic parsing, vision, and the text-only LLM tier all failed to
+                # produce usable repair operations. This must never dead-end the document:
+                # fall through to manual review instead of failing the whole upload.
+                assessment_fields = None
+                assessment_operations = []
+                assessment_confidence = None
+                assessment_payload = None
+
+            if assessment_fields is not None:
+                assessment_fields["damage_areas_json"] = assessment_fields.pop(
+                    "damage_areas", None
                 )
-            assessment_fields["damage_areas_json"] = assessment_fields.pop(
-                "damage_areas", None
-            )
-            assessment = EngineerAssessment(
-                case_id=case.id,
-                document_id=document.id,
-                extraction_confidence=assessment_confidence,
-                review_status=(
-                    ReviewStatus.APPROVED
-                    if assessment_confidence > settings.auto_accept_confidence_threshold
-                    else ReviewStatus.PENDING
-                ),
-                extraction_payload_json=assessment_payload,
-                **assessment_fields,
-            )
-            session.add(assessment)
-            session.flush()
-            for operation in assessment_operations:
-                page_row = page_rows.get(operation.page_number)
-                session.add(
-                    AssessmentOperation(
-                        assessment_id=assessment.id,
-                        sequence_no=operation.sequence_no,
-                        category=operation.category,
-                        operation_code=operation.code,
-                        part_number=getattr(operation, "part_number", None),
-                        raw_description=operation.description,
-                        normalised_description=normalise_operation(operation.description),
-                        work_units=operation.work_units,
-                        hours=operation.hours,
-                        quantity=operation.quantity,
-                        unit_price_net=operation.unit_price,
-                        total_net=operation.total,
-                        source_page_id=page_row.id if page_row else None,
-                        extraction_confidence=assessment_confidence,
+                assessment = EngineerAssessment(
+                    case_id=case.id,
+                    document_id=document.id,
+                    extraction_confidence=assessment_confidence,
+                    review_status=(
+                        ReviewStatus.APPROVED
+                        if assessment_confidence > settings.auto_accept_confidence_threshold
+                        else ReviewStatus.PENDING
+                    ),
+                    extraction_payload_json=assessment_payload,
+                    **assessment_fields,
+                )
+                session.add(assessment)
+                session.flush()
+                for operation in assessment_operations:
+                    page_row = page_rows.get(operation.page_number)
+                    session.add(
+                        AssessmentOperation(
+                            assessment_id=assessment.id,
+                            sequence_no=operation.sequence_no,
+                            category=operation.category,
+                            operation_code=operation.code,
+                            part_number=getattr(operation, "part_number", None),
+                            raw_description=operation.description,
+                            normalised_description=normalise_operation(operation.description),
+                            work_units=operation.work_units,
+                            hours=operation.hours,
+                            quantity=operation.quantity,
+                            unit_price_net=operation.unit_price,
+                            total_net=operation.total,
+                            source_page_id=page_row.id if page_row else None,
+                            extraction_confidence=assessment_confidence,
+                        )
                     )
+                session.flush()
+            else:
+                analysis.manual_review_reason = (
+                    analysis.manual_review_reason
+                    or "Engineer assessment could not be parsed automatically; manual "
+                    "review required."
                 )
-            session.flush()
         elif analysis.invoices:
             document.document_kind = DocumentKind.REPAIR_INVOICE
         else:
             document.document_kind = DocumentKind.UNKNOWN
 
+        used_group_ids: set[str] = set()
         for extracted in analysis.invoices:
             header = extracted.header
             vehicle = Vehicle(
@@ -553,6 +609,17 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
                 if header.invoice_number
                 else f"{extracted.document_role}:pages-{','.join(map(str, extracted.page_numbers))}"
             )
+            if group_id in used_group_ids:
+                # Retained invoices may share a parsed number (uq_invoices_document_group);
+                # disambiguate by page span instead of discarding either unit.
+                group_id = (
+                    f"{group_id}:pages-{','.join(map(str, extracted.page_numbers))}"
+                )
+            counter = 2
+            while group_id in used_group_ids:
+                group_id = f"{group_id}#{counter}"
+                counter += 1
+            used_group_ids.add(group_id)
             invoice = Invoice(
                 case_id=case.id,
                 document_id=document.id,
@@ -682,9 +749,43 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
         if analysis.manual_review_reason:
             document_metadata["manual_review"] = True
             document_metadata["manual_review_reason"] = analysis.manual_review_reason
+            briefing_pages = [
+                DocumentBriefingPage(
+                    page_number=page_row.page_number,
+                    page_type=page_row.page_type.value,
+                    text=page_row.raw_text or "",
+                    classification_confidence=page_row.classification_confidence,
+                )
+                for page_row in sorted(page_rows.values(), key=lambda row: row.page_number)
+            ]
+            document.review_briefing_json = build_document_briefing(
+                briefing_generator,
+                pages=briefing_pages,
+                manual_review_reason=analysis.manual_review_reason,
+            )
+            session.add(
+                AuditEvent(
+                    case_id=case.id,
+                    processing_run_id=run.id,
+                    actor_type=AuditActorType.SYSTEM,
+                    actor_id="document_briefing_generator",
+                    event_type="DOCUMENT_BRIEFING_RECORDED",
+                    entity_type="document",
+                    entity_id=document.id,
+                    after_json={
+                        "fallback": document.review_briefing_json.get("fallback"),
+                        "manual_review_reason": analysis.manual_review_reason,
+                    },
+                    event_payload_json={
+                        "model": document.review_briefing_json.get("model"),
+                        "prompt_version": document.review_briefing_json.get("prompt_version"),
+                    },
+                )
+            )
         else:
             document_metadata.pop("manual_review", None)
             document_metadata.pop("manual_review_reason", None)
+            document.review_briefing_json = None
         if manual_page_corrections:
             document_metadata["reprocess_required"] = False
             document_metadata.pop("reprocess_reason", None)
@@ -703,7 +804,9 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
         if analysis.manual_review_reason:
             run.metrics_json["manual_review"] = True
             run.metrics_json["manual_review_reason"] = analysis.manual_review_reason
-        if engineer_pages and not analysis.invoices:
+        if analysis.llm_failures:
+            run.metrics_json["llm_failures"] = analysis.llm_failures
+        if engineer_pages and not analysis.invoices and assessment_fields is not None:
             run.metrics_json["engineer_assessments"] = 1
     except Exception as exc:
         document_id = document.id
@@ -757,6 +860,7 @@ def serialise_document(document: Document) -> dict[str, Any]:
         "status": document.upload_status.value,
         "page_count": document.page_count,
         "invoice_units": invoice_units,
+        "review_briefing": document.review_briefing_json,
         "reprocess_required": bool(metadata.get("reprocess_required")),
         "manual_review": manual_review,
         "manual_review_reason": metadata.get("manual_review_reason")

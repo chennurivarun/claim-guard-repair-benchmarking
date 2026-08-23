@@ -1,9 +1,11 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import {
+  AlertCircleIcon,
   ArrowRightIcon,
   BadgeCheckIcon,
   BanknoteIcon,
   CheckCheckIcon,
+  CheckIcon,
   DatabaseIcon,
   DownloadIcon,
   EyeIcon,
@@ -14,10 +16,12 @@ import {
   FlaskConicalIcon,
   InfoIcon,
   PencilLineIcon,
+  PlusIcon,
   SearchIcon,
   ShieldCheckIcon,
   XCircleIcon,
 } from "lucide-react"
+import { toast } from "sonner"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -78,8 +82,23 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 
+import { CalculationBreakdown } from "./calculation-breakdown"
 import { auditEvents, ontologyVersions } from "./demo-data"
+import { DocumentBriefingButton } from "./document-briefing"
+import {
+  documentApiErrorMessage,
+  documentImageUrl,
+  fetchCaseDocuments,
+  fetchDocumentPages,
+  type DocumentPageRecord,
+  type UploadedDocument,
+} from "./document-api"
 import { formatMoney } from "./format"
+import { isMappingApproved } from "./mapping-rules"
+import {
+  MappingDecisionDialog,
+  type MappingDialogSelection,
+} from "./screens-validation"
 import {
   ConfidenceCell,
   DataCard,
@@ -88,6 +107,16 @@ import {
   ScreenHeading,
   StatusBadge,
 } from "./shared"
+import {
+  addManualInvoiceLine,
+  fetchClaimInvoices,
+  fetchHistoricalObservation,
+  getApiErrorMessage,
+  type ClaimInvoiceSummary,
+  type HistoricalObservationPayload,
+  type MappingDecisionInput,
+} from "@/lib/api"
+import { cn } from "@/lib/utils"
 import type {
   ClaimWorkspace,
   InvoiceLine,
@@ -158,22 +187,264 @@ function differenceLabel(value?: number | null) {
   return `Difference ${sign}${formatMoney(Math.abs(value))}`
 }
 
+const HISTORICAL_OBSERVATION_PATH_PREFIX = "/api/v1/historical-observations/"
+
+function HistoricalObservationDialog({
+  observationId,
+  onClose,
+}: {
+  observationId: string | null
+  onClose: () => void
+}) {
+  const [record, setRecord] = useState<HistoricalObservationPayload | null>(
+    null
+  )
+  const [error, setError] = useState<string | null>(null)
+
+  // HistoricalObservationDialog is remounted per observation id (see the
+  // `key` on its call site), so a fresh mount always starts from the initial
+  // record/error state below and this effect only ever needs to populate it.
+  useEffect(() => {
+    if (!observationId) return
+    let active = true
+    fetchHistoricalObservation(observationId)
+      .then((result) => {
+        if (active) setRecord(result)
+      })
+      .catch((reason) => {
+        if (active) setError(getApiErrorMessage(reason))
+      })
+    return () => {
+      active = false
+    }
+  }, [observationId])
+
+  const loading = observationId !== null && !record && !error
+
+  const vehicle = record?.vehicle
+    ? [
+        record.vehicle.make,
+        record.vehicle.model,
+        record.vehicle.variant,
+        record.vehicle.year,
+      ]
+        .filter(Boolean)
+        .join(" ")
+    : ""
+
+  return (
+    <Dialog
+      open={observationId !== null}
+      onOpenChange={(open) => !open && onClose()}
+    >
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Historical source record</DialogTitle>
+          <DialogDescription>
+            Persisted historical claim observation used as comparison evidence.
+          </DialogDescription>
+        </DialogHeader>
+        {loading ? (
+          <p className="text-sm text-muted-foreground">
+            Loading source record…
+          </p>
+        ) : error ? (
+          <Alert variant="destructive">
+            <AlertTitle>Source record unavailable</AlertTitle>
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        ) : record ? (
+          <div className="grid gap-4 text-sm">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <p className="text-xs text-muted-foreground">Claim reference</p>
+                <p className="font-medium">{record.claim_reference ?? "—"}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Invoice date</p>
+                <p className="font-medium">{record.invoice_date ?? "—"}</p>
+              </div>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Description</p>
+              <p className="font-medium">{record.description ?? "—"}</p>
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <p className="text-xs text-muted-foreground">
+                  Line total (net)
+                </p>
+                <p className="font-medium tabular-nums">
+                  {formatMoney(record.line_total_net ?? undefined)}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Approved (net)</p>
+                <p className="font-medium tabular-nums">
+                  {formatMoney(record.approved_amount_net ?? undefined)}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Settled (net)</p>
+                <p className="font-medium tabular-nums">
+                  {formatMoney(record.settled_amount_net ?? undefined)}
+                </p>
+              </div>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Vehicle</p>
+              <p className="font-medium">{vehicle || "—"}</p>
+            </div>
+            {record.source_record_id ? (
+              <p className="text-xs text-muted-foreground">
+                Source record ID: {record.source_record_id}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+export function InlineMappingApproval({
+  line,
+  ontologyOptions,
+  mappingSaving,
+  onMappingDecision,
+  researchSaving,
+  onProposeNewItem,
+}: {
+  line: InvoiceLine
+  ontologyOptions: OntologyBankItem[]
+  mappingSaving: boolean
+  onMappingDecision: (
+    line: InvoiceLine,
+    input: Omit<MappingDecisionInput, "actor">
+  ) => Promise<void>
+  researchSaving?: boolean
+  onProposeNewItem?: (
+    line: InvoiceLine,
+    values: ResearchFormValues
+  ) => Promise<void>
+}) {
+  const [selection, setSelection] = useState<MappingDialogSelection | null>(
+    null
+  )
+  const [researchOpen, setResearchOpen] = useState(false)
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="rounded-lg border bg-muted/30 p-3">
+        <p className="text-xs font-medium text-muted-foreground">
+          Suggested repair item match
+        </p>
+        <p className="mt-1 font-semibold">
+          {line.ontologyName ?? line.ontologyId ?? "No candidate suggested"}
+        </p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {line.mappingConfidence != null
+            ? `${line.mappingConfidence}% confidence`
+            : "Confidence unavailable"}
+          {line.mappingReviewStatus ? ` · ${line.mappingReviewStatus}` : ""}
+        </p>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <Button
+          size="sm"
+          disabled={mappingSaving || !line.ontologyId}
+          onClick={() => setSelection({ line, action: "approve" })}
+        >
+          <CheckIcon data-icon="inline-start" />
+          Approve match
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={mappingSaving}
+          onClick={() => setSelection({ line, action: "change" })}
+        >
+          <PencilLineIcon data-icon="inline-start" />
+          Change match…
+        </Button>
+        {onProposeNewItem ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={Boolean(researchSaving)}
+            onClick={() => setResearchOpen(true)}
+          >
+            <SearchIcon data-icon="inline-start" />
+            Propose new item…
+          </Button>
+        ) : null}
+      </div>
+      {!line.ontologyId ? (
+        <p className="text-xs text-muted-foreground">
+          No candidate to approve yet — use Change match to select a repair
+          item.
+        </p>
+      ) : null}
+      {selection ? (
+        <MappingDecisionDialog
+          key={`${selection.line.id}-${selection.action}`}
+          selection={selection}
+          ontologyOptions={ontologyOptions}
+          saving={mappingSaving}
+          onOpenChange={(open) => {
+            if (!open) setSelection(null)
+          }}
+          onSubmit={onMappingDecision}
+        />
+      ) : null}
+      {onProposeNewItem ? (
+        <ResearchDialog
+          key={researchOpen ? `${line.id}-research-open` : "research-closed"}
+          line={researchOpen ? line : null}
+          open={researchOpen}
+          onOpenChange={setResearchOpen}
+          onSubmit={async (targetLine, values) => {
+            await onProposeNewItem(targetLine, values)
+            setResearchOpen(false)
+          }}
+          saving={Boolean(researchSaving)}
+        />
+      ) : null}
+    </div>
+  )
+}
+
 export function LineEvidenceSheet({
   line,
   onClose,
   p90ThresholdPct = 0,
+  ontologyOptions,
+  mappingSaving,
+  onMappingDecision,
+  researchSaving,
+  onProposeNewItem,
 }: {
   line: InvoiceLine | null
   onClose: () => void
   p90ThresholdPct?: number
+  ontologyOptions?: OntologyBankItem[]
+  mappingSaving?: boolean
+  onMappingDecision?: (
+    line: InvoiceLine,
+    input: Omit<MappingDecisionInput, "actor">
+  ) => Promise<void>
+  researchSaving?: boolean
+  onProposeNewItem?: (
+    line: InvoiceLine,
+    values: ResearchFormValues
+  ) => Promise<void>
 }) {
   const comparables = line?.comparables ?? []
   const p90 = line?.p90Benchmark
-  const p90Challenged = Boolean(
-    p90 &&
-      p90.percentageDifference > p90ThresholdPct &&
-      p90.difference >= MINIMUM_CHALLENGE_AMOUNT
-  )
+  // The operational status comes only from the server's comparisonStatus
+  // (see backend price_decision.py) — never recomputed client-side here.
+  const p90Challenged = Boolean(p90 && line?.comparisonStatus === "CHALLENGE")
+  const [observationId, setObservationId] = useState<string | null>(null)
   return (
     <Sheet open={line !== null} onOpenChange={(open) => !open && onClose()}>
       <SheetContent className="w-full sm:max-w-2xl">
@@ -186,6 +457,27 @@ export function LineEvidenceSheet({
         {line ? (
           <ScrollArea className="min-h-0 flex-1">
             <div className="flex flex-col gap-5 px-4 pb-6">
+              {!isMappingApproved(line) && onMappingDecision ? (
+                <div className="rounded-lg border border-warning/40 bg-warning/5 p-4">
+                  <p className="text-sm font-medium">
+                    Provisional finding: repair item match needs approval
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Approve, change, or propose a new repair item before this
+                    evidence becomes actionable in Review findings.
+                  </p>
+                  <div className="mt-3">
+                    <InlineMappingApproval
+                      line={line}
+                      ontologyOptions={ontologyOptions ?? []}
+                      mappingSaving={Boolean(mappingSaving)}
+                      onMappingDecision={onMappingDecision}
+                      researchSaving={researchSaving}
+                      onProposeNewItem={onProposeNewItem}
+                    />
+                  </div>
+                </div>
+              ) : null}
               {line.recommended !== undefined ? (
                 <div className="rounded-lg border bg-primary/5 p-4">
                   <div className="flex items-start justify-between gap-4">
@@ -197,8 +489,12 @@ export function LineEvidenceSheet({
                         70% P90 + 30% approved external evidence
                       </p>
                     </div>
-                    <Badge variant={line.challenge > 0 ? "destructive" : "outline"}>
-                      {line.challenge > 0 ? "Price challenge" : "Within support"}
+                    <Badge
+                      variant={line.challenge > 0 ? "destructive" : "outline"}
+                    >
+                      {line.challenge > 0
+                        ? "Price challenge"
+                        : "Within support"}
                     </Badge>
                   </div>
                   <div className="mt-4 grid grid-cols-3 gap-3 text-sm">
@@ -215,7 +511,9 @@ export function LineEvidenceSheet({
                       </p>
                     </div>
                     <div>
-                      <p className="text-xs text-muted-foreground">Difference</p>
+                      <p className="text-xs text-muted-foreground">
+                        Difference
+                      </p>
                       <p className="font-semibold tabular-nums">
                         {formatMoney(line.challenge)}
                       </p>
@@ -228,6 +526,7 @@ export function LineEvidenceSheet({
                   </p>
                 </div>
               ) : null}
+              <CalculationBreakdown steps={line.calculation} />
               {p90 ? (
                 <>
                   <div className="rounded-lg border bg-muted/30 p-4">
@@ -473,15 +772,41 @@ export function LineEvidenceSheet({
                                 </p>
                               </div>
                               {sourceReference ? (
-                                <a
-                                  href={sourceReference}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-primary underline-offset-4 hover:underline"
-                                >
-                                  Open source record
-                                  <ExternalLinkIcon className="size-3" />
-                                </a>
+                                sourceReference.startsWith("http") ? (
+                                  <a
+                                    href={sourceReference}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-primary underline-offset-4 hover:underline"
+                                  >
+                                    Open source record
+                                    <ExternalLinkIcon className="size-3" />
+                                  </a>
+                                ) : sourceReference.startsWith(
+                                    HISTORICAL_OBSERVATION_PATH_PREFIX
+                                  ) ? (
+                                  <Button
+                                    type="button"
+                                    variant="link"
+                                    size="sm"
+                                    className="mt-2 h-auto p-0 text-xs font-medium"
+                                    onClick={() =>
+                                      setObservationId(
+                                        sourceReference.slice(
+                                          HISTORICAL_OBSERVATION_PATH_PREFIX.length
+                                        )
+                                      )
+                                    }
+                                  >
+                                    View source record
+                                    <ExternalLinkIcon className="size-3" />
+                                  </Button>
+                                ) : (
+                                  <p className="mt-2 flex items-center gap-1 text-xs break-words text-muted-foreground">
+                                    <FileTextIcon className="size-3 shrink-0" />
+                                    {sourceReference}
+                                  </p>
+                                )
                               ) : null}
                             </div>
                           )
@@ -499,6 +824,11 @@ export function LineEvidenceSheet({
           </ScrollArea>
         ) : null}
       </SheetContent>
+      <HistoricalObservationDialog
+        key={observationId ?? "closed"}
+        observationId={observationId}
+        onClose={() => setObservationId(null)}
+      />
     </Sheet>
   )
 }
@@ -1116,18 +1446,495 @@ function ResearchDialog({
   )
 }
 
+const MANUAL_LINE_ACTOR = "pilot.handler"
+
+const MANUAL_LINE_ITEM_KIND_OPTIONS = [
+  { value: "part", label: "Part" },
+  { value: "labour", label: "Labour" },
+  { value: "paint", label: "Paint" },
+  { value: "service", label: "Service" },
+  { value: "disposal", label: "Disposal" },
+  { value: "consumable", label: "Consumable" },
+  { value: "unknown", label: "Other" },
+] as const
+
+interface ManualLineFormValues {
+  description: string
+  quantity: string
+  unit: string
+  lineTotalNet: string
+  vatRate: string
+  partNumber: string
+  itemKind: string
+}
+
+const EMPTY_MANUAL_LINE_FORM: ManualLineFormValues = {
+  description: "",
+  quantity: "1",
+  unit: "each",
+  lineTotalNet: "",
+  vatRate: "20",
+  partNumber: "",
+  itemKind: "part",
+}
+
+function ManualLineEntryDialog({
+  document,
+  invoice,
+  open,
+  onOpenChange,
+  onSubmit,
+  saving,
+}: {
+  document: UploadedDocument | null
+  invoice: ClaimInvoiceSummary | null
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onSubmit: (
+    invoice: ClaimInvoiceSummary,
+    values: ManualLineFormValues
+  ) => Promise<void>
+  saving: boolean
+}) {
+  const [values, setValues] = useState<ManualLineFormValues>(
+    EMPTY_MANUAL_LINE_FORM
+  )
+
+  const lineTotalValue = Number(values.lineTotalNet)
+  const invalid =
+    !values.description.trim() ||
+    !Number.isFinite(lineTotalValue) ||
+    lineTotalValue <= 0
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Add line manually</DialogTitle>
+          <DialogDescription>
+            {document?.filename} · recorded as a handler-approved line so it
+            flows into mapping and comparison on the next run.
+          </DialogDescription>
+        </DialogHeader>
+
+        <FieldGroup>
+          <Field data-invalid={!values.description.trim()}>
+            <FieldLabel htmlFor="manual-line-description">
+              Description
+            </FieldLabel>
+            <Input
+              id="manual-line-description"
+              value={values.description}
+              onChange={(event) =>
+                setValues((current) => ({
+                  ...current,
+                  description: event.target.value,
+                }))
+              }
+              aria-invalid={!values.description.trim()}
+              aria-required="true"
+            />
+          </Field>
+          <FieldGroup className="grid sm:grid-cols-2">
+            <Field>
+              <FieldLabel htmlFor="manual-line-quantity">Quantity</FieldLabel>
+              <Input
+                id="manual-line-quantity"
+                type="number"
+                min="0"
+                step="0.01"
+                value={values.quantity}
+                onChange={(event) =>
+                  setValues((current) => ({
+                    ...current,
+                    quantity: event.target.value,
+                  }))
+                }
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="manual-line-unit">Unit</FieldLabel>
+              <Input
+                id="manual-line-unit"
+                value={values.unit}
+                onChange={(event) =>
+                  setValues((current) => ({
+                    ...current,
+                    unit: event.target.value,
+                  }))
+                }
+              />
+            </Field>
+          </FieldGroup>
+          <FieldGroup className="grid sm:grid-cols-2">
+            <Field
+              data-invalid={
+                !Number.isFinite(lineTotalValue) || lineTotalValue <= 0
+              }
+            >
+              <FieldLabel htmlFor="manual-line-total">Net total</FieldLabel>
+              <Input
+                id="manual-line-total"
+                type="number"
+                min="0.01"
+                step="0.01"
+                value={values.lineTotalNet}
+                onChange={(event) =>
+                  setValues((current) => ({
+                    ...current,
+                    lineTotalNet: event.target.value,
+                  }))
+                }
+                aria-invalid={
+                  !Number.isFinite(lineTotalValue) || lineTotalValue <= 0
+                }
+                aria-required="true"
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="manual-line-vat">VAT rate %</FieldLabel>
+              <Input
+                id="manual-line-vat"
+                type="number"
+                min="0"
+                max="100"
+                step="0.01"
+                value={values.vatRate}
+                onChange={(event) =>
+                  setValues((current) => ({
+                    ...current,
+                    vatRate: event.target.value,
+                  }))
+                }
+              />
+            </Field>
+          </FieldGroup>
+          <FieldGroup className="grid sm:grid-cols-2">
+            <Field>
+              <FieldLabel htmlFor="manual-line-kind">Item kind</FieldLabel>
+              <Select
+                value={values.itemKind}
+                onValueChange={(value) =>
+                  setValues((current) => ({ ...current, itemKind: value }))
+                }
+              >
+                <SelectTrigger id="manual-line-kind">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {MANUAL_LINE_ITEM_KIND_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="manual-line-part-number">
+                Part number
+              </FieldLabel>
+              <Input
+                id="manual-line-part-number"
+                value={values.partNumber}
+                onChange={(event) =>
+                  setValues((current) => ({
+                    ...current,
+                    partNumber: event.target.value,
+                  }))
+                }
+              />
+            </Field>
+          </FieldGroup>
+        </FieldGroup>
+
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            disabled={saving}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            disabled={invalid || saving || !invoice}
+            onClick={() => invoice && void onSubmit(invoice, values)}
+          >
+            {saving ? "Adding…" : "Add line"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function ManualReviewDocumentsSection({
+  caseReference,
+  focusDocumentId,
+  enabled = true,
+}: {
+  caseReference: string
+  focusDocumentId?: string | null
+  enabled?: boolean
+}) {
+  const [documents, setDocuments] = useState<UploadedDocument[]>([])
+  const [pages, setPages] = useState<DocumentPageRecord[]>([])
+  const [invoices, setInvoices] = useState<ClaimInvoiceSummary[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [viewerPage, setViewerPage] = useState<DocumentPageRecord | null>(null)
+  const [lineEntryDocument, setLineEntryDocument] =
+    useState<UploadedDocument | null>(null)
+  const [lineEntrySaving, setLineEntrySaving] = useState(false)
+  const rowRefs = useRef<Record<string, HTMLDivElement | null>>({})
+
+  const loadDocumentsAndInvoices = (isActive?: () => boolean) => {
+    Promise.all([
+      fetchCaseDocuments(caseReference),
+      fetchDocumentPages(caseReference),
+      fetchClaimInvoices(caseReference),
+    ])
+      .then(([documentRecords, pageRecords, invoiceRecords]) => {
+        if (isActive && !isActive()) return
+        setDocuments(documentRecords)
+        setPages(pageRecords)
+        setInvoices(invoiceRecords)
+        setLoadError(null)
+      })
+      .catch((error: unknown) => {
+        if (!isActive || isActive())
+          setLoadError(documentApiErrorMessage(error))
+      })
+      .finally(() => {
+        if (!isActive || isActive()) setLoading(false)
+      })
+  }
+
+  useEffect(() => {
+    let active = true
+    loadDocumentsAndInvoices(() => active)
+    return () => {
+      active = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [caseReference])
+
+  useEffect(() => {
+    if (!focusDocumentId) return
+    const node = rowRefs.current[focusDocumentId]
+    node?.scrollIntoView({ behavior: "smooth", block: "center" })
+  }, [focusDocumentId, documents])
+
+  const reviewDocuments = documents.filter(
+    (document) => document.manual_review || document.status === "failed"
+  )
+  const invoiceByDocumentId = new Map(
+    invoices
+      .filter((invoice) => invoice.document_id)
+      .map((invoice) => [invoice.document_id as string, invoice])
+  )
+
+  const handleManualLineSubmit = async (
+    invoice: ClaimInvoiceSummary,
+    values: ManualLineFormValues
+  ) => {
+    setLineEntrySaving(true)
+    try {
+      await addManualInvoiceLine(caseReference, invoice.id, {
+        description: values.description.trim(),
+        quantity: values.quantity ? Number(values.quantity) : undefined,
+        unit: values.unit.trim() || undefined,
+        lineTotalNet: Number(values.lineTotalNet),
+        vatRate: values.vatRate ? Number(values.vatRate) : undefined,
+        itemKind: values.itemKind,
+        partNumber: values.partNumber.trim() || undefined,
+        recordedBy: MANUAL_LINE_ACTOR,
+      })
+      toast.success("Line added", {
+        description: `${values.description} was added to ${invoice.document_filename}.`,
+      })
+      setLineEntryDocument(null)
+      loadDocumentsAndInvoices()
+    } catch (error) {
+      toast.error("Could not add line", {
+        description: getApiErrorMessage(error),
+      })
+    } finally {
+      setLineEntrySaving(false)
+    }
+  }
+
+  return (
+    <DataCard
+      title="Documents needing manual review"
+      description={`${reviewDocuments.length} document${reviewDocuments.length === 1 ? "" : "s"} could not be fully processed automatically`}
+    >
+      {loadError ? (
+        <Alert variant="destructive">
+          <AlertCircleIcon />
+          <AlertTitle>Documents could not be loaded</AlertTitle>
+          <AlertDescription>{loadError}</AlertDescription>
+        </Alert>
+      ) : loading ? (
+        <p className="py-6 text-center text-sm text-muted-foreground">
+          Loading documents…
+        </p>
+      ) : reviewDocuments.length === 0 ? (
+        <p className="py-6 text-center text-sm text-muted-foreground">
+          No documents currently require manual review.
+        </p>
+      ) : (
+        <div className="flex flex-col gap-4">
+          {reviewDocuments.map((document) => {
+            const documentPages = pages.filter(
+              (page) => page.document_id === document.id
+            )
+            return (
+              <div
+                key={document.id}
+                ref={(node) => {
+                  rowRefs.current[document.id] = node
+                }}
+                className={cn(
+                  "rounded-lg border p-4",
+                  focusDocumentId === document.id &&
+                    "ring-2 ring-primary ring-offset-2 ring-offset-background"
+                )}
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1">
+                      <p className="font-medium">{document.filename}</p>
+                      <DocumentBriefingButton
+                        filename={document.filename}
+                        briefing={document.review_briefing}
+                      />
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {document.page_count ?? 0} page
+                      {document.page_count === 1 ? "" : "s"} ·{" "}
+                      {document.status.replaceAll("_", " ")}
+                    </p>
+                  </div>
+                  <StatusBadge
+                    status={
+                      document.status === "failed" ? "FAILED" : "MANUAL REVIEW"
+                    }
+                  />
+                </div>
+                <div className="mt-3 flex items-start gap-2 rounded-md bg-muted/30 p-3 text-sm">
+                  <InfoIcon
+                    className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+                    aria-hidden
+                  />
+                  <p className="text-muted-foreground">
+                    {document.manual_review_reason ??
+                      "No further detail was returned for this document. Open the info icon above for the AI briefing, if one is available."}
+                  </p>
+                </div>
+                {documentPages.length ? (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {documentPages.map((page) => (
+                      <button
+                        key={page.id}
+                        type="button"
+                        onClick={() => setViewerPage(page)}
+                        className="overflow-hidden rounded-md border transition hover:ring-2 hover:ring-primary"
+                        aria-label={`Enlarge page ${page.page_number} of ${document.filename}`}
+                      >
+                        <img
+                          src={documentImageUrl(page.image_url)}
+                          alt={`Page ${page.page_number} thumbnail of ${document.filename}`}
+                          loading="lazy"
+                          className="h-20 w-16 object-cover"
+                        />
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mt-3 text-xs text-muted-foreground">
+                    No page images are available for this document yet.
+                  </p>
+                )}
+                <div className="mt-3 flex items-center justify-between gap-2 border-t pt-3">
+                  <p className="text-xs text-muted-foreground">
+                    {invoiceByDocumentId.has(document.id)
+                      ? "Add billable lines by hand; they flow into mapping and comparison on the next run."
+                      : "Awaiting an invoice record for this document before lines can be added."}
+                  </p>
+                  {invoiceByDocumentId.has(document.id) ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={!enabled}
+                      onClick={() => setLineEntryDocument(document)}
+                    >
+                      <PlusIcon data-icon="inline-start" />
+                      Add line manually
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+      <ManualLineEntryDialog
+        key={lineEntryDocument?.id ?? "closed-manual-line-dialog"}
+        document={lineEntryDocument}
+        invoice={
+          lineEntryDocument
+            ? invoiceByDocumentId.get(lineEntryDocument.id) ?? null
+            : null
+        }
+        open={lineEntryDocument !== null}
+        onOpenChange={(open) => !open && setLineEntryDocument(null)}
+        onSubmit={handleManualLineSubmit}
+        saving={lineEntrySaving}
+      />
+      <Dialog
+        open={viewerPage !== null}
+        onOpenChange={(open) => !open && setViewerPage(null)}
+      >
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>
+              {viewerPage ? `Page ${viewerPage.page_number}` : "Page image"}
+            </DialogTitle>
+            <DialogDescription>
+              {viewerPage?.document_filename ?? "Document page image"}
+            </DialogDescription>
+          </DialogHeader>
+          {viewerPage ? (
+            <img
+              src={documentImageUrl(viewerPage.image_url)}
+              alt={`Page ${viewerPage.page_number} of ${viewerPage.document_filename}`}
+              className="w-full rounded-md border"
+            />
+          ) : null}
+        </DialogContent>
+      </Dialog>
+    </DataCard>
+  )
+}
+
 export function MissingItemsScreen({
   workspace,
   enabled,
   saving,
   onResearch,
   onApprove,
+  focusDocumentId,
 }: {
   workspace: ClaimWorkspace
   enabled: boolean
   saving: boolean
   onResearch: (line: InvoiceLine, values: ResearchFormValues) => Promise<void>
   onApprove: (item: ResearchQueueItem) => Promise<void>
+  focusDocumentId?: string | null
 }) {
   const [researchLine, setResearchLine] = useState<InvoiceLine | null>(null)
   const missingLines = workspace.lines.filter(
@@ -1140,9 +1947,14 @@ export function MissingItemsScreen({
   return (
     <>
       <ScreenHeading
-        title="Missing Items"
-        description="Research is reviewer-initiated. Suggestions remain provisional until a handler approves them."
+        title="Manual review"
+        description="Documents that need a closer look, plus new repair item proposals awaiting handler approval."
         action={<Badge variant="outline">auto_research: false</Badge>}
+      />
+      <ManualReviewDocumentsSection
+        caseReference={workspace.claim.id}
+        focusDocumentId={focusDocumentId}
+        enabled={enabled}
       />
       <Alert>
         <FlaskConicalIcon />
@@ -1154,7 +1966,7 @@ export function MissingItemsScreen({
         </AlertDescription>
       </Alert>
       <DataCard
-        title="Research queue"
+        title="New repair item proposals"
         description={`${missingLines.length} invoice line${missingLines.length === 1 ? "" : "s"} without an approved mapping`}
         action={<Badge variant="outline">two_step_approval: false</Badge>}
       >
@@ -2063,7 +2875,9 @@ function externalPriceMethod(
   observations: PriceObservationRecord[]
 ) {
   const prices = observations
-    .filter((observation) => observation.approvalStatus.toLowerCase() === "approved")
+    .filter(
+      (observation) => observation.approvalStatus.toLowerCase() === "approved"
+    )
     .map((observation) => observation.priceNet)
     .sort((left, right) => left - right)
   if (!prices.length || item.referencePriceNet == null) {
@@ -2098,7 +2912,9 @@ export function OntologyBankScreen({
     priceObservations: [],
   }
   const activeVersion = workspace.versions?.ontology ?? "unversioned"
-  const [selectedItem, setSelectedItem] = useState<OntologyBankItem | null>(null)
+  const [selectedItem, setSelectedItem] = useState<OntologyBankItem | null>(
+    null
+  )
   const selectedObservations = selectedItem
     ? bank.priceObservations.filter(
         (observation) => observation.ontologyItemId === selectedItem.id
@@ -2173,7 +2989,8 @@ export function OntologyBankScreen({
                           onClick={() => setSelectedItem(item)}
                         >
                           <EyeIcon data-icon="inline-start" />
-                          {item.observationCount} source{item.observationCount === 1 ? "" : "s"}
+                          {item.observationCount} source
+                          {item.observationCount === 1 ? "" : "s"}
                         </Button>
                       </TableCell>
                       <TableCell>
@@ -2239,7 +3056,9 @@ export function OntologyBankScreen({
                     <TableHead>Source evidence</TableHead>
                     <TableHead>Date</TableHead>
                     <TableHead>Scope / VAT</TableHead>
-                    <TableHead className="text-right">Published price</TableHead>
+                    <TableHead className="text-right">
+                      Published price
+                    </TableHead>
                     <TableHead className="text-right">Net price</TableHead>
                     <TableHead className="text-right">Status</TableHead>
                   </TableRow>
@@ -2250,7 +3069,7 @@ export function OntologyBankScreen({
                       <TableCell className="font-mono text-xs">
                         {observation.ontologyCode || observation.ontologyItemId}
                       </TableCell>
-                      <TableCell className="min-w-64 max-w-xs whitespace-normal">
+                      <TableCell className="max-w-xs min-w-64 whitespace-normal">
                         <p className="font-medium">
                           {observation.providerName || observation.source}
                         </p>
@@ -2258,7 +3077,7 @@ export function OntologyBankScreen({
                           {observation.source.replaceAll("_", " ")}
                         </p>
                       </TableCell>
-                      <TableCell className="min-w-48 max-w-xs whitespace-normal">
+                      <TableCell className="max-w-xs min-w-48 whitespace-normal">
                         {observation.sourceRef?.startsWith("http") ? (
                           <a
                             className="inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline"
@@ -2270,7 +3089,7 @@ export function OntologyBankScreen({
                             <ExternalLinkIcon className="size-3.5" />
                           </a>
                         ) : (
-                          <span className="block max-w-48 break-all text-sm text-muted-foreground">
+                          <span className="block max-w-48 text-sm break-all text-muted-foreground">
                             {observation.sourceRef || "No source reference"}
                           </span>
                         )}
@@ -2309,16 +3128,21 @@ export function OntologyBankScreen({
       >
         <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{selectedItem?.name ?? "External price evidence"}</DialogTitle>
+            <DialogTitle>
+              {selectedItem?.name ?? "External price evidence"}
+            </DialogTitle>
             <DialogDescription>
-              Source prices and the exact aggregation used for the library value.
+              Source prices and the exact aggregation used for the library
+              value.
             </DialogDescription>
           </DialogHeader>
           {selectedItem ? (
             <div className="flex flex-col gap-4">
               <div className="grid gap-3 rounded-lg border p-4 sm:grid-cols-2">
                 <div>
-                  <p className="text-xs text-muted-foreground">External price used</p>
+                  <p className="text-xs text-muted-foreground">
+                    External price used
+                  </p>
                   <p className="mt-1 text-xl font-semibold tabular-nums">
                     {selectedItem.referencePriceNet == null
                       ? "—"
@@ -2326,7 +3150,9 @@ export function OntologyBankScreen({
                   </p>
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">Aggregation method</p>
+                  <p className="text-xs text-muted-foreground">
+                    Aggregation method
+                  </p>
                   <p className="mt-1 text-sm font-medium">
                     {externalPriceMethod(selectedItem, selectedObservations)}
                   </p>
@@ -2373,8 +3199,12 @@ export function OntologyBankScreen({
                     ))
                   ) : (
                     <TableRow>
-                      <TableCell colSpan={4} className="py-8 text-center text-muted-foreground">
-                        No individual source observations are stored for this item.
+                      <TableCell
+                        colSpan={4}
+                        className="py-8 text-center text-muted-foreground"
+                      >
+                        No individual source observations are stored for this
+                        item.
                       </TableCell>
                     </TableRow>
                   )}

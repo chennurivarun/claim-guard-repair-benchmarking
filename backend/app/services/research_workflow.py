@@ -16,7 +16,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
-from typing import Literal, TypedDict
+from typing import Any, Literal, TypedDict
 from urllib.parse import urlsplit, urlunsplit
 
 from sqlalchemy import func, select
@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.config import Settings, get_settings
 from app.db_types import utc_now
+from app.domain.normalisation import normalise_description
 from app.enums import (
     ApprovalStatus,
     AuditActorType,
@@ -62,6 +63,12 @@ _OPEN_RESEARCH_STATUSES = (
     ResearchStatus.PROVISIONAL,
 )
 _DEDUP_RESEARCH_STATUSES = (*_OPEN_RESEARCH_STATUSES, ResearchStatus.APPROVED)
+
+# Task B2: source_type/price_source marker for research and price-evidence rows
+# created automatically from an unmatched priced invoice line, so they are always
+# distinguishable from reviewer-initiated research in audit events and the UI.
+AUTO_STAGED_SOURCE_TYPE = "auto_unmatched_invoice_line"
+AUTO_STAGE_ALLOW_LIST_VERSION = "internal-invoice-provenance-v1"
 
 
 MoneyInput = Decimal | str | int
@@ -586,6 +593,307 @@ def _workflow_result(
     }
 
 
+def _auto_stage_identity_marker(raw_suggestion_json: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not raw_suggestion_json:
+        return None
+    workflow = raw_suggestion_json.get("workflow")
+    if not isinstance(workflow, dict):
+        return None
+    marker = workflow.get("auto_stage")
+    return marker if isinstance(marker, dict) else None
+
+
+def find_open_auto_staged_proposal(
+    session: Session,
+    *,
+    case_id: str,
+    normalised_description: str,
+    part_number_identity: str,
+) -> ResearchItem | None:
+    """Find an existing open/approved auto-staged proposal for the same line content.
+
+    Dedup key is (case, normalised description, part number) rather than the invoice
+    line id, so the same missing part described on several lines in a case (or a
+    case reprocess run that re-encounters the same unmatched line) never produces a
+    second proposal.
+    """
+
+    candidates = session.scalars(
+        select(ResearchItem)
+        .join(ResearchTask, ResearchTask.id == ResearchItem.research_task_id)
+        .where(
+            ResearchTask.case_id == case_id,
+            ResearchItem.status.in_(_DEDUP_RESEARCH_STATUSES),
+        )
+    ).all()
+    for candidate in candidates:
+        marker = _auto_stage_identity_marker(candidate.raw_suggestion_json)
+        if marker is None:
+            continue
+        if (
+            marker.get("normalised_description") == normalised_description
+            and marker.get("part_number_identity") == part_number_identity
+        ):
+            return candidate
+    return None
+
+
+def stage_unmatched_line_proposal(
+    session: Session,
+    *,
+    case_id: str,
+    line: InvoiceLineItem,
+    invoice: Invoice,
+    actor_id: str = "claimguard.auto-staging",
+    settings: Settings | None = None,
+) -> ResearchItem | None:
+    """Auto-stage a "new ontology item" proposal for a priced, unmatched invoice line.
+
+    This mirrors the persistence shape ``trigger_manual_research`` builds for a
+    reviewer-initiated suggestion (ResearchTask -> ResearchItem -> provisional
+    OntologyItem -> PriceObservation -> AuditEvent) so ``approve_research_item``
+    promotes staged proposals exactly the way it promotes reviewer research, with
+    no separate model. The evidence source differs: there is no ontology candidate
+    to research yet, so the "evidence" is the invoice line itself (raw/normalised
+    description, part number, unit, quantity, net price, and document/page
+    provenance) rather than a reviewer-supplied web source, and no source
+    allow-list/URL validation applies. ``price_source``/``source_type`` are marked
+    ``AUTO_STAGED_SOURCE_TYPE`` throughout so these rows are always distinguishable
+    from reviewer-triggered research in audit events and the workspace UI.
+
+    Governance: the created OntologyItem/PriceObservation/ResearchItem are all
+    PROVISIONAL, exactly like reviewer-initiated research, so they never
+    contribute price evidence to a comparison until a handler approves them via
+    the existing ``approve_research_item`` flow.
+
+    Idempotent on (case, normalised description, part number): if an open or
+    already-approved auto-staged proposal exists for the same line content, it is
+    returned unchanged instead of creating a duplicate.
+    """
+
+    effective_settings = settings or get_settings()
+    normalised_description = line.normalised_description or normalise_description(
+        line.raw_description
+    )
+    part_number_identity = _normalise_part_number(line.part_number)
+
+    existing = find_open_auto_staged_proposal(
+        session,
+        case_id=case_id,
+        normalised_description=normalised_description,
+        part_number_identity=part_number_identity,
+    )
+    if existing is not None:
+        return existing
+
+    if invoice.invoice_date is None or line.line_total_net is None:
+        return None
+    line_total_net = Decimal(str(line.line_total_net))
+    if line_total_net <= 0:
+        return None
+
+    quantity = Decimal(str(line.quantity)) if line.quantity is not None else None
+    if line.unit_price_net is not None:
+        unit_price = Decimal(str(line.unit_price_net))
+    elif quantity and quantity > 0:
+        unit_price = (line_total_net / quantity).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+    else:
+        unit_price = line_total_net
+    price_net = _money(unit_price, "line.unit_price_net")
+    currency = (invoice.currency or effective_settings.default_currency).upper()
+    unit = (line.unit or "each").strip()
+    category = (line.raw_category or line.item_kind.value.replace("_", " ")).strip().title()
+    canonical_name = line.raw_description.strip()
+
+    now = utc_now()
+    task = ResearchTask(
+        case_id=case_id,
+        invoice_line_item_id=line.id,
+        requested_by=actor_id,
+        initiated_automatically=True,
+        query_text=(
+            f"Auto-staged ontology proposal for an unmatched priced invoice line: "
+            f"{canonical_name}"
+        ),
+        source_allow_list_version=AUTO_STAGE_ALLOW_LIST_VERSION,
+        status=ResearchStatus.PROVISIONAL,
+        model_id=None,
+        prompt_version="auto-stage-unmatched-line-v1",
+        started_at=now,
+        completed_at=now,
+    )
+    session.add(task)
+    session.flush()
+
+    version = _new_ontology_version(session, task, actor_id)
+    canonical_identity = _canonical_identity(
+        item_type=line.item_kind,
+        canonical_name=canonical_name,
+        category=category,
+        unit=unit,
+        part_number=line.part_number,
+    )
+    ontology_item = OntologyItem(
+        canonical_code=_identity_code(canonical_identity),
+        canonical_name=canonical_name,
+        item_type=line.item_kind,
+        category=category,
+        unit=unit,
+        manufacturer_part_number=line.part_number,
+        description=(
+            "Auto-staged proposal from an unmatched priced invoice line; "
+            "awaiting handler review before it can price any comparison."
+        ),
+        region=effective_settings.default_jurisdiction,
+        reference_price_net=price_net,
+        price_vat_basis=PriceVatBasis.NET,
+        currency=currency,
+        price_source=AUTO_STAGED_SOURCE_TYPE,
+        source_url_or_ref=f"invoice-line:{line.id}",
+        effective_date=invoice.invoice_date,
+        status=OntologyItemStatus.PROVISIONAL,
+        approval_status=ApprovalStatus.PROVISIONAL,
+        confidence_level=ConfidenceLevel.LOW,
+        created_by=actor_id,
+        created_in_version_id=version.id,
+    )
+    session.add(ontology_item)
+    session.flush()
+
+    raw_suggestion = {
+        "workflow": {
+            "reviewer_initiated": False,
+            "initiated_automatically": True,
+            "source_type": AUTO_STAGED_SOURCE_TYPE,
+            "auto_stage": {
+                "normalised_description": normalised_description,
+                "part_number_identity": part_number_identity,
+            },
+        },
+        "price_scope": PriceScope.UNIT.value,
+        "currency": currency,
+        "region": effective_settings.default_jurisdiction,
+        "canonical_identity": list(canonical_identity),
+        "provenance": {
+            "invoice_id": invoice.id,
+            "invoice_line_item_id": line.id,
+            "document_id": invoice.document_id,
+            "invoice_number": invoice.invoice_number,
+            "source_page_id": line.source_page_id,
+            "page_numbers": invoice.page_numbers_json,
+            "raw_description": line.raw_description,
+            "normalised_description": normalised_description,
+            "part_number": line.part_number,
+            "quantity": str(quantity) if quantity is not None else None,
+            "unit": unit,
+            "unit_price_net": price_net,
+            "line_total_net": str(line_total_net),
+        },
+    }
+    research_item = ResearchItem(
+        research_task_id=task.id,
+        provisional_ontology_item_id=ontology_item.id,
+        suggested_canonical_name=canonical_name,
+        suggested_item_type=line.item_kind,
+        suggested_category=category,
+        suggested_unit=unit,
+        suggested_part_number=line.part_number,
+        vehicle_compatibility_json=None,
+        suggested_price_net=price_net,
+        vat_basis=PriceVatBasis.NET,
+        source_urls_json=[],
+        date_checked=invoice.invoice_date,
+        confidence=None,
+        rationale=(
+            "Machine-staged proposal: this priced invoice line had no ontology "
+            "candidate meeting the mapping acceptance floor (or none in the closed "
+            "ontology bank at all). A handler must review and approve before it "
+            "prices any comparison."
+        ),
+        raw_suggestion_json=raw_suggestion,
+        status=ResearchStatus.PROVISIONAL,
+    )
+    session.add(research_item)
+    session.flush()
+
+    evidence_row = ExternalEvidence(
+        research_task_id=task.id,
+        source_record_id=line.id,
+        source_uri=f"invoice-line://{invoice.id}/{line.id}",
+        captured_at=now,
+        title=f"Invoice {invoice.invoice_number or invoice.id} line: {canonical_name[:400]}",
+        minimal_excerpt=line.raw_description,
+        content_hash=hashlib.sha256(f"{AUTO_STAGED_SOURCE_TYPE}:{line.id}".encode()).hexdigest(),
+        part_number=line.part_number,
+        fitment_json=None,
+        price_net=price_net,
+        currency=currency,
+        vat_basis=PriceVatBasis.NET,
+        unit=unit,
+        validation_flags_json={
+            "source_type": AUTO_STAGED_SOURCE_TYPE,
+            "source_page_id": line.source_page_id,
+            "invoice_id": invoice.id,
+            "invoice_line_item_id": line.id,
+        },
+        approval_status=ApprovalStatus.PROVISIONAL,
+    )
+    session.add(evidence_row)
+    session.flush()
+
+    observation = PriceObservation(
+        ontology_item_id=ontology_item.id,
+        price_net=price_net,
+        currency=currency,
+        vat_basis=PriceVatBasis.NET,
+        unit=unit,
+        price_scope=PriceScope.UNIT,
+        source_type=AUTO_STAGED_SOURCE_TYPE,
+        source_record_id=line.id,
+        source_url_or_ref=evidence_row.source_uri,
+        observed_at=now,
+        effective_from=invoice.invoice_date,
+        region=effective_settings.default_jurisdiction,
+        approval_status=ApprovalStatus.PROVISIONAL,
+        observation_kind=PriceObservationKind.PROVISIONAL,
+        evidence_id=evidence_row.id,
+        created_in_version_id=version.id,
+    )
+    session.add(observation)
+    session.flush()
+
+    session.add(
+        AuditEvent(
+            case_id=case_id,
+            actor_type=AuditActorType.SYSTEM,
+            actor_id=actor_id,
+            event_type="RESEARCH_AUTO_STAGED_FROM_UNMATCHED_LINE",
+            entity_type="research_item",
+            entity_id=research_item.id,
+            before_json=None,
+            after_json={
+                "task_status": task.status.value,
+                "research_item_status": research_item.status.value,
+                "ontology_item_status": ontology_item.status.value,
+            },
+            event_payload_json={
+                "research_task_id": task.id,
+                "invoice_line_item_id": line.id,
+                "ontology_item_id": ontology_item.id,
+                "ontology_version_id": version.id,
+                "source_type": AUTO_STAGED_SOURCE_TYPE,
+                "normalised_description": normalised_description,
+                "part_number_identity": part_number_identity,
+            },
+            correlation_id=task.id,
+        )
+    )
+    session.flush()
+    return research_item
+
+
 def trigger_manual_research(
     session: Session,
     *,
@@ -640,10 +948,15 @@ def trigger_manual_research(
             "RESEARCH_ALREADY_APPROVED_FOR_LINE",
             "this invoice line already has an approved research outcome",
         )
+    # Task B2 auto-stages a provisional proposal for any priced line with no
+    # accepted mapping. That machine-initiated task must not block a reviewer
+    # from independently researching the same line, so only an open
+    # reviewer-initiated task counts as "already open" here.
     open_task = session.scalar(
         select(ResearchTask).where(
             ResearchTask.invoice_line_item_id == invoice_line_item_id,
             ResearchTask.status.in_(_OPEN_RESEARCH_STATUSES),
+            ResearchTask.initiated_automatically.is_(False),
         )
     )
     if open_task is not None:

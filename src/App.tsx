@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { toast } from "sonner"
 
 import { Toaster } from "@/components/ui/sonner"
@@ -21,11 +21,9 @@ import {
   ExtractedInvoiceScreen,
   UploadProcessingScreen,
 } from "@/features/claim-guard/screens-liability-documents"
-import { OverviewScreen } from "@/features/claim-guard/screens-overview"
 import { ReviewFindingsScreen } from "@/features/claim-guard/screens-review-findings"
 import { BenchmarkDashboardScreen } from "@/features/claim-guard/screens-benchmark-dashboard"
 import { KnowledgeGraphScreen } from "@/features/claim-guard/screens-knowledge-graph"
-import { applyP90Policy } from "@/features/claim-guard/p90-policy"
 import {
   CalculationChecksScreen,
   OntologyMappingScreen,
@@ -131,7 +129,8 @@ function invoiceDisplayLabel(
 export function App() {
   const [workspace, setWorkspace] = useState<ClaimWorkspace>(demoWorkspace)
   const [apiMode, setApiMode] = useState<"api" | "demo">("demo")
-  const [activeScreen, setActiveScreen] = useState<ScreenId>("upload-processing")
+  const [activeScreen, setActiveScreen] =
+    useState<ScreenId>("upload-processing")
   const [liabilityStatus, setLiabilityStatus] = useState<LiabilityStatus>(
     demoWorkspace.liability.status
   )
@@ -154,14 +153,12 @@ export function App() {
   )
   const [comparisonSaving, setComparisonSaving] = useState(false)
   const [invoices, setInvoices] = useState<ClaimInvoiceSummary[]>([])
+  const [focusDocumentId, setFocusDocumentId] = useState<string | null>(null)
   const [p90ThresholdPct, setP90ThresholdPct] = useState(10)
-  const operationalWorkspace = useMemo(
-    () => applyP90Policy(workspace, p90ThresholdPct),
-    [p90ThresholdPct, workspace]
-  )
+  const [thresholdApplying, setThresholdApplying] = useState(false)
 
   useEffect(() => {
-    void loadClaimWorkspace().then((result) => {
+    void loadClaimWorkspace(p90ThresholdPct).then((result) => {
       setWorkspace(result.workspace)
       setApiMode(result.mode)
       setLiabilityStatus(result.workspace.liability.status)
@@ -174,7 +171,45 @@ export function App() {
         void fetchClaimInvoices(result.workspace.claim.id).then(setInvoices)
       }
     })
+    // Only the initial p90ThresholdPct matters here; later changes are
+    // handled by the dedicated threshold-refetch effect below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // The server now computes the operational price decision (P90 policy) for
+  // every line — the client no longer overlays it. Toggling the threshold
+  // just refetches the workspace with the new p90_threshold_pct. Demo mode
+  // has no backend to refetch from, so the toggle is a silent no-op there,
+  // matching how the benchmark dashboard already treats demo mode.
+  const isFirstThresholdRender = useRef(true)
+  useEffect(() => {
+    if (isFirstThresholdRender.current) {
+      isFirstThresholdRender.current = false
+      return
+    }
+    if (apiMode !== "api") return
+    // Synchronous setState here is intentional: it flips on the Benchmarks
+    // screen's "Applying threshold…" indicator for the refetch this effect
+    // triggers, mirroring the saving-flag pattern used by the handlers above.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setThresholdApplying(true)
+    fetchClaimWorkspace(
+      workspace.claim.id,
+      workspace.invoice.id,
+      p90ThresholdPct
+    )
+      .then((next) => applyWorkspace(next))
+      .catch((error) => {
+        toast.error("Could not apply the new threshold", {
+          description: getApiErrorMessage(error),
+        })
+      })
+      .finally(() => setThresholdApplying(false))
+    // Re-running this on workspace.claim.id/invoice.id would refetch on
+    // every unrelated workspace update; it only needs to react to the
+    // threshold itself, using whatever claim/invoice is current at the time.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [p90ThresholdPct])
 
   const issuanceAllowed =
     liabilityConfirmed &&
@@ -191,6 +226,28 @@ export function App() {
     (total, invoice) => total + (invoice.challenge_review?.unresolved ?? 0),
     0
   )
+  const challengedInvoices = invoices.filter(
+    (invoice) => (invoice.challenge_review?.positive ?? 0) > 0
+  )
+  // The Review findings screen only makes sense for invoices with a positive
+  // price challenge; every other screen keeps the full uploaded-invoice list.
+  const invoiceSelectorOptions =
+    activeScreen === "price-comparison" ? challengedInvoices : invoices
+
+  useEffect(() => {
+    if (activeScreen !== "price-comparison") return
+    const qualifying = invoices.filter(
+      (invoice) => (invoice.challenge_review?.positive ?? 0) > 0
+    )
+    if (!qualifying.length) return
+    if (qualifying.some((invoice) => invoice.id === workspace.invoice.id)) {
+      return
+    }
+    void handleInvoiceSelection(qualifying[0].id)
+    // handleInvoiceSelection is a stable function declaration recreated each
+    // render; the guards above already prevent redundant or looping calls.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeScreen, invoices, workspace.invoice.id])
 
   function applyWorkspace(nextWorkspace: ClaimWorkspace) {
     setWorkspace(nextWorkspace)
@@ -199,7 +256,11 @@ export function App() {
   }
 
   async function refreshWorkspace(invoiceId?: string) {
-    const next = await fetchClaimWorkspace(workspace.claim.id, invoiceId)
+    const next = await fetchClaimWorkspace(
+      workspace.claim.id,
+      invoiceId,
+      p90ThresholdPct
+    )
     applyWorkspace(next)
     setInvoices(await fetchClaimInvoices(next.claim.id))
     return next
@@ -207,6 +268,11 @@ export function App() {
 
   function navigate(screen: ScreenId) {
     setActiveScreen(screen)
+  }
+
+  function openManualReview(documentId: string) {
+    setFocusDocumentId(documentId)
+    navigate("missing-items")
   }
 
   function changeLiabilityStatus(status: LiabilityStatus) {
@@ -297,7 +363,11 @@ export function App() {
 
     try {
       applyWorkspace(
-        await fetchClaimWorkspace(workspace.claim.id, workspace.invoice.id)
+        await fetchClaimWorkspace(
+          workspace.claim.id,
+          workspace.invoice.id,
+          p90ThresholdPct
+        )
       )
       toast.success("Liability decision confirmed", {
         description: liabilityStatus,
@@ -371,7 +441,13 @@ export function App() {
     }
 
     try {
-      applyWorkspace(await fetchClaimWorkspace(workspace.claim.id))
+      applyWorkspace(
+        await fetchClaimWorkspace(
+          workspace.claim.id,
+          undefined,
+          p90ThresholdPct
+        )
+      )
       toast.success("Correction saved", {
         description:
           "Reprocess the invoice and rerun comparison before challenge finalisation.",
@@ -431,7 +507,13 @@ export function App() {
         actor: HANDLER_ID,
         reason,
       })
-      applyWorkspace(await fetchClaimWorkspace(workspace.claim.id))
+      applyWorkspace(
+        await fetchClaimWorkspace(
+          workspace.claim.id,
+          undefined,
+          p90ThresholdPct
+        )
+      )
       toast.success(
         decision === "undo"
           ? "Extraction decision undone"
@@ -579,7 +661,13 @@ export function App() {
       await finaliseClaim(workspace.claim.id, HANDLER_ID)
     } catch (error) {
       try {
-        applyWorkspace(await fetchClaimWorkspace(workspace.claim.id))
+        applyWorkspace(
+          await fetchClaimWorkspace(
+            workspace.claim.id,
+            undefined,
+            p90ThresholdPct
+          )
+        )
       } catch {
         // Keep the current view when the follow-up refresh also fails.
       }
@@ -591,7 +679,13 @@ export function App() {
     }
 
     try {
-      applyWorkspace(await fetchClaimWorkspace(workspace.claim.id))
+      applyWorkspace(
+        await fetchClaimWorkspace(
+          workspace.claim.id,
+          undefined,
+          p90ThresholdPct
+        )
+      )
       toast.success("Challenge approved and case finalised", {
         description: "DOCX and PDF negotiation outputs are now available.",
       })
@@ -653,7 +747,13 @@ export function App() {
     setResearchSaving(true)
     try {
       await startLineResearch(workspace.claim.id, line.id, input)
-      applyWorkspace(await fetchClaimWorkspace(workspace.claim.id))
+      applyWorkspace(
+        await fetchClaimWorkspace(
+          workspace.claim.id,
+          undefined,
+          p90ThresholdPct
+        )
+      )
       toast.success("Provisional research evidence saved", {
         description:
           "A handler approval is still required before it enters the bank.",
@@ -687,7 +787,13 @@ export function App() {
         reviewerNote:
           "Handler approved the researched ontology item for the pilot.",
       })
-      applyWorkspace(await fetchClaimWorkspace(workspace.claim.id))
+      applyWorkspace(
+        await fetchClaimWorkspace(
+          workspace.claim.id,
+          undefined,
+          p90ThresholdPct
+        )
+      )
       toast.success("Ontology item approved", {
         description:
           "The bank version and claim comparison were refreshed immutably.",
@@ -736,20 +842,6 @@ export function App() {
 
   let screen
   switch (activeScreen) {
-    case "claim-liability":
-      screen = (
-        <OverviewScreen
-          key={`${workspace.liability.status}-${workspace.liability.humanConfirmed}-${workspace.liability.rationale ?? ""}`}
-          workspace={operationalWorkspace}
-          status={liabilityStatus}
-          confirmed={liabilityConfirmed}
-          onStatusChange={changeLiabilityStatus}
-          onConfirm={(decision) => void handleLiabilityConfirmation(decision)}
-          onReviewFindings={() => navigate("price-comparison")}
-          confirming={liabilitySaving}
-        />
-      )
-      break
     case "upload-processing":
       screen = (
         <UploadProcessingScreen
@@ -760,6 +852,7 @@ export function App() {
           }}
           onContinue={() => navigate("benchmark-dashboard")}
           onOpenOntologyLibrary={() => navigate("ontology-bank")}
+          onOpenManualReview={openManualReview}
         />
       )
       break
@@ -802,13 +895,17 @@ export function App() {
     case "price-comparison":
       screen = (
         <ReviewFindingsScreen
-          workspace={operationalWorkspace}
+          workspace={workspace}
           p90ThresholdPct={p90ThresholdPct}
           enabled={apiMode === "api" && !caseFinalised}
           processing={challengeSaving}
           onDecision={handleChallengeDecision}
           onInspect={inspectLine}
           onContinue={() => navigate("challenge-review")}
+          onMappingDecision={handleMappingDecision}
+          mappingSavingLineId={mappingSavingLineId}
+          onProposeNewItem={handleResearch}
+          researchSaving={researchSaving}
         />
       )
       break
@@ -820,13 +917,14 @@ export function App() {
           saving={researchSaving}
           onResearch={handleResearch}
           onApprove={handleResearchApproval}
+          focusDocumentId={focusDocumentId}
         />
       )
       break
     case "challenge-review":
       screen = (
         <ApprovalScreen
-          workspace={operationalWorkspace}
+          workspace={workspace}
           p90ThresholdPct={p90ThresholdPct}
           canIssue={issuanceAllowed}
           comparisonReady={comparisonReady}
@@ -839,11 +937,22 @@ export function App() {
               ? pendingReviewInvoice.invoice_number || "another invoice"
               : null
           }
+          liabilityStatus={liabilityStatus}
+          liabilityConfirmed={liabilityConfirmed}
+          liabilityConfirming={liabilitySaving}
+          onLiabilityStatusChange={changeLiabilityStatus}
+          onConfirmLiability={(decision) =>
+            void handleLiabilityConfirmation(decision)
+          }
+          onDecision={handleChallengeDecision}
+          onMappingDecision={handleMappingDecision}
+          mappingSavingLineId={mappingSavingLineId}
+          onProposeNewItem={handleResearch}
+          researchSaving={researchSaving}
           onFinalise={() => void handleChallengeFinalise()}
           onSettlement={() => setSettlementOpen(true)}
           onDownload={handleReport}
           onBackToFindings={() => navigate("price-comparison")}
-          onReviewLiability={() => navigate("claim-liability")}
           onReviewPendingInvoice={
             pendingReviewInvoice
               ? () => {
@@ -863,9 +972,10 @@ export function App() {
       screen = (
         <BenchmarkDashboardScreen
           apiMode={apiMode}
-          workspace={operationalWorkspace}
+          workspace={workspace}
           challengeThreshold={p90ThresholdPct}
           onChallengeThresholdChange={setP90ThresholdPct}
+          thresholdApplying={thresholdApplying}
           onOpenKnowledgeGraph={() => navigate("knowledge-graph")}
         />
       )
@@ -896,13 +1006,30 @@ export function App() {
         liabilityStatus={liabilityStatus}
         apiMode={apiMode}
       >
-        {invoices.length > 1 ? (
+        {activeScreen === "price-comparison" &&
+        invoices.length > 0 &&
+        !challengedInvoices.length ? (
+          <div className="mb-4 rounded-lg border border-dashed bg-card px-4 py-6 text-center">
+            <p className="text-sm font-medium">
+              No invoices with price challenges yet
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              None of the uploaded invoices in this claim have a positive price
+              challenge to review.
+            </p>
+          </div>
+        ) : invoiceSelectorOptions.length > 1 ? (
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-card px-4 py-3">
             <div>
-              <p className="text-sm font-medium">Uploaded invoices</p>
+              <p className="text-sm font-medium">
+                {activeScreen === "price-comparison"
+                  ? "Challenged invoices"
+                  : "Uploaded invoices"}
+              </p>
               <p className="text-xs text-muted-foreground">
-                Switch invoice details; benchmarking uses all uploaded invoices
-                in this claim batch.
+                {activeScreen === "price-comparison"
+                  ? "Only invoices with a positive price challenge are shown here."
+                  : "Switch invoice details; benchmarking uses all uploaded invoices in this claim batch."}
               </p>
             </div>
             <select
@@ -914,7 +1041,7 @@ export function App() {
               }
               aria-label="Select uploaded invoice"
             >
-              {invoices.map((invoice, index) => (
+              {invoiceSelectorOptions.map((invoice, index) => (
                 <option key={invoice.id} value={invoice.id}>
                   {invoiceDisplayLabel(invoice, index)}
                 </option>
@@ -938,7 +1065,7 @@ export function App() {
         open={settlementOpen}
         onOpenChange={setSettlementOpen}
         onSave={(values) => void handleSettlement(values)}
-        lines={operationalWorkspace.lines.filter((line) => line.challenge > 0)}
+        lines={workspace.lines.filter((line) => line.challenge > 0)}
         saving={settlementSaving}
       />
       <Toaster richColors position="bottom-right" />

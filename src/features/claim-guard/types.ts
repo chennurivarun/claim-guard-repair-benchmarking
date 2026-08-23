@@ -9,7 +9,6 @@ export const LIABILITY_STATUSES = [
 export type LiabilityStatus = (typeof LIABILITY_STATUSES)[number]
 
 export type ScreenId =
-  | "claim-liability"
   | "upload-processing"
   | "document-pages"
   | "extracted-invoice"
@@ -115,6 +114,21 @@ export interface P90LineBenchmark {
   currentInvoiceExcluded: boolean
 }
 
+/**
+ * One ordered step in the server's operational price decision (see
+ * backend/app/domain/price_decision.py `decide_line_price`). Steps 1-10 cover
+ * billed net, P90 evidence, external price, weighting, evidence price,
+ * supported price, the percentage gate, the £5 gate, status, and VAT impact.
+ * `passed` is present only on the two gate steps.
+ */
+export interface CalculationStep {
+  step: number
+  label: string
+  value?: string | number | null
+  detail?: string | null
+  passed?: boolean | null
+}
+
 export interface InvoiceLine {
   id: string
   description: string
@@ -161,6 +175,7 @@ export interface InvoiceLine {
   evidenceConfidence?: number
   evidenceRationale?: string
   challengeStrength?: number
+  calculation?: CalculationStep[]
   extractionConfidence: number
   extractionReviewStatus?:
     "pending" | "needs_review" | "approved" | "rejected" | "corrected"

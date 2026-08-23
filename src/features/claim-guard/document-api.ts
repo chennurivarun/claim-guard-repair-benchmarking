@@ -42,6 +42,19 @@ export interface DocumentPageRecord {
   image_url: string
 }
 
+export interface DocumentReviewBriefing {
+  document_summary: string
+  content_found: string[]
+  why_manual_review: string
+  recommended_action: string
+  generated_at: string
+  model: string
+  prompt_version: string
+  fallback: boolean
+  redaction_counts?: Record<string, number>
+  prompt_injection_flags?: string[]
+}
+
 export interface UploadedDocument {
   id: string
   filename: string
@@ -53,6 +66,7 @@ export interface UploadedDocument {
   paired?: boolean
   manual_review?: boolean
   manual_review_reason?: string | null
+  review_briefing?: DocumentReviewBriefing | null
 }
 
 export interface DocumentProcessingResult {

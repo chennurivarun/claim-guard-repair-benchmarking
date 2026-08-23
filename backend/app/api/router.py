@@ -27,6 +27,7 @@ from app.api.schemas import (
     ExtractionDecisionRequest,
     FinaliseCaseRequest,
     InvoiceLineCorrectionRequest,
+    InvoiceLineManualCreateRequest,
     LiabilityDecisionRequest,
     ManualResearchRequest,
     MappingDecisionRequest,
@@ -41,6 +42,8 @@ from app.api.schemas import (
 from app.config import BACKEND_DIR, get_settings
 from app.database import get_db
 from app.domain.liability import LiabilityState, liability_gate
+from app.domain.normalisation import normalise_description, normalise_unit
+from app.domain.price_decision import DEFAULT_POLICY as DEFAULT_P90_POLICY
 from app.enums import (
     ApprovalStatus,
     AuditActorType,
@@ -49,6 +52,7 @@ from app.enums import (
     ClaimPartyRole,
     ClaimVehicleRole,
     DocumentRole,
+    ExtractionMethod,
     LiabilityGateStatus,
     LiabilityStatus,
     LineItemKind,
@@ -931,6 +935,7 @@ def get_invoices(case_reference: str, db: DatabaseSession) -> list[dict[str, Any
             "id": invoice.id,
             "invoice_number": invoice.invoice_number,
             "invoice_date": invoice.invoice_date.isoformat() if invoice.invoice_date else None,
+            "document_id": invoice.document_id,
             "document_filename": invoice.document.original_filename,
             "document_role": invoice.document_role.value,
             "supplier_name": invoice.supplier_name,
@@ -1015,6 +1020,105 @@ def correct_invoice_line(
                 "raw_extraction_preserved": True,
                 "recomparison_required": True,
                 "previous_case_status": previous_case_status.value,
+            },
+        )
+    )
+    db.commit()
+    return _line_payload(line, db)
+
+
+@router.post(
+    "/claims/{case_reference}/invoices/{invoice_id}/lines",
+    tags=["invoices"],
+    status_code=201,
+)
+def add_manual_invoice_line(
+    case_reference: str,
+    invoice_id: str,
+    request: InvoiceLineManualCreateRequest,
+    db: DatabaseSession,
+) -> dict[str, Any]:
+    """Let a handler add a billable line by hand for a document the pipeline
+    could not benchmark, so it flows into mapping and comparison like any
+    other handler-approved extraction.
+    """
+
+    case = db.scalar(select(Case).where(Case.case_reference == case_reference))
+    if case is None:
+        raise _not_found("Claim not found")
+    invoice = db.get(Invoice, invoice_id)
+    if invoice is None or invoice.case_id != case.id:
+        raise _not_found("Invoice not found")
+    if case.status == CaseStatus.FINALISED:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "CASE_ALREADY_FINALISED",
+                "message": "Create a new case revision before adding invoice lines.",
+            },
+        )
+    try:
+        item_kind = LineItemKind(request.item_kind)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "INVALID_LINE_KIND", "message": f"Unknown item_kind: {request.item_kind}"},
+        ) from exc
+    description = request.description.strip()
+    next_sequence = (
+        db.scalar(
+            select(func.max(InvoiceLineItem.sequence_no)).where(
+                InvoiceLineItem.invoice_id == invoice.id
+            )
+        )
+        or 0
+    ) + 1
+    source_page = None
+    if request.page_number is not None:
+        source_page = db.scalar(
+            select(DocumentPage).where(
+                DocumentPage.document_id == invoice.document_id,
+                DocumentPage.page_number == request.page_number,
+            )
+        )
+    line = InvoiceLineItem(
+        invoice_id=invoice.id,
+        sequence_no=next_sequence,
+        raw_description=description,
+        normalised_description=normalise_description(description),
+        item_kind=item_kind,
+        part_number=(request.part_number or "").strip() or None,
+        quantity=request.quantity,
+        unit=normalise_unit(request.unit, item_kind=item_kind.value),
+        unit_price_net=request.unit_price_net,
+        line_total_net=request.line_total_net,
+        vat_rate=request.vat_rate,
+        source_page_id=source_page.id if source_page else None,
+        source_raw_text=description,
+        extraction_method=ExtractionMethod.MANUAL,
+        extraction_confidence=1.0,
+        status=ReviewStatus.APPROVED,
+        user_corrected=True,
+    )
+    db.add(line)
+    db.flush()
+    case.status = CaseStatus.EXTRACTION_REVIEW
+    recalculate_invoice_findings(db, invoice)
+    db.add(
+        AuditEvent(
+            case_id=case.id,
+            processing_run_id=case.current_processing_run_id,
+            actor_type=AuditActorType.USER,
+            actor_id=request.recorded_by,
+            event_type="INVOICE_LINE_MANUALLY_ADDED",
+            entity_type="invoice_line_item",
+            entity_id=line.id,
+            before_json=None,
+            after_json=jsonable_encoder(_line_payload(line, db)),
+            event_payload_json={
+                "invoice_id": invoice.id,
+                "manual_entry": True,
+                "recorded_by": request.recorded_by,
             },
         )
     )
@@ -1888,14 +1992,32 @@ def reprocess_claim(
         ) from exc
 
 
+def _validated_p90_threshold_pct(p90_threshold_pct: int) -> int:
+    if p90_threshold_pct not in DEFAULT_P90_POLICY.allowed_thresholds:
+        allowed = sorted(DEFAULT_P90_POLICY.allowed_thresholds)
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "INVALID_P90_THRESHOLD",
+                "message": f"p90_threshold_pct must be one of: {allowed}",
+                "allowed": allowed,
+            },
+        )
+    return p90_threshold_pct
+
+
 @router.get("/claims/{case_reference}/workspace", tags=["reports"])
 def get_claim_workspace(
     case_reference: str,
     db: DatabaseSession,
     invoice_id: str | None = None,
+    p90_threshold_pct: int = Query(DEFAULT_P90_POLICY.default_threshold_pct),
 ) -> dict[str, Any]:
+    threshold = _validated_p90_threshold_pct(p90_threshold_pct)
     try:
-        return build_claim_workspace(db, case_reference, invoice_id=invoice_id)
+        return build_claim_workspace(
+            db, case_reference, invoice_id=invoice_id, p90_threshold_pct=threshold
+        )
     except LookupError as exc:
         raise _not_found("Claim not found") from exc
     except ValueError as exc:
@@ -1905,15 +2027,26 @@ def get_claim_workspace(
 
 
 @router.get("/claims/{case_reference}/result", tags=["reports"])
-def get_case_result(case_reference: str, db: DatabaseSession) -> dict[str, Any]:
+def get_case_result(
+    case_reference: str,
+    db: DatabaseSession,
+    p90_threshold_pct: int = Query(DEFAULT_P90_POLICY.default_threshold_pct),
+) -> dict[str, Any]:
+    threshold = _validated_p90_threshold_pct(p90_threshold_pct)
     try:
-        return build_case_result(db, case_reference)
+        return build_case_result(db, case_reference, p90_threshold_pct=threshold)
     except LookupError as exc:
         raise _not_found("Claim not found") from exc
 
 
 @router.get("/claims/{case_reference}/reports/{report_format}", tags=["reports"])
-def download_report(case_reference: str, report_format: str, db: DatabaseSession):
+def download_report(
+    case_reference: str,
+    report_format: str,
+    db: DatabaseSession,
+    p90_threshold_pct: int = Query(DEFAULT_P90_POLICY.default_threshold_pct),
+):
+    threshold = _validated_p90_threshold_pct(p90_threshold_pct)
     report_format = report_format.lower()
     allowed = {"json", "xlsx", "sqlite", "docx", "pdf"}
     if report_format not in allowed:
@@ -1922,7 +2055,7 @@ def download_report(case_reference: str, report_format: str, db: DatabaseSession
             detail={"code": "UNSUPPORTED_REPORT", "allowed": sorted(allowed)},
         )
     try:
-        result = build_case_result(db, case_reference)
+        result = build_case_result(db, case_reference, p90_threshold_pct=threshold)
     except LookupError as exc:
         raise _not_found("Claim not found") from exc
 

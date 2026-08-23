@@ -6,6 +6,7 @@ This package contains the complete local-pilot application, database migrations,
 
 | Need | File or folder |
 | --- | --- |
+| Set up a new machine (prerequisites, AI keys, verification) | `docs/CLIENT_MACHINE_SETUP.md` |
 | Install and run the application | `docs/CLIENT_HANDOVER_QUICK_START.md` |
 | Product and workflow explanation | `docs/CLAIMGUARD_BEGINNER_HANDBOOK.md` |
 | Benchmark formula and evidence rules | `docs/BENCHMARKING_MODEL.md` |
