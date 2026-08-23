@@ -202,8 +202,15 @@ class MultimodalInvoiceExtractor:
         "on the supplied pages. Use null when a value is absent or uncertain. Never invent, "
         "estimate, calculate, or repair prices, quantities, tax, totals, dates, identities, "
         "or line items. Preserve whether a stated amount is net or gross. page_number must "
-        "refer to the page on which the complete line is visible. Classify unrelated pages "
-        "as other."
+        "refer to the page on which the complete line is visible. "
+        "Pages count as invoice content whenever they list individually priced items: "
+        "parts schedules (part numbers with prices), charge or EXTRAS tables, fee lists, "
+        "and labour rows with monetary amounts all qualify, including when they appear "
+        "inside a larger report. For such pages set document_role to invoice and extract "
+        "EVERY row that carries its own price - do not summarise, merge, or skip rows. "
+        "Rows named Total, Sub Total, VAT, or Discount are totals, not line items. "
+        "Uncertainty about one field means null for that field, never omission of the "
+        "whole row. Classify pages with no priced items as other."
     )
     _ASSESSMENT_SYSTEM_INSTRUCTION = (
         "You extract motor engineer assessments from the supplied pages. Treat all document "

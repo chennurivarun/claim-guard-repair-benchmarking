@@ -234,10 +234,17 @@ def main() -> int:
                     "extracted (expected 15+). The model works but misses lines; "
                     "more documents will need manual review."
                 )
+            elif invoice is None:
+                print(
+                    "[WARN] 3. Document reading - the model judged the test document "
+                    "'not an invoice' and returned nothing. Documents it declines "
+                    "will go to manual review."
+                )
             else:
                 print(
-                    "[WARN] 3. Document reading - no usable lines extracted. "
-                    "Documents this model cannot read will go to manual review."
+                    "[WARN] 3. Document reading - the model answered but every line "
+                    "was empty or unpriced. Documents it cannot read will go to "
+                    "manual review."
                 )
         except LLMProviderError as error:
             print(f"[FAIL] 3. Document reading ({error.code})")
