@@ -851,7 +851,17 @@ export function App() {
           caseReference={workspace.claim.id}
           finalised={caseFinalised}
           onProcessed={async () => {
-            await refreshComparison()
+            try {
+              await refreshComparison()
+            } catch (error) {
+              // The documents are saved either way; never let a comparison
+              // failure leave the invoice list and workspace stale.
+              await refreshWorkspace().catch(() => undefined)
+              toast.info("Documents saved; price comparison could not run yet", {
+                description: getApiErrorMessage(error),
+                duration: 9000,
+              })
+            }
           }}
           onContinue={() => navigate("benchmark-dashboard")}
           onOpenOntologyLibrary={() => navigate("ontology-bank")}

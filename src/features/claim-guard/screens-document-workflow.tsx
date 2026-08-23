@@ -536,7 +536,11 @@ export function UploadProcessingWorkflow({
       setPages(refreshedPages)
       setDocuments(refreshedDocuments)
       setPageLoadError(null)
-      if (latestResult) await onProcessed()
+      if (latestResult) {
+        // The batch itself succeeded; downstream refresh/comparison problems
+        // are surfaced by their owners and must not strand the bar at 90%.
+        await onProcessed().catch(() => undefined)
+      }
       setProgress(100)
       setProgressMessage("Batch processing complete")
       toast.success("Document batch processing completed", {
