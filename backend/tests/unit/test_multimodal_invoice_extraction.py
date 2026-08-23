@@ -202,6 +202,140 @@ def test_header_only_fallback_does_not_replace_deterministic_lines() -> None:
     assert merged.extraction_method == "ocr"
 
 
+class SequencedClient:
+    """Fake client returning a scripted sequence of responses or raised errors."""
+
+    provider = "stub"
+    model_id = "sequenced"
+
+    def __init__(self, outcomes: list) -> None:
+        self.outcomes = list(outcomes)
+        self.calls = []
+
+    def complete_json(self, **kwargs):
+        self.calls.append(kwargs)
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+_VALID_INVOICE_RESPONSE = {
+    "document_role": "invoice",
+    "confidence": 0.9,
+    "header": {"supplier_name": "Example Repairer"},
+    "totals": {"subtotal_net": "100.00"},
+    "line_items": [
+        {
+            "page_number": 1,
+            "description": "Front wing",
+            "item_kind": "part",
+            "line_total_net": "100.00",
+        }
+    ],
+}
+# Oversized supplier name fails strict pydantic validation -> LLM_INVALID_EXTRACTION.
+_INVALID_INVOICE_RESPONSE = {
+    "document_role": "invoice",
+    "confidence": 0.9,
+    "header": {"supplier_name": "x" * 501},
+    "totals": {},
+    "line_items": [
+        {"page_number": 1, "description": "Part", "line_total_net": "20.00"}
+    ],
+}
+
+
+def _text_page() -> PageAnalysis:
+    return PageAnalysis(
+        page_number=1,
+        width=100,
+        height=100,
+        rotation=0,
+        native_character_count=40,
+        positioned_word_count=8,
+        image_count=0,
+        extraction_method="native",
+        extraction_confidence=0.9,
+        text="Front wing part 100.00",
+        page_type=PageType.INVOICE,
+        classification_confidence=0.8,
+    )
+
+
+def test_invalid_response_is_retried_once_then_succeeds() -> None:
+    client = SequencedClient(
+        [
+            LLMProviderError("LLM_INVALID_RESPONSE", "The model returned invalid JSON."),
+            _VALID_INVOICE_RESPONSE,
+        ]
+    )
+    result = MultimodalInvoiceExtractor(client, max_attempts=2).extract_from_text(
+        [_text_page()]
+    )
+    assert result is not None
+    assert result.line_items[0].line_total_net == Decimal("100.00")
+    assert len(client.calls) == 2
+
+
+def test_invalid_extraction_is_retried_in_vision_mode(tmp_path) -> None:
+    client = SequencedClient([_INVALID_INVOICE_RESPONSE, _VALID_INVOICE_RESPONSE])
+    result = MultimodalInvoiceExtractor(client, max_attempts=2).extract(
+        [_page(tmp_path / "page.jpg")]
+    )
+    assert result is not None
+    assert len(client.calls) == 2
+
+
+def test_error_code_is_retained_when_every_attempt_fails() -> None:
+    client = SequencedClient([_INVALID_INVOICE_RESPONSE, _INVALID_INVOICE_RESPONSE])
+    with pytest.raises(LLMProviderError) as error:
+        MultimodalInvoiceExtractor(client, max_attempts=2).extract_from_text(
+            [_text_page()]
+        )
+    assert error.value.code == "LLM_INVALID_EXTRACTION"
+    assert len(client.calls) == 2
+
+
+def test_rate_limits_are_never_retried() -> None:
+    client = SequencedClient(
+        [LLMProviderError("LLM_RATE_LIMITED", "Provider rate limited.")]
+    )
+    with pytest.raises(LLMProviderError) as error:
+        MultimodalInvoiceExtractor(client, max_attempts=3).extract_from_text(
+            [_text_page()]
+        )
+    assert error.value.code == "LLM_RATE_LIMITED"
+    assert len(client.calls) == 1
+
+
+def test_assessment_extraction_retries_invalid_responses() -> None:
+    valid_assessment = {
+        "document_role": "engineer_assessment",
+        "confidence": 0.9,
+        "fields": {"assessment_number": "EA-1"},
+        "operations": [
+            {
+                "page_number": 1,
+                "category": "labour",
+                "description": "Renew mirror",
+                "work_units": "3",
+            }
+        ],
+    }
+    client = SequencedClient(
+        [
+            LLMProviderError("LLM_INVALID_RESPONSE", "The model returned invalid JSON."),
+            valid_assessment,
+        ]
+    )
+    result = MultimodalInvoiceExtractor(client, max_attempts=2).extract_assessment_from_text(
+        [_text_page()]
+    )
+    assert isinstance(result, ExtractedEngineerAssessment)
+    assert len(client.calls) == 2
+
+
 def test_vision_extracts_engineer_assessment_into_shared_schema(tmp_path) -> None:
     client = StubVisionClient(
         {

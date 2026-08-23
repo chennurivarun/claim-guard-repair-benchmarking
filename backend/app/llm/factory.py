@@ -65,6 +65,7 @@ def build_invoice_vision_extractor(settings: Settings) -> MultimodalInvoiceExtra
     return MultimodalInvoiceExtractor(
         _build_client(settings, model_id=model_id),
         max_pages=settings.llm_vision_max_pages,
+        max_attempts=settings.llm_max_attempts,
     )
 
 
@@ -83,4 +84,5 @@ def build_invoice_text_extractor(settings: Settings) -> MultimodalInvoiceExtract
     return MultimodalInvoiceExtractor(
         _build_client(settings, model_id=model_id),
         max_pages=settings.llm_vision_max_pages,
+        max_attempts=settings.llm_max_attempts,
     )

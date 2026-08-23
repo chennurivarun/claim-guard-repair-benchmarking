@@ -18,7 +18,6 @@ from app.models import (
 )
 from app.services import document_processing
 
-
 PAIR_DIR = Path(__file__).resolve().parents[3] / "sample-data" / "engineer-invoice-pairs"
 
 

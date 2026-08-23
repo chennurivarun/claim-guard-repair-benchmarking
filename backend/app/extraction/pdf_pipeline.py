@@ -224,6 +224,64 @@ def _label_rotated_service_sequences(pages: list[PageAnalysis]) -> None:
     apply(run)
 
 
+_SCHEDULE_HEADING_PATTERN = re.compile(r"(?im)^\s*(?:parts|extras)\b")
+_PRICED_ROW_AMOUNT_PATTERN = re.compile(r"(?:£|gbp)?\s*\d[\d,]*\.\d{2}\s*$", re.IGNORECASE)
+_GOVERNED_OPERATION_ROW_PATTERN = re.compile(r"(?im)^\s*op\|")
+_NON_LINE_ROW_TOKENS = ("total", "deduction", "discount", "vat", "balance", "payment")
+
+
+def _priced_row_count(text: str) -> int:
+    """Count rows that read as individually priced schedule lines, not totals."""
+
+    count = 0
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        lower = line.casefold()
+        if not line or any(token in lower for token in _NON_LINE_ROW_TOKENS):
+            continue
+        if not re.search(r"[A-Za-z]{3}", line):
+            continue
+        if _PRICED_ROW_AMOUNT_PATTERN.search(line):
+            count += 1
+    return count
+
+
+def _reclassify_priced_assessment_pages(pages: list[PageAnalysis]) -> None:
+    """Mixed documents: assessment classification must not suppress priced pages.
+
+    Audatex-style "Full Report" documents repeat the assessment header on every
+    page, so genuinely priced pages (a PARTS schedule, an EXTRAS charge list)
+    classify as ENGINEER_ASSESSMENT and never reach invoice extraction. Flip
+    those pages — plus OTHER pages carrying multiple currency amounts — to
+    INVOICE so they enter the standard invoice extraction ladder with correct
+    page provenance. Pages holding governed ``OP|`` operation rows remain
+    assessment evidence for the deterministic assessment parser.
+    """
+
+    if not any(page.page_type == PageType.ENGINEER_ASSESSMENT for page in pages):
+        return
+    for page in pages:
+        if _GOVERNED_OPERATION_ROW_PATTERN.search(page.text):
+            continue
+        if page.page_type == PageType.ENGINEER_ASSESSMENT:
+            if (
+                not _SCHEDULE_HEADING_PATTERN.search(page.text)
+                or _priced_row_count(page.text) < 3
+            ):
+                continue
+            signal = "priced schedule in assessment document"
+        elif page.page_type == PageType.OTHER:
+            if _priced_row_count(page.text) < 2:
+                continue
+            signal = "priced rows in assessment document"
+        else:
+            continue
+        page.page_type = PageType.INVOICE
+        page.classification_signals.append(signal)
+        page.classification_confidence = max(page.classification_confidence, 0.72)
+        page.group_key = _group_key(PageType.INVOICE, page.text, page.page_number)
+
+
 def _merge_assessment_batches(
     batches: list[ExtractedEngineerAssessment],
 ) -> ExtractedEngineerAssessment | None:
@@ -392,6 +450,7 @@ class PDFPipeline:
             pages.append(page_info)
 
         _label_rotated_service_sequences(pages)
+        _reclassify_priced_assessment_pages(pages)
 
         analysis = DocumentAnalysis(
             source_path=source,

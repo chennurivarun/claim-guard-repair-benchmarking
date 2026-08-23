@@ -485,7 +485,14 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
             page for page in analysis.pages
             if page.page_type.value == PageType.ENGINEER_ASSESSMENT.value
         ]
-        if engineer_pages and not analysis.invoices:
+        has_benchmarkable_lines = any(
+            extracted.has_benchmarkable_part_lines() for extracted in analysis.invoices
+        )
+        assessment_fields = None
+        if engineer_pages:
+            # A document can be BOTH an engineer assessment AND carry priced
+            # pages: the kind stays ENGINEER_ASSESSMENT while every extracted
+            # invoice unit below is persisted exactly as for invoice documents.
             document.document_kind = DocumentKind.ENGINEER_ASSESSMENT
             try:
                 parsed = parse_engineer_assessment(engineer_pages)
@@ -556,7 +563,9 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
                         )
                     )
                 session.flush()
-            else:
+            elif not has_benchmarkable_lines:
+                # Manual review only when NEITHER a usable assessment NOR any
+                # benchmarkable invoice line was produced for this document.
                 analysis.manual_review_reason = (
                     analysis.manual_review_reason
                     or "Engineer assessment could not be parsed automatically; manual "
@@ -806,7 +815,7 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
             run.metrics_json["manual_review_reason"] = analysis.manual_review_reason
         if analysis.llm_failures:
             run.metrics_json["llm_failures"] = analysis.llm_failures
-        if engineer_pages and not analysis.invoices and assessment_fields is not None:
+        if engineer_pages and assessment_fields is not None:
             run.metrics_json["engineer_assessments"] = 1
     except Exception as exc:
         document_id = document.id

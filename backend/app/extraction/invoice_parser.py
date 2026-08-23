@@ -27,6 +27,32 @@ from app.llm.invoice_extraction import MultimodalInvoiceExtractor, merge_invoice
 
 MONEY_PATTERN = r"(?:£\s*)?([0-9][0-9,]*\.\d{2})"
 
+# Audatex-style PARTS schedule row: guide number, description, part number,
+# "Bet." discount percentage, price. Example:
+# "1720   R/SCREW              0019846529   0%   2.80"
+PARTS_SCHEDULE_ROW_PATTERN = re.compile(
+    r"^(?P<guide>\d{3,5}(?:\s\d{2})?)\s+(?P<description>[A-Za-z].*?)\s+"
+    r"(?P<part_number>\d{6,14})\s+(?P<discount>\d{1,3}(?:\.\d+)?)\s*%\s+"
+    r"£?(?P<price>\d[\d,]*\.\d{2})\s*$"
+)
+# Generic priced schedule row: description followed by a trailing amount,
+# optionally currency-prefixed. Example: "E.P.A. Charge     GBP 30.00".
+PRICED_SCHEDULE_ROW_PATTERN = re.compile(
+    r"^(?P<description>.+?)\s+(?:GBP|£)?\s*(?P<price>\d[\d,]*\.\d{2})\s*$",
+    re.IGNORECASE,
+)
+SCHEDULE_SECTION_PATTERN = re.compile(r"^\s*(parts|extras|labour)\b", re.IGNORECASE)
+NON_SCHEDULE_LINE_TOKENS = (
+    "total",
+    "deduction",
+    "discount",
+    "vat",
+    "balance",
+    "payment",
+    "carried",
+)
+SCHEDULE_SECTION_KINDS = {"parts": "part", "extras": "fee", "labour": "labour"}
+
 
 def _parse_date(value: str | None):
     if not value:
@@ -387,7 +413,13 @@ class InvoiceParser:
                     pdf_page = pdf.pages[page_info.page_number - 1]
                     layout_text_parts.append(pdf_page.extract_text(layout=True) or page_info.text)
                     if page_info.extraction_method == "native":
-                        lines.extend(self._native_table_lines(pdf_page, page_info, len(lines) + 1))
+                        page_lines = self._native_table_lines(pdf_page, page_info, len(lines) + 1)
+                        if not page_lines:
+                            # Priced schedules drawn as plain text (Audatex PARTS
+                            # and EXTRAS pages) expose no pdfplumber table; parse
+                            # their rows deterministically before any LLM tier.
+                            page_lines = self._schedule_text_lines(page_info, len(lines) + 1)
+                        lines.extend(page_lines)
                     else:
                         lines.extend(self._ocr_lines(page_info, len(lines) + 1))
         except Exception:
@@ -490,6 +522,82 @@ class InvoiceParser:
             extraction_method="native_table",
             confidence=0.98,
         )
+
+    def _schedule_text_lines(self, page: PageAnalysis, start: int) -> list[ExtractedLine]:
+        """Deterministic text-row parsing for priced schedules without table rulings.
+
+        Handles Audatex-style PARTS schedules (guide number / description /
+        part number / "Bet." discount / price) and EXTRAS charge lists
+        (description followed by a GBP amount). Summary rows (totals,
+        deductions, discounts) never become lines, and only positive amounts
+        are accepted, so rolled-up calculation pages still yield no lines.
+        """
+
+        output: list[ExtractedLine] = []
+        sequence = start
+        section: str | None = None
+        for raw_line in page.text.splitlines():
+            line = strip_scan_artifacts(raw_line)
+            if not line:
+                continue
+            heading = SCHEDULE_SECTION_PATTERN.match(line)
+            if heading and not re.search(r"\d[\d,]*\.\d{2}", line):
+                section = heading.group(1).lower()
+                continue
+            parts_match = PARTS_SCHEDULE_ROW_PATTERN.match(line)
+            lower = line.casefold()
+            if parts_match:
+                description = strip_scan_artifacts(parts_match.group("description"))
+                line_total = money(parts_match.group("price"))
+                part_number: str | None = parts_match.group("part_number")
+                item_kind = "part"
+            else:
+                if any(token in lower for token in NON_SCHEDULE_LINE_TOKENS):
+                    continue
+                priced_match = PRICED_SCHEDULE_ROW_PATTERN.match(line)
+                if priced_match is None:
+                    continue
+                description = strip_scan_artifacts(priced_match.group("description"))
+                line_total = money(priced_match.group("price"))
+                part_number = None
+                item_kind = SCHEDULE_SECTION_KINDS.get(section or "", "unknown")
+            if (
+                not description
+                or not re.search(r"[A-Za-z]{3}", description)
+                or line_total is None
+                or line_total <= 0
+            ):
+                continue
+            vat_amount, gross_amount = _line_tax(line_total, Decimal("20"), True)
+            output.append(
+                ExtractedLine(
+                    sequence_no=sequence,
+                    raw_description=description,
+                    normalised_description=normalise_description(description),
+                    item_kind=item_kind,
+                    part_number=part_number,
+                    quantity=Decimal("1"),
+                    unit=normalise_unit(None, item_kind=item_kind),
+                    unit_price_net=line_total,
+                    line_total_net=line_total,
+                    vat_rate=Decimal("20"),
+                    vat_amount=vat_amount,
+                    gross_amount=gross_amount,
+                    vat_applicable=True,
+                    source=_line_source(
+                        page,
+                        description=description,
+                        quantity="1",
+                        unit_price=str(line_total),
+                        line_total=str(line_total),
+                        raw_text=raw_line,
+                        extraction_method="native",
+                        confidence=page.extraction_confidence,
+                    ),
+                )
+            )
+            sequence += 1
+        return output
 
     def _table_lines(
         self,

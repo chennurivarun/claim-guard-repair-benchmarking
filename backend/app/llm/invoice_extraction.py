@@ -215,9 +215,32 @@ class MultimodalInvoiceExtractor:
         "Classify unrelated documents as other."
     )
 
-    def __init__(self, client: StructuredLLMClient, *, max_pages: int = 8) -> None:
+    # Nondeterministic models frequently fail strict validation once and then
+    # succeed. Only structurally invalid results are retried; rate limits and
+    # timeouts propagate immediately so pipeline failure recording handles them.
+    _RETRYABLE_CODES = frozenset({"LLM_INVALID_RESPONSE", "LLM_INVALID_EXTRACTION"})
+
+    def __init__(
+        self,
+        client: StructuredLLMClient,
+        *,
+        max_pages: int = 8,
+        max_attempts: int = 2,
+    ) -> None:
         self.client = client
         self.max_pages = max_pages
+        self.max_attempts = max(1, max_attempts)
+
+    def _call_with_retry(self, attempt):
+        """Run one extraction attempt, retrying invalid results up to max_attempts."""
+
+        for attempt_number in range(1, self.max_attempts + 1):
+            try:
+                return attempt()
+            except LLMProviderError as exc:
+                if exc.code not in self._RETRYABLE_CODES or attempt_number >= self.max_attempts:
+                    raise
+        return None  # pragma: no cover - loop always returns or raises
 
     def extract(
         self,
@@ -254,12 +277,25 @@ class MultimodalInvoiceExtractor:
             "pages": [_prepared_page_entry(page) for page in pages],
         }
         extraction_method = "vision" if use_images else "llm_text"
-        raw = self.client.complete_json(
-            system_instruction=self._INVOICE_SYSTEM_INSTRUCTION,
-            payload=payload,
-            schema=_VisionResult.model_json_schema(),
-            image_data_urls=[_image_data_url(page) for page in pages] if use_images else None,
-        )
+        image_data_urls = [_image_data_url(page) for page in pages] if use_images else None
+
+        def attempt() -> ExtractedInvoice | None:
+            raw = self.client.complete_json(
+                system_instruction=self._INVOICE_SYSTEM_INSTRUCTION,
+                payload=payload,
+                schema=_VisionResult.model_json_schema(),
+                image_data_urls=image_data_urls,
+            )
+            return self._validated_invoice(raw, page_numbers, extraction_method)
+
+        return self._call_with_retry(attempt)
+
+    def _validated_invoice(
+        self,
+        raw: dict,
+        page_numbers: set[int],
+        extraction_method: str,
+    ) -> ExtractedInvoice | None:
         try:
             result = _VisionResult.model_validate(raw)
             if result.document_role == "other":
@@ -358,15 +394,29 @@ class MultimodalInvoiceExtractor:
             return None
         page_numbers = {page.page_number for page in pages}
         extraction_method = "vision" if use_images else "llm_text"
-        raw = self.client.complete_json(
-            system_instruction=self._ASSESSMENT_SYSTEM_INSTRUCTION,
-            payload={
-                "role_hint": "engineer_assessment",
-                "pages": [_prepared_page_entry(page) for page in pages],
-            },
-            schema=_VisionAssessmentResult.model_json_schema(),
-            image_data_urls=[_image_data_url(page) for page in pages] if use_images else None,
-        )
+        payload = {
+            "role_hint": "engineer_assessment",
+            "pages": [_prepared_page_entry(page) for page in pages],
+        }
+        image_data_urls = [_image_data_url(page) for page in pages] if use_images else None
+
+        def attempt() -> ExtractedEngineerAssessment | None:
+            raw = self.client.complete_json(
+                system_instruction=self._ASSESSMENT_SYSTEM_INSTRUCTION,
+                payload=payload,
+                schema=_VisionAssessmentResult.model_json_schema(),
+                image_data_urls=image_data_urls,
+            )
+            return self._validated_assessment(raw, page_numbers, extraction_method)
+
+        return self._call_with_retry(attempt)
+
+    def _validated_assessment(
+        self,
+        raw: dict,
+        page_numbers: set[int],
+        extraction_method: str,
+    ) -> ExtractedEngineerAssessment | None:
         try:
             result = _VisionAssessmentResult.model_validate(raw)
             if result.document_role == "other":

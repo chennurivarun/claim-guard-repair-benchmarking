@@ -10,13 +10,9 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
     AssessmentInvoiceVariance,
-    AssessmentOperation,
     EngineerAssessment,
     Invoice,
-    InvoiceLineItem,
-    Vehicle,
 )
-
 
 ALIASES = {
     "front bumper remove refit": "front bumper remove refit",
