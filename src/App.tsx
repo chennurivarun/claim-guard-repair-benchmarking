@@ -24,6 +24,11 @@ import {
   UploadProcessingScreen,
 } from "@/features/claim-guard/screens-liability-documents"
 import { ReviewFindingsScreen } from "@/features/claim-guard/screens-review-findings"
+import {
+  challengedInvoices as selectChallengedInvoices,
+  invoiceOptionsForScreen,
+  preferredInvoiceIdForScreen,
+} from "@/features/claim-guard/invoice-selection"
 import { BenchmarkDashboardScreen } from "@/features/claim-guard/screens-benchmark-dashboard"
 import { KnowledgeGraphScreen } from "@/features/claim-guard/screens-knowledge-graph"
 import {
@@ -247,20 +252,11 @@ export function App() {
     (total, invoice) => total + (invoice.challenge_review?.unresolved ?? 0),
     0
   )
-  const challengedInvoices = invoices.filter(
-    (invoice) => (invoice.challenge_review?.positive ?? 0) > 0
-  )
-  // Review findings lists every scanned invoice (challenged ones first) so
-  // handlers can inspect any invoice's extracted lines, not only challenges.
-  const invoiceSelectorOptions =
-    activeScreen === "price-comparison"
-      ? [
-          ...challengedInvoices,
-          ...invoices.filter(
-            (invoice) => !challengedInvoices.some((c) => c.id === invoice.id)
-          ),
-        ]
-      : invoices
+  const challengedInvoices = selectChallengedInvoices(invoices)
+  const invoiceSelectorOptions = invoiceOptionsForScreen(invoices, activeScreen)
+  const screenInvoiceReady =
+    activeScreen !== "price-comparison" ||
+    challengedInvoices.some((invoice) => invoice.id === workspace.invoice.id)
 
   function applyWorkspace(nextWorkspace: ClaimWorkspace) {
     setWorkspace(nextWorkspace)
@@ -281,6 +277,14 @@ export function App() {
 
   function navigate(screen: ScreenId) {
     setActiveScreen(screen)
+    const preferredInvoiceId = preferredInvoiceIdForScreen(
+      invoices,
+      screen,
+      workspace.invoice.id
+    )
+    if (preferredInvoiceId && preferredInvoiceId !== workspace.invoice.id) {
+      void handleInvoiceSelection(preferredInvoiceId)
+    }
   }
 
   function openManualReview(documentId: string) {
@@ -463,13 +467,7 @@ export function App() {
     }
 
     try {
-      applyWorkspace(
-        await fetchClaimWorkspace(
-          workspace.claim.id,
-          undefined,
-          p90ThresholdPct
-        )
-      )
+      await refreshWorkspace(workspace.invoice.id)
       toast.success("Correction saved", {
         description:
           "Reprocess the invoice and rerun comparison before challenge finalisation.",
@@ -529,13 +527,7 @@ export function App() {
         actor: HANDLER_ID,
         reason,
       })
-      applyWorkspace(
-        await fetchClaimWorkspace(
-          workspace.claim.id,
-          undefined,
-          p90ThresholdPct
-        )
-      )
+      await refreshWorkspace(workspace.invoice.id)
       toast.success(
         decision === "undo"
           ? "Extraction decision undone"
@@ -809,13 +801,7 @@ export function App() {
         reviewerNote:
           "Handler approved the researched ontology item for the pilot.",
       })
-      applyWorkspace(
-        await fetchClaimWorkspace(
-          workspace.claim.id,
-          undefined,
-          p90ThresholdPct
-        )
-      )
+      await refreshWorkspace(workspace.invoice.id)
       toast.success("Ontology item approved", {
         description:
           "The bank version and claim comparison were refreshed immutably.",
@@ -950,6 +936,26 @@ export function App() {
           mappingSavingLineId={mappingSavingLineId}
           onProposeNewItem={handleResearch}
           researchSaving={researchSaving}
+          onApproveResearch={handleResearchApproval}
+        />
+      )
+      break
+    case "review-findings-all":
+      screen = (
+        <ReviewFindingsScreen
+          workspace={workspace}
+          mode="all"
+          p90ThresholdPct={p90ThresholdPct}
+          enabled={apiMode === "api" && !caseFinalised}
+          processing={challengeSaving}
+          onDecision={handleChallengeDecision}
+          onInspect={inspectLine}
+          onContinue={() => navigate("challenge-review")}
+          onMappingDecision={handleMappingDecision}
+          mappingSavingLineId={mappingSavingLineId}
+          onProposeNewItem={handleResearch}
+          researchSaving={researchSaving}
+          onApproveResearch={handleResearchApproval}
         />
       )
       break
@@ -1079,7 +1085,6 @@ export function App() {
         ) : (
           <>
             {activeScreen === "price-comparison" &&
-            !invoices.length &&
             !challengedInvoices.length ? (
               <div className="mb-4 rounded-lg border border-dashed bg-card px-4 py-6 text-center">
                 <p className="text-sm font-medium">
@@ -1124,8 +1129,10 @@ export function App() {
                   </p>
                   <p className="text-xs text-muted-foreground">
                     {activeScreen === "price-comparison"
-                      ? "Every scanned invoice is listed; invoices with price challenges appear first."
-                      : "Switch invoice details; benchmarking uses all uploaded invoices in this claim batch."}
+                      ? "Only invoices with a positive price challenge are listed here."
+                      : activeScreen === "review-findings-all"
+                        ? "Every scanned invoice and extracted line is available in this advanced review view."
+                        : "Switch invoice details; benchmarking uses all uploaded invoices in this claim batch."}
                   </p>
                 </div>
                 <select
@@ -1145,7 +1152,7 @@ export function App() {
                 </select>
               </div>
             ) : null}
-            {screen}
+            {screenInvoiceReady ? screen : null}
           </>
         )}
       </AppShell>

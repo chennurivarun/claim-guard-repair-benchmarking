@@ -128,7 +128,9 @@ def test_partially_benchmarkable_invoice_is_retained_without_review_flag(
     )
     mixed = _fragment(
         _line("Renew mirror", item_kind="labour", net="80.00", sequence_no=1),
-        _line("Right door mirror", item_kind="part", part_number="A-001", net="76.00", sequence_no=2),
+        _line(
+            "Right door mirror", item_kind="part", part_number="A-001", net="76.00", sequence_no=2
+        ),
     )
     monkeypatch.setattr(pipeline.parser, "parse_group", lambda *a, **k: mixed)
 
@@ -183,6 +185,54 @@ def test_text_tier_recovers_lines_with_capped_confidence(tmp_path: Path) -> None
     assert invoice.line_items[0].source.precision == "approximate"
     assert len(client.calls) == 1
     assert client.calls[0]["image_data_urls"] is None
+
+
+def test_text_tier_recovers_parts_when_deterministic_parse_only_found_summary_rows(
+    tmp_path: Path, monkeypatch
+) -> None:
+    pdf_path = _native_pdf(
+        tmp_path,
+        "type-7-summary.pdf",
+        "Invoice Number: TYPE-7\nAudatex repair invoice\nRear bumper repaired\n"
+        "Rear left wing renewed\nParts schedule DGHJ797 193.00\n"
+        "Subtotal 193.00 VAT 38.60 Total 231.60",
+    )
+    client = _StubClient(
+        response={
+            "document_role": "invoice",
+            "confidence": 0.92,
+            "header": {"invoice_number": "TYPE-7", "supplier_name": "Acme Repairs"},
+            "totals": {"subtotal_net": "193.00"},
+            "line_items": [
+                {
+                    "page_number": 1,
+                    "description": "Rear left wing",
+                    "item_kind": "part",
+                    "part_number": "DGHJ797",
+                    "line_total_net": "193.00",
+                }
+            ],
+        }
+    )
+    pipeline = PDFPipeline(
+        PipelineConfig(native_min_characters=1, native_min_words=1, ocr_enabled=False),
+        text_extractor=MultimodalInvoiceExtractor(client),
+    )
+    summary_only = _fragment(_line("Rear bumper repair labour", item_kind="labour", net="193.00"))
+    monkeypatch.setattr(pipeline.parser, "parse_group", lambda *a, **k: summary_only)
+
+    analysis = pipeline.analyse(pdf_path, tmp_path / "pages")
+
+    recovered_parts = [
+        line
+        for invoice in analysis.invoices
+        for line in invoice.line_items
+        if line.item_kind == "part"
+    ]
+    assert len(client.calls) == 1
+    assert recovered_parts
+    assert recovered_parts[0].part_number == "DGHJ797"
+    assert recovered_parts[0].source.extraction_method == "llm_text"
 
 
 # --- (c) text tier failures never fail the document -------------------------
@@ -294,8 +344,7 @@ def test_unparseable_engineer_assessment_is_reviewable_not_failed(
             serialised = document_processing.serialise_document(doc)
             assert serialised["manual_review"] is True
             assert serialised["manual_review_reason"] == (
-                "Engineer assessment could not be parsed automatically; manual "
-                "review required."
+                "Engineer assessment could not be parsed automatically; manual review required."
             )
     finally:
         engine.dispose()

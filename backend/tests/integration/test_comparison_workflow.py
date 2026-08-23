@@ -359,7 +359,7 @@ def test_failed_document_preserves_last_successful_extraction_run(comparison_eng
         assert sorted(run.status for run in runs) == [RunStatus.FAILED, RunStatus.SUCCEEDED]
 
 
-def test_comparison_rejects_successful_but_incomplete_extraction(comparison_engine) -> None:
+def test_comparison_uses_ingestion_date_when_invoice_date_is_missing(comparison_engine) -> None:
     with Session(comparison_engine, expire_on_commit=False) as session:
         case = Case(case_reference="CG-INCOMPLETE", created_by="pytest.handler")
         session.add(case)
@@ -376,10 +376,11 @@ def test_comparison_rejects_successful_but_incomplete_extraction(comparison_engi
         assert invoice is not None
         invoice.invoice_date = None
 
-        with pytest.raises(ValueError, match="Extraction is incomplete"):
-            run_case_comparison(session, case)
+        result = run_case_comparison(session, case)
 
-        assert _count(session, MappingRun) == 0
+        assert result["status"] == "succeeded"
+        assert result["line_count"] > 0
+        assert _count(session, MappingRun) == 1
 
 
 def test_comparison_workflow_persists_constrained_llm_adjudication(

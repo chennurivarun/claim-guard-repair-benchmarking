@@ -310,19 +310,23 @@ function HistoricalObservationDialog({
 export function InlineMappingApproval({
   line,
   ontologyOptions,
+  researchProposal,
   mappingSaving,
   onMappingDecision,
   researchSaving,
+  onApproveResearch,
   onProposeNewItem,
 }: {
   line: InvoiceLine
   ontologyOptions: OntologyBankItem[]
+  researchProposal?: ResearchQueueItem | null
   mappingSaving: boolean
   onMappingDecision: (
     line: InvoiceLine,
     input: Omit<MappingDecisionInput, "actor">
   ) => Promise<void>
   researchSaving?: boolean
+  onApproveResearch?: (item: ResearchQueueItem) => Promise<void>
   onProposeNewItem?: (
     line: InvoiceLine,
     values: ResearchFormValues
@@ -340,24 +344,39 @@ export function InlineMappingApproval({
           Suggested repair item match
         </p>
         <p className="mt-1 font-semibold">
-          {line.ontologyName ?? line.ontologyId ?? "No candidate suggested"}
+          {line.ontologyName ??
+            line.ontologyId ??
+            researchProposal?.candidate ??
+            "No candidate suggested"}
         </p>
         <p className="mt-1 text-xs text-muted-foreground">
-          {line.mappingConfidence != null
-            ? `${line.mappingConfidence}% confidence`
-            : "Confidence unavailable"}
-          {line.mappingReviewStatus ? ` · ${line.mappingReviewStatus}` : ""}
+          {researchProposal
+            ? `New repair item proposal · ${researchProposal.status}`
+            : line.mappingConfidence != null
+              ? `${line.mappingConfidence}% confidence${line.mappingReviewStatus ? ` · ${line.mappingReviewStatus}` : ""}`
+              : "Confidence unavailable"}
         </p>
       </div>
       <div className="flex flex-wrap gap-2">
-        <Button
-          size="sm"
-          disabled={mappingSaving || !line.ontologyId}
-          onClick={() => setSelection({ line, action: "approve" })}
-        >
-          <CheckIcon data-icon="inline-start" />
-          Approve match
-        </Button>
+        {line.ontologyId ? (
+          <Button
+            size="sm"
+            disabled={mappingSaving}
+            onClick={() => setSelection({ line, action: "approve" })}
+          >
+            <CheckIcon data-icon="inline-start" />
+            Approve match
+          </Button>
+        ) : researchProposal?.researchItemId && onApproveResearch ? (
+          <Button
+            size="sm"
+            disabled={Boolean(researchSaving)}
+            onClick={() => void onApproveResearch(researchProposal)}
+          >
+            <CheckIcon data-icon="inline-start" />
+            Approve new repair item
+          </Button>
+        ) : null}
         <Button
           size="sm"
           variant="outline"
@@ -381,8 +400,9 @@ export function InlineMappingApproval({
       </div>
       {!line.ontologyId ? (
         <p className="text-xs text-muted-foreground">
-          No candidate to approve yet — use Change match to select a repair
-          item.
+          {researchProposal
+            ? "This new repair item was staged automatically from the scanned line. Approve it to add it to the governed ontology bank and rerun the comparison."
+            : "No candidate to approve yet. Use Change match to select an existing repair item or propose a new one."}
         </p>
       ) : null}
       {selection ? (
@@ -1890,7 +1910,7 @@ function ManualReviewDocumentsSection({
         document={lineEntryDocument}
         invoice={
           lineEntryDocument
-            ? invoiceByDocumentId.get(lineEntryDocument.id) ?? null
+            ? (invoiceByDocumentId.get(lineEntryDocument.id) ?? null)
             : null
         }
         open={lineEntryDocument !== null}

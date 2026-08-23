@@ -32,6 +32,7 @@ from app.enums import (
     ExtractionMethod,
     InvoiceDocumentRole,
     LineItemKind,
+    OntologyVersionStatus,
     PageType,
     PriceScope,
     ReviewStatus,
@@ -321,7 +322,9 @@ def _new_run(
     make_current: bool = True,
 ) -> ProcessingRun:
     ontology_version = session.scalar(
-        select(OntologyVersion).order_by(OntologyVersion.sequence_number.desc())
+        select(OntologyVersion)
+        .where(OntologyVersion.status == OntologyVersionStatus.PUBLISHED)
+        .order_by(OntologyVersion.sequence_number.desc())
     )
     policy_bytes = POLICY_PATH.read_bytes() if POLICY_PATH.exists() else b"claimguard-v1.4"
     run = ProcessingRun(

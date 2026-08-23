@@ -686,7 +686,7 @@ def stage_unmatched_line_proposal(
     if existing is not None:
         return existing
 
-    if invoice.invoice_date is None or line.line_total_net is None:
+    if line.line_total_net is None:
         return None
     line_total_net = Decimal(str(line.line_total_net))
     if line_total_net <= 0:
@@ -708,6 +708,12 @@ def stage_unmatched_line_proposal(
     canonical_name = line.raw_description.strip()
 
     now = utc_now()
+    # Some repair schedules omit the invoice date even though their priced
+    # component rows are readable. Do not silently drop those rows from the
+    # ontology-learning queue; use the immutable ingestion timestamp as the
+    # evidence date and retain its provenance for handler review.
+    evidence_date = invoice.invoice_date or invoice.created_at.date()
+    evidence_date_source = "invoice_date" if invoice.invoice_date else "invoice_created_at"
     task = ResearchTask(
         case_id=case_id,
         invoice_line_item_id=line.id,
@@ -752,7 +758,7 @@ def stage_unmatched_line_proposal(
         currency=currency,
         price_source=AUTO_STAGED_SOURCE_TYPE,
         source_url_or_ref=f"invoice-line:{line.id}",
-        effective_date=invoice.invoice_date,
+        effective_date=evidence_date,
         status=OntologyItemStatus.PROVISIONAL,
         approval_status=ApprovalStatus.PROVISIONAL,
         confidence_level=ConfidenceLevel.LOW,
@@ -790,6 +796,8 @@ def stage_unmatched_line_proposal(
             "unit": unit,
             "unit_price_net": price_net,
             "line_total_net": str(line_total_net),
+            "evidence_date": evidence_date.isoformat(),
+            "evidence_date_source": evidence_date_source,
         },
     }
     research_item = ResearchItem(
@@ -804,7 +812,7 @@ def stage_unmatched_line_proposal(
         suggested_price_net=price_net,
         vat_basis=PriceVatBasis.NET,
         source_urls_json=[],
-        date_checked=invoice.invoice_date,
+        date_checked=evidence_date,
         confidence=None,
         rationale=(
             "Machine-staged proposal: this priced invoice line had no ontology "
@@ -854,7 +862,7 @@ def stage_unmatched_line_proposal(
         source_record_id=line.id,
         source_url_or_ref=evidence_row.source_uri,
         observed_at=now,
-        effective_from=invoice.invoice_date,
+        effective_from=evidence_date,
         region=effective_settings.default_jurisdiction,
         approval_status=ApprovalStatus.PROVISIONAL,
         observation_kind=PriceObservationKind.PROVISIONAL,

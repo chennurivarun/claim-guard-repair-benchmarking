@@ -15,12 +15,21 @@ from app.enums import (
     DocumentRole,
     ExtractionMethod,
     InvoiceDocumentRole,
+    OntologyVersionStatus,
     ReviewStatus,
     UploadStatus,
 )
 from app.init_db import initialize_database
 from app.main import app
-from app.models import AuditEvent, Case, Document, Invoice, InvoiceLineItem
+from app.models import (
+    AuditEvent,
+    Case,
+    Document,
+    Invoice,
+    InvoiceLineItem,
+    OntologyVersion,
+    ProcessingRun,
+)
 from app.services import document_processing
 
 
@@ -210,7 +219,26 @@ def test_manual_line_404_for_unknown_invoice(manual_line_env) -> None:
 def test_unreadable_document_creates_invoice_shell_for_manual_entry(
     manual_line_env,
 ) -> None:
-    test_client, _factory = manual_line_env
+    test_client, factory = manual_line_env
+    with factory() as session:
+        published_version = session.scalar(
+            select(OntologyVersion)
+            .where(OntologyVersion.status == OntologyVersionStatus.PUBLISHED)
+            .order_by(OntologyVersion.sequence_number.desc())
+        )
+        assert published_version is not None
+        session.add(
+            OntologyVersion(
+                sequence_number=published_version.sequence_number + 1,
+                label="newer-draft-must-not-drive-extraction",
+                parent_id=published_version.id,
+                status=OntologyVersionStatus.DRAFT,
+                created_by="pytest.handler",
+            )
+        )
+        session.commit()
+        published_version_id = published_version.id
+
     created = test_client.post(
         "/api/v1/claims",
         json={
@@ -232,18 +260,17 @@ def test_unreadable_document_creates_invoice_shell_for_manual_entry(
     )
     assert uploaded.status_code == 200, uploaded.text
 
-    processed = test_client.post(
-        f"/api/v1/documents/{uploaded.json()['id']}/process"
-    )
+    processed = test_client.post(f"/api/v1/documents/{uploaded.json()['id']}/process")
     assert processed.status_code == 200, processed.text
     assert processed.json()["document"]["manual_review"] is True
 
-    invoices = test_client.get(
-        "/api/v1/claims/CG-MANUAL-EMPTY/invoices"
-    ).json()
-    invoice = next(
-        item for item in invoices if item["document_id"] == uploaded.json()["id"]
-    )
+    with factory() as session:
+        processing_run = session.get(ProcessingRun, processed.json()["run_id"])
+        assert processing_run is not None
+        assert processing_run.ontology_version_id == published_version_id
+
+    invoices = test_client.get("/api/v1/claims/CG-MANUAL-EMPTY/invoices").json()
+    invoice = next(item for item in invoices if item["document_id"] == uploaded.json()["id"])
     assert invoice["lines"] == []
 
     manual_line = test_client.post(

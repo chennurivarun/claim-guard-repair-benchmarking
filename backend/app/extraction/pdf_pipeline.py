@@ -473,10 +473,11 @@ class PDFPipeline:
             analysis.invoices.append(invoice)
             group_invoice_index.append((grouped_pages, len(analysis.invoices) - 1))
 
-        # Universal reader tier: for groups whose deterministic (and any per-group vision)
-        # parse still produced no usable priced line, retry with text-only LLM extraction
-        # before giving up on the group. Bounded so one document cannot trigger unlimited
-        # LLM spend.
+        # Universal reader tier: retry groups that have no benchmarkable part row,
+        # even when deterministic parsing found plausible labour/summary charges.
+        # This is the adaptive path for Audatex/Type-7 variants where a changed
+        # layout can otherwise look "successful" while omitting the real parts.
+        # Calls remain bounded so one document cannot trigger unlimited LLM spend.
         text_calls = 0
         if self.text_extractor is not None:
             extract_text = getattr(self.text_extractor, "extract_from_text", None)
@@ -485,7 +486,9 @@ class PDFPipeline:
                     if text_calls >= self.config.text_max_batches:
                         break
                     invoice = analysis.invoices[index]
-                    if _has_usable_lines(invoice) or not _group_has_readable_text(grouped_pages):
+                    if invoice.has_benchmarkable_part_lines() or not _group_has_readable_text(
+                        grouped_pages
+                    ):
                         continue
                     text_calls += 1
                     try:

@@ -15,6 +15,7 @@ export type ScreenId =
   | "calculation-checks"
   | "ontology-mapping"
   | "price-comparison"
+  | "review-findings-all"
   | "missing-items"
   | "challenge-review"
   | "ontology-bank"

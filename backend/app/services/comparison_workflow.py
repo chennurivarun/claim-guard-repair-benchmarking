@@ -330,7 +330,6 @@ def run_case_comparison(
     eligible_line_ids = {
         line.id
         for invoice in invoices
-        if invoice.invoice_date is not None
         for line in invoice.line_items
         if line.status != ReviewStatus.REJECTED
         and line.line_total_net is not None
@@ -339,7 +338,7 @@ def run_case_comparison(
     if not eligible_line_ids:
         raise ValueError(
             "Extraction is incomplete. Comparison requires at least one invoice "
-            "with an invoice date and a positive line-item price. Review the "
+            "with a positive line-item price. Review the "
             "extracted document before benchmarking."
         )
 
@@ -615,11 +614,12 @@ def run_case_comparison(
                 session=session,
             )
             history_domain = _history_domain(history_rows)
+            comparison_date = invoice.invoice_date or invoice.created_at.date()
             current = CurrentInvoiceLine(
                 line_id=line.id,
                 description=line.raw_description,
                 invoice_line_net=_decimal(line.line_total_net),
-                invoice_date=invoice.invoice_date,
+                invoice_date=comparison_date,
                 quantity=_decimal(line.quantity) if line.quantity is not None else None,
                 unit=line.unit,
                 part_number=line.part_number,

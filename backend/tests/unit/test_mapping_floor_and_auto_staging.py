@@ -377,7 +377,9 @@ def test_unmatched_line_stages_one_proposal_and_reruns_do_not_duplicate(
     assert observation.source_type == "auto_unmatched_invoice_line"
 
     audit_events = session.scalars(
-        select(AuditEvent).where(AuditEvent.event_type == "RESEARCH_AUTO_STAGED_FROM_UNMATCHED_LINE")
+        select(AuditEvent).where(
+            AuditEvent.event_type == "RESEARCH_AUTO_STAGED_FROM_UNMATCHED_LINE"
+        )
     ).all()
     assert len(audit_events) == 1
 
@@ -427,6 +429,38 @@ def test_stage_unmatched_line_proposal_dedupes_on_direct_recall(staging_session)
     assert second.id == first.id
     assert _count(session, ResearchTask) == 1
     assert _count(session, ResearchItem) == 1
+
+
+def test_unmatched_line_without_invoice_date_is_compared_and_staged(staging_session) -> None:
+    session, case, invoice = staging_session
+    invoice.invoice_date = None
+    line = _add_line(
+        invoice,
+        session,
+        sequence_no=1,
+        description="Rear left wing repair panel",
+        price_net="193.00",
+        part_number="DGHJ797",
+    )
+    session.commit()
+    _add_processing_run(session, case, suffix="missing-date")
+
+    result = run_case_comparison(session, case)
+    session.commit()
+
+    proposal = session.scalar(
+        select(ResearchItem).join(ResearchTask).where(ResearchTask.invoice_line_item_id == line.id)
+    )
+
+    assert result["line_count"] == 1
+    assert proposal is not None
+    assert proposal.date_checked == invoice.created_at.date()
+    assert proposal.raw_suggestion_json["provenance"]["evidence_date_source"] == (
+        "invoice_created_at"
+    )
+    ontology_item = session.get(OntologyItem, proposal.provisional_ontology_item_id)
+    assert ontology_item is not None
+    assert ontology_item.effective_date == invoice.created_at.date()
 
 
 # ---------------------------------------------------------------------------

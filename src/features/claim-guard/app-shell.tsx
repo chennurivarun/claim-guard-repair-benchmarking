@@ -75,7 +75,7 @@ const administration = [
     icon: ReceiptTextIcon,
   },
   {
-    id: "price-comparison",
+    id: "review-findings-all",
     label: "Review findings",
     icon: SearchCheckIcon,
   },
@@ -85,7 +85,11 @@ const administration = [
     icon: FolderSearch2Icon,
   },
   { id: "missing-items", label: "Manual review", icon: GaugeIcon },
-  { id: "ontology-bank", label: "External price library", icon: LibraryBigIcon },
+  {
+    id: "ontology-bank",
+    label: "External price library",
+    icon: LibraryBigIcon,
+  },
   { id: "knowledge-graph", label: "Knowledge graph", icon: Share2Icon },
 ] satisfies Array<{
   id: ScreenId

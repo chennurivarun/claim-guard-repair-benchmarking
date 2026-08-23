@@ -48,7 +48,7 @@ import { formatMoney } from "./format"
 import { documentImageUrl } from "./document-api"
 import { isMappingApproved } from "./mapping-rules"
 import { StatusBadge } from "./shared"
-import type { ClaimWorkspace, InvoiceLine } from "./types"
+import type { ClaimWorkspace, InvoiceLine, ResearchQueueItem } from "./types"
 import {
   fetchEngineerAssessments,
   type EngineerAssessmentPayload,
@@ -355,6 +355,7 @@ function AllExtractedLinesTable({ lines }: { lines: InvoiceLine[] }) {
 
 export function ReviewFindingsScreen({
   workspace,
+  mode = "challenged",
   p90ThresholdPct,
   enabled,
   processing,
@@ -365,8 +366,10 @@ export function ReviewFindingsScreen({
   mappingSavingLineId,
   onProposeNewItem,
   researchSaving,
+  onApproveResearch,
 }: {
   workspace: ClaimWorkspace
+  mode?: "challenged" | "all"
   p90ThresholdPct: number
   enabled: boolean
   processing: boolean
@@ -390,6 +393,7 @@ export function ReviewFindingsScreen({
     values: ResearchFormValues
   ) => Promise<void>
   researchSaving?: boolean
+  onApproveResearch?: (item: ResearchQueueItem) => Promise<void>
 }) {
   const ontologyOptions = workspace.ontologyBank?.items ?? []
   const challenged = workspace.lines
@@ -432,6 +436,38 @@ export function ReviewFindingsScreen({
     item.description.toLowerCase().includes(query.toLowerCase())
   )
 
+  if (mode === "all") {
+    return (
+      <>
+        <div>
+          <p className="text-sm font-medium text-muted-foreground">
+            Claim {workspace.claim.id}
+          </p>
+          <h1 className="mt-1 text-3xl font-semibold tracking-tight">
+            Review findings - all extracted lines
+          </h1>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Every scanned invoice and extracted line is available here,
+            including lines with no price challenge.
+          </p>
+        </div>
+        <EngineerAssessmentCard assessment={engineerAssessment} />
+        <Alert>
+          <InfoIcon />
+          <AlertTitle>
+            {challenged.length} challenged line
+            {challenged.length === 1 ? "" : "s"} in this invoice
+          </AlertTitle>
+          <AlertDescription>
+            Use Challenged invoices for decisions. This advanced view is the
+            full extraction record.
+          </AlertDescription>
+        </Alert>
+        <AllExtractedLinesTable lines={workspace.lines} />
+      </>
+    )
+  }
+
   if (!line) {
     return (
       <>
@@ -458,7 +494,6 @@ export function ReviewFindingsScreen({
           onViewEvidence={setEvidenceLine}
           onInspect={onInspect}
         />
-        <AllExtractedLinesTable lines={workspace.lines} />
         <LineEvidenceSheet
           line={evidenceLine}
           p90ThresholdPct={p90ThresholdPct}
@@ -520,9 +555,17 @@ export function ReviewFindingsScreen({
             <InlineMappingApproval
               line={line}
               ontologyOptions={ontologyOptions}
+              researchProposal={
+                workspace.researchItems?.find(
+                  (item) =>
+                    item.lineId === line.id &&
+                    item.status.toLowerCase() === "provisional"
+                ) ?? null
+              }
               mappingSaving={mappingSavingLineId === line.id}
               onMappingDecision={onMappingDecision}
               researchSaving={researchSaving}
+              onApproveResearch={onApproveResearch}
               onProposeNewItem={onProposeNewItem}
             />
           ) : null}
@@ -862,8 +905,6 @@ export function ReviewFindingsScreen({
         onViewEvidence={setEvidenceLine}
         onInspect={onInspect}
       />
-
-      <AllExtractedLinesTable lines={workspace.lines} />
 
       <Separator />
       <p className="text-center text-xs text-muted-foreground">
