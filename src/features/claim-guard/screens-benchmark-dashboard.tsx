@@ -292,12 +292,14 @@ export function BenchmarkDashboardScreen({
   workspace,
   challengeThreshold,
   onChallengeThresholdChange,
+  thresholdApplying = false,
   onOpenKnowledgeGraph,
 }: {
   apiMode: "api" | "demo"
   workspace: ClaimWorkspace
   challengeThreshold: number
   onChallengeThresholdChange: (value: number) => void
+  thresholdApplying?: boolean
   onOpenKnowledgeGraph: () => void
 }) {
   const [dashboard, setDashboard] =
@@ -549,6 +551,7 @@ export function BenchmarkDashboardScreen({
             P90 alert threshold
             <Select
               value={String(challengeThreshold)}
+              disabled={thresholdApplying}
               onValueChange={(value) =>
                 onChallengeThresholdChange(Number(value))
               }
@@ -563,6 +566,11 @@ export function BenchmarkDashboardScreen({
                 </SelectGroup>
               </SelectContent>
             </Select>
+            {thresholdApplying ? (
+              <span className="text-xs font-normal text-muted-foreground">
+                Applying threshold…
+              </span>
+            ) : null}
           </label>
         </CardContent>
       </Card>
@@ -870,9 +878,11 @@ export function BenchmarkDashboardScreen({
               <tbody>
                 {selectedInvoiceBenchmarks.map((line) => {
                   const benchmark = line.p90Benchmark!
-                  const exceedsThreshold =
-                    benchmark.percentageDifference > challengeThreshold &&
-                    benchmark.difference >= MINIMUM_CHALLENGE_AMOUNT
+                  // The operational status comes only from the server's
+                  // comparisonStatus (see backend price_decision.py) — never
+                  // recomputed client-side, so this table can't disagree
+                  // with Review findings or the line evidence sheet.
+                  const exceedsThreshold = line.comparisonStatus === "CHALLENGE"
                   return (
                     <tr
                       key={line.id}

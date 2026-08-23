@@ -326,9 +326,14 @@ export function getApiErrorMessage(error: unknown) {
 
 export function fetchClaimWorkspace(
   caseReference = DEFAULT_CASE_REFERENCE,
-  invoiceId?: string
+  invoiceId?: string,
+  p90ThresholdPct?: number
 ): Promise<ClaimWorkspace> {
-  const query = invoiceId ? `?invoice_id=${encodeURIComponent(invoiceId)}` : ""
+  const params = new URLSearchParams()
+  if (invoiceId) params.set("invoice_id", invoiceId)
+  if (p90ThresholdPct !== undefined)
+    params.set("p90_threshold_pct", String(p90ThresholdPct))
+  const query = params.size ? `?${params.toString()}` : ""
   return requestJson(
     `/api/v1/claims/${encodeURIComponent(caseReference)}/workspace${query}`
   )
@@ -378,18 +383,14 @@ export function fetchBenchmarkDashboard(filters?: {
   challengeThresholdPct?: number
 }): Promise<BenchmarkDashboardPayload> {
   const query = new URLSearchParams()
-  if (filters?.caseReference)
-    query.set("case_reference", filters.caseReference)
+  if (filters?.caseReference) query.set("case_reference", filters.caseReference)
   if (filters?.vehicleClass) query.set("vehicle_class", filters.vehicleClass)
   if (filters?.ontologyItemId)
     query.set("ontology_item_id", filters.ontologyItemId)
   if (filters?.minimumCount)
     query.set("minimum_count", String(filters.minimumCount))
   if (filters?.challengeThresholdPct !== undefined)
-    query.set(
-      "challenge_threshold_pct",
-      String(filters.challengeThresholdPct)
-    )
+    query.set("challenge_threshold_pct", String(filters.challengeThresholdPct))
   const suffix = query.size ? `?${query.toString()}` : ""
   return requestJson(`/api/v1/benchmarks/dashboard${suffix}`)
 }
@@ -406,9 +407,18 @@ export function fetchBenchmarkObservations(
   )
 }
 
-export async function loadClaimWorkspace(): Promise<ApiWorkspaceResult> {
+export async function loadClaimWorkspace(
+  p90ThresholdPct?: number
+): Promise<ApiWorkspaceResult> {
   try {
-    return { workspace: await fetchClaimWorkspace(), mode: "api" }
+    return {
+      workspace: await fetchClaimWorkspace(
+        undefined,
+        undefined,
+        p90ThresholdPct
+      ),
+      mode: "api",
+    }
   } catch (error) {
     return {
       workspace: demoWorkspace,
