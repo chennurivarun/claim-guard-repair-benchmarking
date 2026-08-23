@@ -43,6 +43,7 @@ from app.config import BACKEND_DIR, get_settings
 from app.database import get_db
 from app.domain.liability import LiabilityState, liability_gate
 from app.domain.normalisation import normalise_description, normalise_unit
+from app.domain.price_decision import DEFAULT_POLICY as DEFAULT_P90_POLICY
 from app.enums import (
     ApprovalStatus,
     AuditActorType,
@@ -1991,14 +1992,32 @@ def reprocess_claim(
         ) from exc
 
 
+def _validated_p90_threshold_pct(p90_threshold_pct: int) -> int:
+    if p90_threshold_pct not in DEFAULT_P90_POLICY.allowed_thresholds:
+        allowed = sorted(DEFAULT_P90_POLICY.allowed_thresholds)
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "INVALID_P90_THRESHOLD",
+                "message": f"p90_threshold_pct must be one of: {allowed}",
+                "allowed": allowed,
+            },
+        )
+    return p90_threshold_pct
+
+
 @router.get("/claims/{case_reference}/workspace", tags=["reports"])
 def get_claim_workspace(
     case_reference: str,
     db: DatabaseSession,
     invoice_id: str | None = None,
+    p90_threshold_pct: int = Query(DEFAULT_P90_POLICY.default_threshold_pct),
 ) -> dict[str, Any]:
+    threshold = _validated_p90_threshold_pct(p90_threshold_pct)
     try:
-        return build_claim_workspace(db, case_reference, invoice_id=invoice_id)
+        return build_claim_workspace(
+            db, case_reference, invoice_id=invoice_id, p90_threshold_pct=threshold
+        )
     except LookupError as exc:
         raise _not_found("Claim not found") from exc
     except ValueError as exc:
@@ -2008,15 +2027,26 @@ def get_claim_workspace(
 
 
 @router.get("/claims/{case_reference}/result", tags=["reports"])
-def get_case_result(case_reference: str, db: DatabaseSession) -> dict[str, Any]:
+def get_case_result(
+    case_reference: str,
+    db: DatabaseSession,
+    p90_threshold_pct: int = Query(DEFAULT_P90_POLICY.default_threshold_pct),
+) -> dict[str, Any]:
+    threshold = _validated_p90_threshold_pct(p90_threshold_pct)
     try:
-        return build_case_result(db, case_reference)
+        return build_case_result(db, case_reference, p90_threshold_pct=threshold)
     except LookupError as exc:
         raise _not_found("Claim not found") from exc
 
 
 @router.get("/claims/{case_reference}/reports/{report_format}", tags=["reports"])
-def download_report(case_reference: str, report_format: str, db: DatabaseSession):
+def download_report(
+    case_reference: str,
+    report_format: str,
+    db: DatabaseSession,
+    p90_threshold_pct: int = Query(DEFAULT_P90_POLICY.default_threshold_pct),
+):
+    threshold = _validated_p90_threshold_pct(p90_threshold_pct)
     report_format = report_format.lower()
     allowed = {"json", "xlsx", "sqlite", "docx", "pdf"}
     if report_format not in allowed:
@@ -2025,7 +2055,7 @@ def download_report(case_reference: str, report_format: str, db: DatabaseSession
             detail={"code": "UNSUPPORTED_REPORT", "allowed": sorted(allowed)},
         )
     try:
-        result = build_case_result(db, case_reference)
+        result = build_case_result(db, case_reference, p90_threshold_pct=threshold)
     except LookupError as exc:
         raise _not_found("Claim not found") from exc
 

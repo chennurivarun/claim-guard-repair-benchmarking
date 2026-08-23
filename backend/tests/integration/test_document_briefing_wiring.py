@@ -74,10 +74,46 @@ def _fake_analysis(source_path: Path) -> DocumentAnalysis:
         pages=pages,
         invoices=[],
         engineer_assessments=[],
+        llm_failures=["LLM_TIMEOUT"],
         manual_review_reason=(
             "Line-item information is not available. The invoice appears to be "
             "rolled up and cannot be benchmarked automatically."
         ),
+    )
+
+
+def _fake_engineer_assessment_analysis(source_path: Path) -> DocumentAnalysis:
+    """A page classified as an engineer assessment that the deterministic
+    parser, vision, and text-only LLM tier all fail to make sense of. This
+    exercises the real merged fallback in document_processing.process_document
+    (it sets analysis.manual_review_reason itself) rather than a
+    manual_review_reason set up-front by the test.
+    """
+
+    pages = [
+        PageAnalysis(
+            page_number=1,
+            width=595,
+            height=842,
+            rotation=0,
+            native_character_count=40,
+            positioned_word_count=6,
+            image_count=0,
+            extraction_method="native",
+            extraction_confidence=0.5,
+            text="Not a real engineer assessment document at all, just noise.",
+            page_type=PageType.ENGINEER_ASSESSMENT,
+            classification_confidence=0.5,
+        ),
+    ]
+    return DocumentAnalysis(
+        source_path=source_path,
+        sha256="c" * 64,
+        page_count=len(pages),
+        pages=pages,
+        invoices=[],
+        engineer_assessments=[],
+        manual_review_reason=None,
     )
 
 
@@ -166,6 +202,7 @@ def test_briefing_generated_persisted_and_surfaced_with_redacted_payload(
     reference = "CG-BRIEFING-001"
     result = _upload_and_process(test_client, reference)
     assert result["document"]["manual_review"] is True
+    assert result["metrics"]["llm_failures"] == ["LLM_TIMEOUT"]
     briefing = result["document"]["review_briefing"]
     assert briefing is not None
     assert briefing["fallback"] is False
@@ -236,3 +273,57 @@ def test_briefing_falls_back_when_llm_raises_and_processing_still_succeeds(
     assert result["status"] == "succeeded"
     briefing = result["document"]["review_briefing"]
     assert briefing["fallback"] is True
+
+
+def test_briefing_generated_for_the_unparseable_engineer_assessment_path(
+    briefing_env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Covers the A3 fallback: an engineer assessment page that the
+    deterministic parser, vision, and text-only LLM tier all fail to read
+    must still finish READY with a manual_review_reason set by
+    document_processing.py itself (not pre-supplied by pdf_pipeline), and a
+    briefing must be generated for it exactly like the invoice-style path.
+    """
+
+    test_client, factory = briefing_env
+    monkeypatch.setattr(
+        document_processing.PDFPipeline,
+        "analyse",
+        lambda self, pdf_path, output_dir: _fake_engineer_assessment_analysis(Path(pdf_path)),
+    )
+    stub_client = StubBriefingClient(
+        [
+            {
+                "document_summary": "An engineer assessment page that could not be parsed.",
+                "content_found": ["1 unparseable engineer assessment page"],
+                "why_manual_review": "The assessment could not be parsed automatically.",
+                "recommended_action": "Review the page and enter the assessment by hand.",
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        document_processing,
+        "build_document_briefing_generator",
+        lambda settings: DocumentBriefingGenerator(stub_client),
+    )
+
+    reference = "CG-BRIEFING-004"
+    result = _upload_and_process(test_client, reference)
+    assert result["status"] == "succeeded"
+    assert result["document"]["status"] == "ready"
+    assert result["document"]["manual_review"] is True
+    assert (
+        result["document"]["manual_review_reason"]
+        == "Engineer assessment could not be parsed automatically; manual review required."
+    )
+    briefing = result["document"]["review_briefing"]
+    assert briefing is not None
+    assert briefing["fallback"] is False
+    assert briefing["document_summary"].startswith("An engineer assessment page")
+
+    with factory() as session:
+        events = session.scalars(
+            select(AuditEvent).where(AuditEvent.event_type == "DOCUMENT_BRIEFING_RECORDED")
+        ).all()
+        assert len(events) == 1
+        assert events[0].after_json["fallback"] is False

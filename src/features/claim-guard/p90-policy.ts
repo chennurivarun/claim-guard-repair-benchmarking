@@ -78,10 +78,23 @@ export function applyP90Policy(
   const vatImpact = money(
     reviewable.reduce((total, line) => total + (line.challengeVat ?? 0), 0)
   )
-  const invoiceNet = workspace.invoice.netIncludingMot
+  // The invoice header total is occasionally missing or zero even though the
+  // extracted lines carry real totals (e.g. a partially reprocessed invoice).
+  // Fall back to the sum of the line totals so the header metrics and derived
+  // challenge figures never show £0.00 while challengeable lines exist. This
+  // is the single place that normalises the displayed original net; every
+  // screen reads it from the workspace this function returns.
+  const linesNet = money(
+    lines.reduce((total, line) => total + (line.currentTotal ?? 0), 0)
+  )
+  const invoiceNet = workspace.invoice.netIncludingMot || linesNet
 
   return {
     ...workspace,
+    invoice: {
+      ...workspace.invoice,
+      netIncludingMot: invoiceNet,
+    },
     lines,
     summary: {
       ...workspace.summary,

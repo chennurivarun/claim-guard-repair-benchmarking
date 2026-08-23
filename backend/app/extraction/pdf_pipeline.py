@@ -19,12 +19,13 @@ from app.extraction.schemas import (
     BoundingBox,
     DocumentAnalysis,
     ExtractedEngineerAssessment,
+    ExtractedInvoice,
     OCRWord,
     PageAnalysis,
     PageType,
 )
 from app.llm.base import LLMProviderError
-from app.llm.invoice_extraction import MultimodalInvoiceExtractor
+from app.llm.invoice_extraction import MultimodalInvoiceExtractor, merge_invoice_extractions
 
 try:
     import pytesseract
@@ -47,6 +48,7 @@ class PipelineConfig:
     ocr_enabled: bool = True
     max_pages: int = 100
     vision_max_batches: int = 3
+    text_max_batches: int = 3
 
 
 def sha256_file(path: Path) -> str:
@@ -252,6 +254,22 @@ def _merge_assessment_batches(
     )
 
 
+def _has_usable_lines(invoice: ExtractedInvoice) -> bool:
+    """Return whether the deterministic parse yielded at least one priced line."""
+
+    return any(
+        line.line_total_net is not None and line.line_total_net > 0
+        for line in invoice.line_items
+    )
+
+
+def _group_has_readable_text(pages: list[PageAnalysis]) -> bool:
+    """Return whether a page group has enough text for the text-only LLM tier to read."""
+
+    combined = " ".join(page.text for page in pages)
+    return len(combined.strip()) >= 20
+
+
 class PDFPipeline:
     def __init__(
         self,
@@ -259,9 +277,11 @@ class PDFPipeline:
         *,
         cloud_ocr: AzureDocumentIntelligenceOCR | None = None,
         vision_extractor: MultimodalInvoiceExtractor | None = None,
+        text_extractor: MultimodalInvoiceExtractor | None = None,
     ) -> None:
         self.config = config or PipelineConfig()
         self.vision_extractor = vision_extractor
+        self.text_extractor = text_extractor
         self.parser = InvoiceParser(vision_extractor)
         self.cloud_ocr = cloud_ocr
 
@@ -383,15 +403,42 @@ class PDFPipeline:
         for page in pages:
             if page.group_key:
                 groups[page.group_key].append(page)
+        group_invoice_index: list[tuple[list[PageAnalysis], int]] = []
         for key, grouped_pages in groups.items():
             role = "estimate" if key.startswith(PageType.ESTIMATE.value) else "invoice"
             try:
-                analysis.invoices.append(
-                    self.parser.parse_group(source, grouped_pages, document_role=role)
-                )
+                invoice = self.parser.parse_group(source, grouped_pages, document_role=role)
             except Exception:
                 # A single malformed invoice unit must not abort the rest of the document.
                 continue
+            analysis.invoices.append(invoice)
+            group_invoice_index.append((grouped_pages, len(analysis.invoices) - 1))
+
+        # Universal reader tier: for groups whose deterministic (and any per-group vision)
+        # parse still produced no usable priced line, retry with text-only LLM extraction
+        # before giving up on the group. Bounded so one document cannot trigger unlimited
+        # LLM spend.
+        text_calls = 0
+        if self.text_extractor is not None:
+            extract_text = getattr(self.text_extractor, "extract_from_text", None)
+            if callable(extract_text):
+                for grouped_pages, index in group_invoice_index:
+                    if text_calls >= self.config.text_max_batches:
+                        break
+                    invoice = analysis.invoices[index]
+                    if _has_usable_lines(invoice) or not _group_has_readable_text(grouped_pages):
+                        continue
+                    text_calls += 1
+                    try:
+                        text_result = extract_text(grouped_pages, role_hint=invoice.document_role)
+                    except LLMProviderError as exc:
+                        analysis.llm_failures.append(exc.code)
+                        continue
+                    if text_result is not None:
+                        analysis.invoices[index] = merge_invoice_extractions(
+                            invoice, text_result, include_vision_lines=True
+                        )
+
         if self.vision_extractor is not None:
             assessment_pages = [
                 page for page in pages if page.page_type == PageType.ENGINEER_ASSESSMENT
@@ -411,7 +458,8 @@ class PDFPipeline:
                         extracted_assessment = extract_assessment(
                             assessment_pages[batch_index : batch_index + max_pages]
                         )
-                    except LLMProviderError:
+                    except LLMProviderError as exc:
+                        analysis.llm_failures.append(exc.code)
                         continue
                     if extracted_assessment is not None:
                         assessment_batches.append(extracted_assessment)
@@ -441,7 +489,8 @@ class PDFPipeline:
                 vision_calls += 1
                 try:
                     extracted = self.vision_extractor.extract([page])
-                except LLMProviderError:
+                except LLMProviderError as exc:
+                    analysis.llm_failures.append(exc.code)
                     continue
                 if extracted is not None:
                     analysis.invoices.append(extracted)
@@ -450,7 +499,8 @@ class PDFPipeline:
                     continue
                 try:
                     extracted_assessment = extract_assessment([page])
-                except LLMProviderError:
+                except LLMProviderError as exc:
+                    analysis.llm_failures.append(exc.code)
                     continue
                 if extracted_assessment is not None:
                     assessment_batches.append(extracted_assessment)
@@ -468,15 +518,58 @@ class PDFPipeline:
                             page.classification_confidence,
                             merged_assessment.extraction_confidence,
                         )
-        analysis.invoices = [
-            invoice
-            for invoice in analysis.invoices
-            if invoice.has_benchmarkable_part_lines()
-        ]
+
+        # Engineer assessments get the same universal reader fallback: only attempted
+        # when nothing above (deterministic parsing happens later in document_processing,
+        # vision above) has already produced an assessment.
+        if self.text_extractor is not None and not analysis.engineer_assessments:
+            extract_assessment_text = getattr(
+                self.text_extractor, "extract_assessment_from_text", None
+            )
+            assessment_pages = [
+                page for page in pages if page.page_type == PageType.ENGINEER_ASSESSMENT
+            ]
+            if callable(extract_assessment_text) and assessment_pages:
+                max_pages = max(1, getattr(self.text_extractor, "max_pages", 8))
+                text_assessment_batches: list[ExtractedEngineerAssessment] = []
+                for batch_index in range(0, len(assessment_pages), max_pages):
+                    if text_calls >= self.config.text_max_batches:
+                        break
+                    text_calls += 1
+                    try:
+                        extracted_assessment = extract_assessment_text(
+                            assessment_pages[batch_index : batch_index + max_pages]
+                        )
+                    except LLMProviderError as exc:
+                        analysis.llm_failures.append(exc.code)
+                        continue
+                    if extracted_assessment is not None:
+                        text_assessment_batches.append(extracted_assessment)
+                merged_text_assessment = _merge_assessment_batches(text_assessment_batches)
+                if merged_text_assessment is not None:
+                    analysis.engineer_assessments.append(merged_text_assessment)
+                    assessment_numbers = set(merged_text_assessment.page_numbers)
+                    for page in pages:
+                        if page.page_number in assessment_numbers:
+                            page.page_type = PageType.ENGINEER_ASSESSMENT
+                            page.group_key = None
+                            page.classification_signals.append("llm_text:engineer_assessment")
+                            page.classification_confidence = max(
+                                page.classification_confidence,
+                                merged_text_assessment.extraction_confidence,
+                            )
+
+        # Every parsed invoice is retained, however weak its evidence, so no document
+        # dead-ends: partially-benchmarkable invoices keep all their lines, and wholly
+        # non-benchmarkable ones fall through to manual_review_reason below rather than
+        # being discarded outright.
         has_engineer_assessment = bool(analysis.engineer_assessments) or any(
             page.page_type == PageType.ENGINEER_ASSESSMENT for page in pages
         )
-        if not analysis.invoices and not has_engineer_assessment:
+        has_benchmarkable_invoice = any(
+            invoice.has_benchmarkable_part_lines() for invoice in analysis.invoices
+        )
+        if not has_benchmarkable_invoice and not has_engineer_assessment:
             has_invoice_page = any(
                 page.page_type in {PageType.INVOICE, PageType.ESTIMATE}
                 for page in pages
