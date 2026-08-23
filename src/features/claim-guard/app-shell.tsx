@@ -53,7 +53,7 @@ const primaryNavigation = [
   },
   {
     id: "price-comparison",
-    label: "Review findings",
+    label: "Challenged invoices",
     icon: SearchCheckIcon,
   },
   {
@@ -73,6 +73,11 @@ const administration = [
     id: "extracted-invoice",
     label: "Extracted invoice",
     icon: ReceiptTextIcon,
+  },
+  {
+    id: "price-comparison",
+    label: "Review findings",
+    icon: SearchCheckIcon,
   },
   {
     id: "ontology-mapping",
