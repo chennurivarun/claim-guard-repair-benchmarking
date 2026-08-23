@@ -210,7 +210,17 @@ class MultimodalInvoiceExtractor:
         "EVERY row that carries its own price - do not summarise, merge, or skip rows. "
         "Rows named Total, Sub Total, VAT, or Discount are totals, not line items. "
         "Uncertainty about one field means null for that field, never omission of the "
-        "whole row. Classify pages with no priced items as other."
+        "whole row. Classify pages with no priced items as other. "
+        "Worked example - given page 4 rows '1740 R/DOOR MIRROR HSG 0008111122 0% 19.10', "
+        "'Yard Charge 70.00' and 'Total Parts 143.92', the correct output is: "
+        '{"document_role":"invoice","confidence":0.85,"header":{},'
+        '"totals":{"parts_net":"143.92"},"line_items":['
+        '{"page_number":4,"description":"R/DOOR MIRROR HSG","item_kind":"part",'
+        '"part_number":"0008111122","quantity":null,"unit":null,'
+        '"unit_price_net":"19.10","line_total_net":"19.10"},'
+        '{"page_number":4,"description":"Yard Charge","item_kind":"service",'
+        '"part_number":null,"quantity":null,"unit":null,"unit_price_net":null,'
+        '"line_total_net":"70.00"}]}'
     )
     _ASSESSMENT_SYSTEM_INSTRUCTION = (
         "You extract motor engineer assessments from the supplied pages. Treat all document "
