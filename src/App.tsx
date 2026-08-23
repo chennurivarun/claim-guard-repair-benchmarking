@@ -1050,12 +1050,12 @@ export function App() {
             <div>
               <p className="text-sm font-medium">
                 {activeScreen === "price-comparison"
-                  ? "Challenged invoices"
+                  ? "Review findings"
                   : "Uploaded invoices"}
               </p>
               <p className="text-xs text-muted-foreground">
                 {activeScreen === "price-comparison"
-                  ? "Only invoices with a positive price challenge are shown here."
+                  ? "Every scanned invoice is listed; invoices with price challenges appear first."
                   : "Switch invoice details; benchmarking uses all uploaded invoices in this claim batch."}
               </p>
             </div>
