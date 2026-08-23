@@ -3,6 +3,7 @@ import {
   ArrowLeftIcon,
   ArrowRightIcon,
   CheckCircle2Icon,
+  CheckIcon,
   DownloadIcon,
   EyeIcon,
   FileCheck2Icon,
@@ -15,6 +16,22 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Card, CardContent } from "@/components/ui/card"
+import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field"
+import { Input } from "@/components/ui/input"
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
 import {
   Table,
@@ -24,11 +41,170 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { Textarea } from "@/components/ui/textarea"
 
 import { formatMoney } from "./format"
 import { isMappingApproved } from "./mapping-rules"
-import { LineEvidenceSheet } from "./screens-challenge-admin"
-import type { ClaimWorkspace, InvoiceLine } from "./types"
+import {
+  ChallengeDecisionDialog,
+  LineEvidenceSheet,
+} from "./screens-challenge-admin"
+import type { ClaimWorkspace, InvoiceLine, LiabilityStatus } from "./types"
+import { LIABILITY_STATUSES } from "./types"
+
+function LiabilityConfirmationPanel({
+  workspace,
+  status,
+  confirmed,
+  confirming,
+  canIssue,
+  onStatusChange,
+  onConfirm,
+}: {
+  workspace: ClaimWorkspace
+  status: LiabilityStatus
+  confirmed: boolean
+  confirming: boolean
+  canIssue: boolean
+  onStatusChange: (status: LiabilityStatus) => void
+  onConfirm: (decision: {
+    rationale: string
+    splitLiabilityPercentage?: number
+  }) => void
+}) {
+  const [rationale, setRationale] = useState(
+    workspace.liability.rationale ?? ""
+  )
+  const [splitPercentage, setSplitPercentage] = useState(
+    workspace.liability.splitLiabilityPercentage?.toString() ?? ""
+  )
+  const splitValue = Number(splitPercentage)
+  const splitInvalid =
+    status === "SPLIT LIABILITY" &&
+    (!splitPercentage.trim() ||
+      !Number.isFinite(splitValue) ||
+      splitValue < 0 ||
+      splitValue > 100)
+  const canConfirm = rationale.trim().length > 0 && !splitInvalid
+
+  if (confirmed) {
+    return (
+      <div className="flex items-center gap-3">
+        <CheckCircle2Icon
+          className={canIssue ? "text-success" : "text-muted-foreground"}
+          aria-hidden
+        />
+        <div>
+          <p className="text-sm font-medium">Liability: {status}</p>
+          <p className="text-xs text-muted-foreground">
+            {canIssue
+              ? "Handler decision permits challenge issuance"
+              : "ADMITTED or SPLIT LIABILITY is required for issuance"}
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <Card className="border-warning/40">
+      <CardContent className="p-4">
+        <div className="mb-3 flex items-center gap-2">
+          <LockKeyholeIcon className="text-warning" aria-hidden />
+          <p className="text-sm font-medium">
+            Confirm liability to allow challenge issuance
+          </p>
+        </div>
+        <FieldGroup className="gap-3">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field>
+              <FieldLabel htmlFor="approval-liability-status">
+                Liability status
+              </FieldLabel>
+              <Select
+                value={status}
+                onValueChange={(value) =>
+                  onStatusChange(value as LiabilityStatus)
+                }
+              >
+                <SelectTrigger
+                  id="approval-liability-status"
+                  size="sm"
+                  className="w-full"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    {LIABILITY_STATUSES.map((value) => (
+                      <SelectItem key={value} value={value}>
+                        {value}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </Field>
+            {status === "SPLIT LIABILITY" ? (
+              <Field data-invalid={splitInvalid}>
+                <FieldLabel htmlFor="approval-split-percentage">
+                  Insured liability percentage
+                </FieldLabel>
+                <Input
+                  id="approval-split-percentage"
+                  type="number"
+                  min="0"
+                  max="100"
+                  value={splitPercentage}
+                  onChange={(event) => setSplitPercentage(event.target.value)}
+                />
+              </Field>
+            ) : null}
+          </div>
+          <Field data-invalid={!rationale.trim()}>
+            <FieldLabel htmlFor="approval-liability-rationale">
+              Handler rationale
+            </FieldLabel>
+            <Textarea
+              id="approval-liability-rationale"
+              value={rationale}
+              onChange={(event) => setRationale(event.target.value)}
+              rows={2}
+            />
+            <FieldDescription>
+              Saved with the immutable audit record.
+            </FieldDescription>
+          </Field>
+          <div>
+            <Button
+              size="sm"
+              disabled={confirming || !canConfirm}
+              onClick={() =>
+                onConfirm({
+                  rationale: rationale.trim(),
+                  splitLiabilityPercentage:
+                    status === "SPLIT LIABILITY" ? splitValue : undefined,
+                })
+              }
+            >
+              <CheckIcon data-icon="inline-start" />
+              {confirming ? "Saving decision..." : "Confirm liability"}
+            </Button>
+            {!canConfirm && !confirming ? (
+              <p className="mt-2 text-xs text-muted-foreground">
+                Enter a handler rationale
+                {status === "SPLIT LIABILITY"
+                  ? " and a valid split percentage (0-100)"
+                  : ""}{" "}
+                to confirm.
+              </p>
+            ) : null}
+          </div>
+        </FieldGroup>
+      </CardContent>
+    </Card>
+  )
+}
 
 export function ApprovalScreen({
   workspace,
@@ -40,11 +216,16 @@ export function ApprovalScreen({
   enabled,
   caseUnresolvedChallenges,
   pendingInvoiceLabel,
+  liabilityStatus,
+  liabilityConfirmed,
+  liabilityConfirming,
+  onLiabilityStatusChange,
+  onConfirmLiability,
+  onDecision,
   onFinalise,
   onSettlement,
   onDownload,
   onBackToFindings,
-  onReviewLiability,
   onReviewPendingInvoice,
 }: {
   workspace: ClaimWorkspace
@@ -56,14 +237,33 @@ export function ApprovalScreen({
   enabled: boolean
   caseUnresolvedChallenges: number
   pendingInvoiceLabel: string | null
+  liabilityStatus: LiabilityStatus
+  liabilityConfirmed: boolean
+  liabilityConfirming: boolean
+  onLiabilityStatusChange: (status: LiabilityStatus) => void
+  onConfirmLiability: (decision: {
+    rationale: string
+    splitLiabilityPercentage?: number
+  }) => void
+  onDecision: (
+    line: InvoiceLine,
+    decision: {
+      approved: boolean
+      rationale: string
+      challengePriceNet?: number
+    }
+  ) => Promise<void>
   onFinalise: () => void
   onSettlement: () => void
   onDownload: (format: "docx" | "pdf") => void
   onBackToFindings: () => void
-  onReviewLiability: () => void
   onReviewPendingInvoice?: () => void
 }) {
   const [evidenceLine, setEvidenceLine] = useState<InvoiceLine | null>(null)
+  const [decisionLine, setDecisionLine] = useState<InvoiceLine | null>(null)
+  const [decisionMode, setDecisionMode] = useState<
+    "approve" | "reject" | "edit" | null
+  >(null)
   const challenged = workspace.lines.filter((line) => line.challenge > 0)
   const unresolved = challenged.filter(
     (line) =>
@@ -168,21 +368,15 @@ export function ApprovalScreen({
         </Alert>
       ) : null}
 
-      {!canIssue && !finalised ? (
-        <Alert>
-          <LockKeyholeIcon />
-          <AlertTitle>Issuance is gated by liability</AlertTitle>
-          <AlertDescription className="flex items-center justify-between gap-4">
-            <span>
-              Confirm ADMITTED or SPLIT LIABILITY before generating the package.
-            </span>
-            <Button variant="outline" size="sm" onClick={onReviewLiability}>
-              Review claim details
-              <ArrowRightIcon data-icon="inline-end" />
-            </Button>
-          </AlertDescription>
-        </Alert>
-      ) : null}
+      <LiabilityConfirmationPanel
+        workspace={workspace}
+        status={liabilityStatus}
+        confirmed={liabilityConfirmed}
+        confirming={liabilityConfirming}
+        canIssue={canIssue}
+        onStatusChange={onLiabilityStatusChange}
+        onConfirm={onConfirmLiability}
+      />
 
       <section className="grid gap-5 border-y py-5 sm:grid-cols-3 xl:grid-cols-6">
         {[
@@ -226,33 +420,15 @@ export function ApprovalScreen({
         context.
       </p>
 
-      <div className="grid gap-4 border-y py-4 sm:grid-cols-2">
-        <div className="flex items-center gap-3">
-          <CheckCircle2Icon
-            className={canIssue ? "text-success" : "text-muted-foreground"}
-            aria-hidden
-          />
-          <div>
-            <p className="text-sm font-medium">
-              Liability: {workspace.liability.status}
-            </p>
-            <p className="text-xs text-muted-foreground">
-              {canIssue
-                ? "Handler decision permits challenge issuance"
-                : "ADMITTED or SPLIT LIABILITY is required for issuance"}
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-3">
-          <FileCheck2Icon className="text-success" aria-hidden />
-          <div>
-            <p className="text-sm font-medium">
-              Policy {workspace.versions?.policy ?? "v1.4"}
-            </p>
-            <p className="text-xs text-muted-foreground">
-              Historical P90 · earlier matching invoices only
-            </p>
-          </div>
+      <div className="flex items-center gap-3 border-y py-4">
+        <FileCheck2Icon className="text-success" aria-hidden />
+        <div>
+          <p className="text-sm font-medium">
+            Policy {workspace.versions?.policy ?? "v1.4"}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Historical P90 · earlier matching invoices only
+          </p>
         </div>
       </div>
 
@@ -267,60 +443,112 @@ export function ApprovalScreen({
                 <TableHead className="text-right">Supported net</TableHead>
                 <TableHead className="text-right">Challenge amount</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead className="text-right">Decision</TableHead>
                 <TableHead className="text-right">Evidence</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {challenged.map((line) => (
-                <TableRow key={line.id}>
-                  <TableCell className="font-medium">
-                    {line.description}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {formatMoney(line.currentTotal)}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {formatMoney(line.recommended)}
-                  </TableCell>
-                  <TableCell className="text-right font-medium text-destructive tabular-nums">
-                    {formatMoney(line.challenge)}
-                  </TableCell>
-                  <TableCell>
-                    <span
-                      className={
-                        line.challengeStatus === "approved"
-                          ? "inline-flex items-center gap-1 text-xs text-success"
-                          : line.challengeStatus === "rejected"
-                            ? "inline-flex items-center gap-1 text-xs text-muted-foreground"
-                            : "text-xs text-muted-foreground"
-                      }
-                    >
-                      {line.challengeStatus === "approved" ? (
-                        <CheckCircle2Icon aria-hidden />
-                      ) : null}
-                      {line.challengeStatus === "approved"
-                        ? "Reviewed"
-                        : line.challengeStatus === "rejected"
-                          ? "Rejected"
-                          : pendingMappings.includes(line)
-                            ? "Provisional mapping"
-                            : "Awaiting decision"}
-                    </span>
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex justify-end">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setEvidenceLine(line)}
+              {challenged.map((line) => {
+                const resolved =
+                  line.challengeStatus === "approved" ||
+                  line.challengeStatus === "rejected"
+                const mappingApproved = !pendingMappings.includes(line)
+                return (
+                  <TableRow key={line.id}>
+                    <TableCell className="font-medium">
+                      {line.description}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatMoney(line.currentTotal)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatMoney(line.recommended)}
+                    </TableCell>
+                    <TableCell className="text-right font-medium text-destructive tabular-nums">
+                      {formatMoney(line.challenge)}
+                    </TableCell>
+                    <TableCell>
+                      <span
+                        className={
+                          line.challengeStatus === "approved"
+                            ? "inline-flex items-center gap-1 text-xs text-success"
+                            : line.challengeStatus === "rejected"
+                              ? "inline-flex items-center gap-1 text-xs text-muted-foreground"
+                              : "text-xs text-muted-foreground"
+                        }
                       >
-                        <EyeIcon data-icon="inline-start" />
-                        View evidence
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
+                        {line.challengeStatus === "approved" ? (
+                          <CheckCircle2Icon aria-hidden />
+                        ) : null}
+                        {line.challengeStatus === "approved"
+                          ? "Reviewed"
+                          : line.challengeStatus === "rejected"
+                            ? "Rejected"
+                            : !mappingApproved
+                              ? "Provisional mapping"
+                              : "Awaiting decision"}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex justify-end gap-1">
+                        {resolved ? (
+                          <span className="text-xs text-muted-foreground">
+                            {line.challengeStatus === "approved"
+                              ? "Approved"
+                              : "Rejected"}
+                          </span>
+                        ) : !mappingApproved ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled
+                            title="Approve repair item match first"
+                          >
+                            Approve repair item match first
+                          </Button>
+                        ) : (
+                          <>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={!enabled || finalised || processing}
+                              onClick={() => {
+                                setDecisionLine(line)
+                                setDecisionMode("approve")
+                              }}
+                            >
+                              Approve
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              disabled={!enabled || finalised || processing}
+                              onClick={() => {
+                                setDecisionLine(line)
+                                setDecisionMode("reject")
+                              }}
+                            >
+                              Reject
+                            </Button>
+                          </>
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex justify-end">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setEvidenceLine(line)}
+                        >
+                          <EyeIcon data-icon="inline-start" />
+                          View evidence
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                )
+              })}
             </TableBody>
           </Table>
         </div>
@@ -409,6 +637,22 @@ export function ApprovalScreen({
         line={evidenceLine}
         p90ThresholdPct={p90ThresholdPct}
         onClose={() => setEvidenceLine(null)}
+      />
+      <ChallengeDecisionDialog
+        key={`${decisionLine?.id ?? "closed"}-${decisionMode ?? "none"}`}
+        line={decisionLine}
+        mode={decisionMode}
+        saving={processing}
+        onClose={() => {
+          setDecisionLine(null)
+          setDecisionMode(null)
+        }}
+        onSubmit={async (decision) => {
+          if (!decisionLine) return
+          await onDecision(decisionLine, decision)
+          setDecisionLine(null)
+          setDecisionMode(null)
+        }}
       />
     </>
   )

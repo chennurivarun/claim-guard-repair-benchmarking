@@ -9,7 +9,6 @@ export const LIABILITY_STATUSES = [
 export type LiabilityStatus = (typeof LIABILITY_STATUSES)[number]
 
 export type ScreenId =
-  | "claim-liability"
   | "upload-processing"
   | "document-pages"
   | "extracted-invoice"
