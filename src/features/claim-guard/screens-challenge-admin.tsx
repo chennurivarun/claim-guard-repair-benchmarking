@@ -674,6 +674,9 @@ export function LineEvidenceSheet({
                       <p className="text-xs text-muted-foreground">
                         {differenceLabel(line.differenceFromHistory)}
                       </p>
+                      <p className="text-xs font-medium text-muted-foreground">
+                        Context only — not part of the supported price
+                      </p>
                     </div>
                   </div>
                   <div>

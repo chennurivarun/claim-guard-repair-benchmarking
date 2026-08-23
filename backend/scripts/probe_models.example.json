@@ -31,5 +31,13 @@
     "model": "openrouter/replace-with-current-alpha-model",
     "api_key_env": "OPENROUTER_API_KEY",
     "base_url": "https://openrouter.ai/api/v1"
+  },
+  {
+    "name": "azure-llama-maverick",
+    "provider": "azure_openai",
+    "model": "Llama-4-Maverick-17B-128E-Instruct-FP8",
+    "api_key_env": "AZURE_LLM_API_KEY",
+    "base_url": "https://your-resource.services.ai.azure.com",
+    "api_version": "2024-05-01-preview"
   }
 ]

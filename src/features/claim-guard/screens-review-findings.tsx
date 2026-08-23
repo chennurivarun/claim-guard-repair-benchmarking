@@ -639,6 +639,9 @@ export function ReviewFindingsScreen({
                   <p className="mt-1 text-xs text-muted-foreground">
                     Median of {line.historicalCount} governed comparable records
                   </p>
+                  <p className="mt-1 text-xs font-medium text-muted-foreground">
+                    Context only — not part of the supported price
+                  </p>
                 </div>
                 {benchmark ? (
                   <div className="rounded-lg border p-4">

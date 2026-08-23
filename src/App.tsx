@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import { toast } from "sonner"
 
+import { Button } from "@/components/ui/button"
 import { Toaster } from "@/components/ui/sonner"
 import { AppShell } from "@/features/claim-guard/app-shell"
 import { demoWorkspace } from "@/features/claim-guard/demo-data"
@@ -1016,17 +1017,39 @@ export function App() {
         liabilityStatus={liabilityStatus}
         apiMode={apiMode}
       >
-        {activeScreen === "price-comparison" &&
-        invoices.length > 0 &&
-        !challengedInvoices.length ? (
+        {activeScreen === "price-comparison" && !challengedInvoices.length ? (
           <div className="mb-4 rounded-lg border border-dashed bg-card px-4 py-6 text-center">
             <p className="text-sm font-medium">
               No invoices with price challenges yet
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
-              None of the uploaded invoices in this claim have a positive price
-              challenge to review.
+              {invoices.length
+                ? "The uploaded invoices are either within the price thresholds or still waiting on manual review or repair-item matching. This page fills in as soon as a comparison finds a price worth challenging."
+                : "No invoices have been read for this claim yet. Upload documents first, then run the comparison."}
             </p>
+            <div className="mt-4 flex flex-wrap justify-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => navigate("missing-items")}
+              >
+                Open Manual review
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => navigate("upload-processing")}
+              >
+                View documents
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => navigate("benchmark-dashboard")}
+              >
+                View benchmarks
+              </Button>
+            </div>
           </div>
         ) : invoiceSelectorOptions.length > 1 ? (
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-card px-4 py-3">

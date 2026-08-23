@@ -70,12 +70,18 @@ def build_client(entry: dict) -> StructuredLLMClient:
         return GeminiStructuredLLMClient(
             api_key=api_key, model_id=entry["model"], timeout_seconds=timeout
         )
-    if entry["provider"] == "openai_compatible":
+    if entry["provider"] in {"openai_compatible", "azure_openai"}:
+        default_base = (
+            "" if entry["provider"] == "azure_openai" else "https://openrouter.ai/api/v1"
+        )
+        base_url = entry.get("base_url", default_base)
+        if not base_url:
+            raise ValueError(f"'{entry['name']}' needs base_url for {entry['provider']}.")
         return OpenAICompatibleStructuredLLMClient(
             api_key=api_key,
             model_id=entry["model"],
-            base_url=entry.get("base_url", "https://openrouter.ai/api/v1"),
-            api_version=entry.get("api_version", ""),
+            base_url=base_url,
+            api_version=entry.get("api_version", "2024-05-01-preview"),
             timeout_seconds=timeout,
         )
     raise ValueError(f"Unknown provider '{entry['provider']}' for '{entry['name']}'.")
