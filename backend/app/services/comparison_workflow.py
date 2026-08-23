@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.comparison import (
     CurrentInvoiceLine,
+    MatchKind,
     OntologyPriceEvidence,
     aggregate_challenges,
     compare_line,
@@ -19,6 +20,9 @@ from app.comparison import (
 )
 from app.comparison import (
     HistoryObservation as DomainHistoryObservation,
+)
+from app.comparison import (
+    MappingCandidate as DomainMappingCandidate,
 )
 from app.comparison import (
     OntologyItem as DomainOntologyItem,
@@ -54,6 +58,22 @@ from app.models import (
 from app.services.vehicle_classification import select_vehicle_category_history
 
 settings = get_settings()
+
+# Task B1: the top retrieved fuzzy candidate must clear this floor before the
+# deterministic path (no LLM adjudicator, or the adjudicator did not act) will
+# auto-assign it as a provisional match. This is distinct from the retrieval
+# fuzzy_min in app/comparison/mapping.py: retrieval may still surface weaker
+# candidates below this floor so the LLM adjudicator and human reviewers can see
+# them, but nothing below the floor is auto-assigned. Exact-tier matches (part
+# number/canonical/synonym) are always unaffected.
+MAPPING_ACCEPTANCE_FLOOR = Decimal("0.80")
+
+
+def _meets_acceptance_floor(candidate: DomainMappingCandidate) -> bool:
+    return (
+        candidate.match_kind != MatchKind.FUZZY
+        or candidate.mapping_confidence >= MAPPING_ACCEPTANCE_FLOOR
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,6 +295,12 @@ def run_case_comparison(
 ) -> dict[str, Any]:
     """Map and compare current invoice lines with deterministic pilot policy."""
 
+    # Deferred import: app.services.research_workflow imports run_case_comparison
+    # (and MappingOverride) from this module, so importing it at module scope here
+    # would create a circular import. Task B2 auto-stages a new-ontology-item
+    # proposal for lines that end up with no accepted mapping.
+    from app.services.research_workflow import stage_unmatched_line_proposal
+
     overrides = mapping_overrides or {}
     processing_run = session.get(ProcessingRun, case.current_processing_run_id)
     if processing_run is None or processing_run.status != RunStatus.SUCCEEDED:
@@ -400,6 +426,11 @@ def run_case_comparison(
                     # Disable further calls for this run and record the safe failure code.
                     llm_failure_code = exc.code
                     active_llm_adjudicator = None
+            deterministic_candidate = (
+                candidates[0]
+                if candidates and override is None and _meets_acceptance_floor(candidates[0])
+                else None
+            )
             selected_candidate = (
                 next(
                     (
@@ -410,9 +441,18 @@ def run_case_comparison(
                     None,
                 )
                 if llm_decision
-                else candidates[0]
-                if candidates and override is None
-                else None
+                else deterministic_candidate
+            )
+            # Task B1: below the acceptance floor, the deterministic path never
+            # auto-assigns; a configured adjudicator either overrides that (it may
+            # still pick a weak candidate) or its own NO_MATCH stands. Either way,
+            # when the top candidate misses the floor and no adjudicator selection
+            # was made, this line resolves to the existing safe no-match outcome.
+            below_match_floor = bool(
+                override is None
+                and candidates
+                and not _meets_acceptance_floor(candidates[0])
+                and (llm_decision is None or llm_decision.selected_ontology_id is None)
             )
             selected_item = (
                 item_by_id.get(override.ontology_item_id)
@@ -433,6 +473,19 @@ def run_case_comparison(
                 )
             if selected_item is not None:
                 mapped_count += 1
+            elif override is None and line.raw_description.strip():
+                # Task B2: a priced line with no accepted mapping (closed ontology,
+                # or the B1 floor rejected the best candidate) auto-stages a
+                # provisional research proposal so a handler can approve a new
+                # ontology item for it. Idempotent per (case, normalised
+                # description, part number); provisional evidence never prices a
+                # comparison on its own.
+                stage_unmatched_line_proposal(
+                    session,
+                    case_id=case.id,
+                    line=line,
+                    invoice=invoice,
+                )
             mapping_confidence = (
                 Decimal("1")
                 if override is not None
@@ -494,7 +547,10 @@ def run_case_comparison(
                         "financial comparability is evaluated separately."
                         if selected_candidate
                         else (
-                            "Retrieved ontology candidates failed the line-type check."
+                            "Best retrieved candidate did not meet the mapping "
+                            "acceptance floor; no candidate was auto-assigned."
+                            if below_match_floor
+                            else "Retrieved ontology candidates failed the line-type check."
                             if retrieved_candidates
                             else "No ontology candidate met the retrieval threshold."
                         )
@@ -527,6 +583,7 @@ def run_case_comparison(
                     "type_mismatch": bool(retrieved_candidates and not candidates),
                     "manual_research_override": override is not None,
                     "ai_provider_fallback": llm_failure_code,
+                    "below_match_floor": below_match_floor,
                 },
                 ai_output_json=llm_decision.model_dump() if llm_decision else None,
                 is_bundled=False,
@@ -582,6 +639,8 @@ def run_case_comparison(
             review_flags = list(comparison.review_flags)
             if not approved_mapping:
                 review_flags.append("MAPPING_REVIEW_REQUIRED")
+            if below_match_floor:
+                review_flags.append("BELOW_MATCH_FLOOR")
             line_comparisons.append(comparison)
             if comparison.challenge_amount_net > 0:
                 challenge_count += 1
