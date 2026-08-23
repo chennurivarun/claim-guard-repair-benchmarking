@@ -567,6 +567,7 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
         else:
             document.document_kind = DocumentKind.UNKNOWN
 
+        used_group_ids: set[str] = set()
         for extracted in analysis.invoices:
             header = extracted.header
             vehicle = Vehicle(
@@ -608,6 +609,17 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
                 if header.invoice_number
                 else f"{extracted.document_role}:pages-{','.join(map(str, extracted.page_numbers))}"
             )
+            if group_id in used_group_ids:
+                # Retained invoices may share a parsed number (uq_invoices_document_group);
+                # disambiguate by page span instead of discarding either unit.
+                group_id = (
+                    f"{group_id}:pages-{','.join(map(str, extracted.page_numbers))}"
+                )
+            counter = 2
+            while group_id in used_group_ids:
+                group_id = f"{group_id}#{counter}"
+                counter += 1
+            used_group_ids.add(group_id)
             invoice = Invoice(
                 case_id=case.id,
                 document_id=document.id,
