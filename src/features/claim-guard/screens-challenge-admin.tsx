@@ -80,6 +80,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 
+import { CalculationBreakdown } from "./calculation-breakdown"
 import { auditEvents, ontologyVersions } from "./demo-data"
 import {
   documentApiErrorMessage,
@@ -91,7 +92,10 @@ import {
 } from "./document-api"
 import { formatMoney } from "./format"
 import { isMappingApproved } from "./mapping-rules"
-import { MappingDecisionDialog, type MappingDialogSelection } from "./screens-validation"
+import {
+  MappingDecisionDialog,
+  type MappingDialogSelection,
+} from "./screens-validation"
 import {
   ConfidenceCell,
   DataCard,
@@ -231,8 +235,7 @@ function HistoricalObservationDialog({
         <DialogHeader>
           <DialogTitle>Historical source record</DialogTitle>
           <DialogDescription>
-            Persisted historical claim observation used as comparison
-            evidence.
+            Persisted historical claim observation used as comparison evidence.
           </DialogDescription>
         </DialogHeader>
         {loading ? (
@@ -248,12 +251,8 @@ function HistoricalObservationDialog({
           <div className="grid gap-4 text-sm">
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <p className="text-xs text-muted-foreground">
-                  Claim reference
-                </p>
-                <p className="font-medium">
-                  {record.claim_reference ?? "—"}
-                </p>
+                <p className="text-xs text-muted-foreground">Claim reference</p>
+                <p className="font-medium">{record.claim_reference ?? "—"}</p>
               </div>
               <div>
                 <p className="text-xs text-muted-foreground">Invoice date</p>
@@ -274,17 +273,13 @@ function HistoricalObservationDialog({
                 </p>
               </div>
               <div>
-                <p className="text-xs text-muted-foreground">
-                  Approved (net)
-                </p>
+                <p className="text-xs text-muted-foreground">Approved (net)</p>
                 <p className="font-medium tabular-nums">
                   {formatMoney(record.approved_amount_net ?? undefined)}
                 </p>
               </div>
               <div>
-                <p className="text-xs text-muted-foreground">
-                  Settled (net)
-                </p>
+                <p className="text-xs text-muted-foreground">Settled (net)</p>
                 <p className="font-medium tabular-nums">
                   {formatMoney(record.settled_amount_net ?? undefined)}
                 </p>
@@ -322,7 +317,10 @@ export function InlineMappingApproval({
     input: Omit<MappingDecisionInput, "actor">
   ) => Promise<void>
   researchSaving?: boolean
-  onProposeNewItem?: (line: InvoiceLine, values: ResearchFormValues) => Promise<void>
+  onProposeNewItem?: (
+    line: InvoiceLine,
+    values: ResearchFormValues
+  ) => Promise<void>
 }) {
   const [selection, setSelection] = useState<MappingDialogSelection | null>(
     null
@@ -430,15 +428,16 @@ export function LineEvidenceSheet({
     input: Omit<MappingDecisionInput, "actor">
   ) => Promise<void>
   researchSaving?: boolean
-  onProposeNewItem?: (line: InvoiceLine, values: ResearchFormValues) => Promise<void>
+  onProposeNewItem?: (
+    line: InvoiceLine,
+    values: ResearchFormValues
+  ) => Promise<void>
 }) {
   const comparables = line?.comparables ?? []
   const p90 = line?.p90Benchmark
-  const p90Challenged = Boolean(
-    p90 &&
-      p90.percentageDifference > p90ThresholdPct &&
-      p90.difference >= MINIMUM_CHALLENGE_AMOUNT
-  )
+  // The operational status comes only from the server's comparisonStatus
+  // (see backend price_decision.py) — never recomputed client-side here.
+  const p90Challenged = Boolean(p90 && line?.comparisonStatus === "CHALLENGE")
   const [observationId, setObservationId] = useState<string | null>(null)
   return (
     <Sheet open={line !== null} onOpenChange={(open) => !open && onClose()}>
@@ -484,8 +483,12 @@ export function LineEvidenceSheet({
                         70% P90 + 30% approved external evidence
                       </p>
                     </div>
-                    <Badge variant={line.challenge > 0 ? "destructive" : "outline"}>
-                      {line.challenge > 0 ? "Price challenge" : "Within support"}
+                    <Badge
+                      variant={line.challenge > 0 ? "destructive" : "outline"}
+                    >
+                      {line.challenge > 0
+                        ? "Price challenge"
+                        : "Within support"}
                     </Badge>
                   </div>
                   <div className="mt-4 grid grid-cols-3 gap-3 text-sm">
@@ -502,7 +505,9 @@ export function LineEvidenceSheet({
                       </p>
                     </div>
                     <div>
-                      <p className="text-xs text-muted-foreground">Difference</p>
+                      <p className="text-xs text-muted-foreground">
+                        Difference
+                      </p>
                       <p className="font-semibold tabular-nums">
                         {formatMoney(line.challenge)}
                       </p>
@@ -515,6 +520,7 @@ export function LineEvidenceSheet({
                   </p>
                 </div>
               ) : null}
+              <CalculationBreakdown steps={line.calculation} />
               {p90 ? (
                 <>
                   <div className="rounded-lg border bg-muted/30 p-4">
@@ -1445,9 +1451,7 @@ function ManualReviewDocumentsSection({
   const [pages, setPages] = useState<DocumentPageRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
-  const [viewerPage, setViewerPage] = useState<DocumentPageRecord | null>(
-    null
-  )
+  const [viewerPage, setViewerPage] = useState<DocumentPageRecord | null>(null)
   const rowRefs = useRef<Record<string, HTMLDivElement | null>>({})
 
   useEffect(() => {
@@ -1531,9 +1535,7 @@ function ManualReviewDocumentsSection({
                   </div>
                   <StatusBadge
                     status={
-                      document.status === "failed"
-                        ? "FAILED"
-                        : "MANUAL REVIEW"
+                      document.status === "failed" ? "FAILED" : "MANUAL REVIEW"
                     }
                   />
                 </div>
@@ -2564,7 +2566,9 @@ function externalPriceMethod(
   observations: PriceObservationRecord[]
 ) {
   const prices = observations
-    .filter((observation) => observation.approvalStatus.toLowerCase() === "approved")
+    .filter(
+      (observation) => observation.approvalStatus.toLowerCase() === "approved"
+    )
     .map((observation) => observation.priceNet)
     .sort((left, right) => left - right)
   if (!prices.length || item.referencePriceNet == null) {
@@ -2599,7 +2603,9 @@ export function OntologyBankScreen({
     priceObservations: [],
   }
   const activeVersion = workspace.versions?.ontology ?? "unversioned"
-  const [selectedItem, setSelectedItem] = useState<OntologyBankItem | null>(null)
+  const [selectedItem, setSelectedItem] = useState<OntologyBankItem | null>(
+    null
+  )
   const selectedObservations = selectedItem
     ? bank.priceObservations.filter(
         (observation) => observation.ontologyItemId === selectedItem.id
@@ -2674,7 +2680,8 @@ export function OntologyBankScreen({
                           onClick={() => setSelectedItem(item)}
                         >
                           <EyeIcon data-icon="inline-start" />
-                          {item.observationCount} source{item.observationCount === 1 ? "" : "s"}
+                          {item.observationCount} source
+                          {item.observationCount === 1 ? "" : "s"}
                         </Button>
                       </TableCell>
                       <TableCell>
@@ -2740,7 +2747,9 @@ export function OntologyBankScreen({
                     <TableHead>Source evidence</TableHead>
                     <TableHead>Date</TableHead>
                     <TableHead>Scope / VAT</TableHead>
-                    <TableHead className="text-right">Published price</TableHead>
+                    <TableHead className="text-right">
+                      Published price
+                    </TableHead>
                     <TableHead className="text-right">Net price</TableHead>
                     <TableHead className="text-right">Status</TableHead>
                   </TableRow>
@@ -2751,7 +2760,7 @@ export function OntologyBankScreen({
                       <TableCell className="font-mono text-xs">
                         {observation.ontologyCode || observation.ontologyItemId}
                       </TableCell>
-                      <TableCell className="min-w-64 max-w-xs whitespace-normal">
+                      <TableCell className="max-w-xs min-w-64 whitespace-normal">
                         <p className="font-medium">
                           {observation.providerName || observation.source}
                         </p>
@@ -2759,7 +2768,7 @@ export function OntologyBankScreen({
                           {observation.source.replaceAll("_", " ")}
                         </p>
                       </TableCell>
-                      <TableCell className="min-w-48 max-w-xs whitespace-normal">
+                      <TableCell className="max-w-xs min-w-48 whitespace-normal">
                         {observation.sourceRef?.startsWith("http") ? (
                           <a
                             className="inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline"
@@ -2771,7 +2780,7 @@ export function OntologyBankScreen({
                             <ExternalLinkIcon className="size-3.5" />
                           </a>
                         ) : (
-                          <span className="block max-w-48 break-all text-sm text-muted-foreground">
+                          <span className="block max-w-48 text-sm break-all text-muted-foreground">
                             {observation.sourceRef || "No source reference"}
                           </span>
                         )}
@@ -2810,16 +2819,21 @@ export function OntologyBankScreen({
       >
         <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{selectedItem?.name ?? "External price evidence"}</DialogTitle>
+            <DialogTitle>
+              {selectedItem?.name ?? "External price evidence"}
+            </DialogTitle>
             <DialogDescription>
-              Source prices and the exact aggregation used for the library value.
+              Source prices and the exact aggregation used for the library
+              value.
             </DialogDescription>
           </DialogHeader>
           {selectedItem ? (
             <div className="flex flex-col gap-4">
               <div className="grid gap-3 rounded-lg border p-4 sm:grid-cols-2">
                 <div>
-                  <p className="text-xs text-muted-foreground">External price used</p>
+                  <p className="text-xs text-muted-foreground">
+                    External price used
+                  </p>
                   <p className="mt-1 text-xl font-semibold tabular-nums">
                     {selectedItem.referencePriceNet == null
                       ? "—"
@@ -2827,7 +2841,9 @@ export function OntologyBankScreen({
                   </p>
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">Aggregation method</p>
+                  <p className="text-xs text-muted-foreground">
+                    Aggregation method
+                  </p>
                   <p className="mt-1 text-sm font-medium">
                     {externalPriceMethod(selectedItem, selectedObservations)}
                   </p>
@@ -2874,8 +2890,12 @@ export function OntologyBankScreen({
                     ))
                   ) : (
                     <TableRow>
-                      <TableCell colSpan={4} className="py-8 text-center text-muted-foreground">
-                        No individual source observations are stored for this item.
+                      <TableCell
+                        colSpan={4}
+                        className="py-8 text-center text-muted-foreground"
+                      >
+                        No individual source observations are stored for this
+                        item.
                       </TableCell>
                     </TableRow>
                   )}

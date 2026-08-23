@@ -37,6 +37,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 
+import { CalculationBreakdown } from "./calculation-breakdown"
 import {
   ChallengeDecisionDialog,
   InlineMappingApproval,
@@ -72,12 +73,14 @@ function EngineerAssessmentCard({
           <div>
             <CardTitle>Engineer assessment evidence</CardTitle>
             <CardDescription>
-              {assessment.assessment_number ?? "Assessment"} is paired to this invoice
-              using {assessment.pair_reasons.join(" and ") || "governed identifiers"}.
+              {assessment.assessment_number ?? "Assessment"} is paired to this
+              invoice using{" "}
+              {assessment.pair_reasons.join(" and ") || "governed identifiers"}.
             </CardDescription>
           </div>
           <Badge variant="outline">
-            {Math.round((assessment.pair_confidence ?? 0) * 100)}% pairing confidence
+            {Math.round((assessment.pair_confidence ?? 0) * 100)}% pairing
+            confidence
           </Badge>
         </div>
       </CardHeader>
@@ -90,8 +93,12 @@ function EngineerAssessmentCard({
             </p>
           </div>
           <div className="rounded-lg border bg-background p-3">
-            <p className="text-xs text-muted-foreground">Operations extracted</p>
-            <p className="mt-1 text-lg font-semibold">{assessment.operations.length}</p>
+            <p className="text-xs text-muted-foreground">
+              Operations extracted
+            </p>
+            <p className="mt-1 text-lg font-semibold">
+              {assessment.operations.length}
+            </p>
           </div>
           <div className="rounded-lg border bg-background p-3">
             <p className="text-xs text-muted-foreground">Comparable lines</p>
@@ -102,8 +109,8 @@ function EngineerAssessmentCard({
           <InfoIcon />
           <AlertTitle>Separate evidence stream</AlertTitle>
           <AlertDescription>
-            Engineer values are shown beside invoice variances only. They are not
-            inserted into the historical invoice P90 population.
+            Engineer values are shown beside invoice variances only. They are
+            not inserted into the historical invoice P90 population.
           </AlertDescription>
         </Alert>
         {variances.length > 0 ? (
@@ -115,12 +122,14 @@ function EngineerAssessmentCard({
                   <TableHead className="text-right">Engineer</TableHead>
                   <TableHead className="text-right">Invoice</TableHead>
                   <TableHead className="text-right">Variance</TableHead>
-                  <TableHead>Status</TableHead>
+                  <TableHead>Engineer gate</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {variances.map(({ operation, variance }) => (
-                  <TableRow key={`${operation.id}-${variance.invoice_line_item_id}`}>
+                  <TableRow
+                    key={`${operation.id}-${variance.invoice_line_item_id}`}
+                  >
                     <TableCell>
                       <p className="font-medium">{operation.description}</p>
                       <p className="text-xs text-muted-foreground">
@@ -215,7 +224,9 @@ function InvoiceComparisonTable({
               <TableRow>
                 <TableHead>Line</TableHead>
                 <TableHead className="text-right">Billed</TableHead>
-                <TableHead className="text-right">Supported net price</TableHead>
+                <TableHead className="text-right">
+                  Supported net price
+                </TableHead>
                 <TableHead className="text-right">P90 benchmark</TableHead>
                 <TableHead className="text-right">Status</TableHead>
                 <TableHead className="w-24">
@@ -226,7 +237,9 @@ function InvoiceComparisonTable({
             <TableBody>
               {rows.map((item) => (
                 <TableRow key={item.id}>
-                  <TableCell className="font-medium">{item.description}</TableCell>
+                  <TableCell className="font-medium">
+                    {item.description}
+                  </TableCell>
                   <TableCell className="text-right tabular-nums">
                     {formatMoney(item.currentTotal)}
                   </TableCell>
@@ -307,7 +320,10 @@ export function ReviewFindingsScreen({
     input: Omit<MappingDecisionInput, "actor">
   ) => Promise<void>
   mappingSavingLineId?: string | null
-  onProposeNewItem?: (line: InvoiceLine, values: ResearchFormValues) => Promise<void>
+  onProposeNewItem?: (
+    line: InvoiceLine,
+    values: ResearchFormValues
+  ) => Promise<void>
   researchSaving?: boolean
 }) {
   const ontologyOptions = workspace.ontologyBank?.items ?? []
@@ -512,19 +528,27 @@ export function ReviewFindingsScreen({
                       based only on earlier invoices
                     </p>
                   </div>
-                  <Badge variant={benchmarkChallenged ? "destructive" : "outline"}>
-                    {benchmarkChallenged ? "Above P90 threshold" : "Within P90 threshold"}
+                  <Badge
+                    variant={benchmarkChallenged ? "destructive" : "outline"}
+                  >
+                    {benchmarkChallenged
+                      ? "Above P90 threshold"
+                      : "Within P90 threshold"}
                   </Badge>
                 </div>
                 <div className="mt-4 grid gap-3 sm:grid-cols-3">
                   <div>
-                    <p className="text-xs text-muted-foreground">Current charge</p>
+                    <p className="text-xs text-muted-foreground">
+                      Current charge
+                    </p>
                     <p className="mt-1 font-semibold tabular-nums">
                       {formatMoney(benchmark.currentPrice)}
                     </p>
                   </div>
                   <div>
-                    <p className="text-xs text-muted-foreground">P90 benchmark</p>
+                    <p className="text-xs text-muted-foreground">
+                      P90 benchmark
+                    </p>
                     <p className="mt-1 font-semibold tabular-nums">
                       {formatMoney(benchmark.p90)}
                     </p>
@@ -567,14 +591,14 @@ export function ReviewFindingsScreen({
 
             <div>
               <h2 className="text-sm font-semibold">Why it was flagged</h2>
-                <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                  {line.rationale}
-                </p>
-                <p className="mt-2 text-xs leading-5 text-muted-foreground">
-                  When both prices are available, the supported price uses 70%
-                  benchmark and 30% approved external price. If only one is
-                  available, that available price is used.
-                </p>
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                {line.rationale}
+              </p>
+              <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                When both prices are available, the supported price uses 70%
+                benchmark and 30% approved external price. If only one is
+                available, that available price is used.
+              </p>
             </div>
 
             <div>
@@ -625,8 +649,8 @@ export function ReviewFindingsScreen({
                       {formatMoney(benchmark.p90)}
                     </p>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      {benchmark.historicalCount} earlier uploaded invoices;
-                      the current invoice is not counted
+                      {benchmark.historicalCount} earlier uploaded invoices; the
+                      current invoice is not counted
                     </p>
                   </div>
                 ) : null}
@@ -641,6 +665,7 @@ export function ReviewFindingsScreen({
                   "The supported net price uses the persisted ontology and historical claim evidence. VAT is handled separately."}
               </AlertDescription>
             </Alert>
+            <CalculationBreakdown steps={line.calculation} />
           </CardContent>
           <CardFooter className="flex-col items-stretch gap-3 border-t pt-6">
             <Button
