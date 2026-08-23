@@ -77,6 +77,19 @@ Documents → Benchmarks → Challenged invoices → Challenge decision.
 Documents the tool can't read automatically appear under
 **Advanced tools → Manual review** with an AI explanation.
 
+## Updating to a newer version WITHOUT losing your work
+
+Every download is a fresh copy with an **empty database** — your uploaded
+documents and decisions live in the old folder. To carry them over:
+
+1. Copy `backend/.env` from the old folder to the new one (your keys).
+2. Copy the whole `backend/data` folder from the old folder to the new one
+   (your documents, decisions, and price book).
+3. From the new `backend` folder run `uv run alembic upgrade head` once, then
+   start as usual.
+
+Skip step 2 only when you deliberately want a clean start.
+
 ## If something goes wrong
 
 | Problem | Fix |

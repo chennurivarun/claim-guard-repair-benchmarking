@@ -1045,7 +1045,7 @@ export function App() {
               </Button>
             </div>
           </div>
-        ) : invoiceSelectorOptions.length > 1 ? (
+        ) : invoiceSelectorOptions.length >= 1 ? (
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-card px-4 py-3">
             <div>
               <p className="text-sm font-medium">
