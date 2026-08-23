@@ -431,6 +431,46 @@ def test_stage_unmatched_line_proposal_dedupes_on_direct_recall(staging_session)
     assert _count(session, ResearchItem) == 1
 
 
+def test_stage_unmatched_line_proposal_dedupes_canonical_part_identity(staging_session) -> None:
+    """Different wording for one part number must reuse the ontology proposal."""
+
+    session, case, invoice = staging_session
+    first_line = _add_line(
+        invoice,
+        session,
+        sequence_no=1,
+        description="Rear bumper left section",
+        price_net="315.50",
+        part_number="DGHJ-797",
+    )
+    second_line = _add_line(
+        invoice,
+        session,
+        sequence_no=2,
+        description="Rear bumper (left area) repaired",
+        price_net="325.00",
+        part_number="dghj 797",
+    )
+    session.commit()
+
+    first = stage_unmatched_line_proposal(
+        session, case_id=case.id, line=first_line, invoice=invoice
+    )
+    session.flush()
+    assert first is not None
+
+    second = stage_unmatched_line_proposal(
+        session, case_id=case.id, line=second_line, invoice=invoice
+    )
+    session.flush()
+
+    assert second is not None
+    assert second.id == first.id
+    assert _count(session, OntologyItem) == 1
+    assert _count(session, ResearchTask) == 1
+    assert _count(session, ResearchItem) == 1
+
+
 def test_unmatched_line_without_invoice_date_is_compared_and_staged(staging_session) -> None:
     session, case, invoice = staging_session
     invoice.invoice_date = None

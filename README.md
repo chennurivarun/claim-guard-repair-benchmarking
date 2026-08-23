@@ -50,6 +50,8 @@ For the complete beginner-friendly handover—including the product, user journe
 
 For a shorter plain-English product walkthrough, see [`docs/PRODUCT_OVERVIEW.md`](docs/PRODUCT_OVERVIEW.md).
 
+Before deploying or upgrading any environment, complete the [Deployment handoff and release checklist](docs/DEPLOYMENT_HANDOFF.md).
+
 ## Product rules at a glance
 
 | Area              | Pilot rule                                                                                                                                      |

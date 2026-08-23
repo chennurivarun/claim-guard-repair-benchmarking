@@ -204,6 +204,7 @@ export interface ResearchQueueItem {
   queryText: string
   status: string
   sourceAllowListVersion: string
+  initiatedAutomatically?: boolean
   candidate?: string | null
   itemType?: string | null
   category?: string | null

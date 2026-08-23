@@ -241,6 +241,36 @@ def test_invalid_threshold_is_rejected(p90_client) -> None:
     assert response.json()["detail"]["code"] == "INVALID_P90_THRESHOLD"
 
 
+def test_invoice_list_uses_same_operational_p90_challenges_as_workspace(p90_client) -> None:
+    at_10 = p90_client.get(
+        f"/api/v1/claims/{CASE_REFERENCE}/invoices", params={"p90_threshold_pct": 10}
+    )
+    at_5 = p90_client.get(
+        f"/api/v1/claims/{CASE_REFERENCE}/invoices", params={"p90_threshold_pct": 5}
+    )
+
+    assert at_10.status_code == 200
+    assert at_5.status_code == 200
+    reviews_at_10 = {row["invoice_number"]: row["challenge_review"] for row in at_10.json()}
+    reviews_at_5 = {row["invoice_number"]: row["challenge_review"] for row in at_5.json()}
+
+    # This fixture has no persisted legacy comparison/challenge rows. The
+    # invoice list must still expose the operational P90 decisions.
+    assert reviews_at_10["invoice-4"] == {
+        "positive": 2,
+        "approved": 0,
+        "rejected": 0,
+        "unresolved": 2,
+    }
+    assert reviews_at_5["invoice-4"] == {
+        "positive": 3,
+        "approved": 0,
+        "rejected": 0,
+        "unresolved": 3,
+    }
+    assert all(reviews_at_10[f"invoice-{index}"]["positive"] == 0 for index in range(1, 4))
+
+
 # --- Aggregation: rejected lines excluded, breakdown present --------------
 
 

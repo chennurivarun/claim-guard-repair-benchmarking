@@ -182,7 +182,9 @@ export function App() {
           description: `${result.errorMessage} Live invoice data is hidden until the connection is restored.`,
         })
       } else {
-        setInvoices(await fetchClaimInvoices(result.workspace.claim.id))
+        setInvoices(
+          await fetchClaimInvoices(result.workspace.claim.id, p90ThresholdPct)
+        )
         setApiError(null)
       }
     } finally {
@@ -224,7 +226,10 @@ export function App() {
       workspace.invoice.id,
       p90ThresholdPct
     )
-      .then((next) => applyWorkspace(next))
+      .then(async (next) => {
+        applyWorkspace(next)
+        setInvoices(await fetchClaimInvoices(next.claim.id, p90ThresholdPct))
+      })
       .catch((error) => {
         toast.error("Could not apply the new threshold", {
           description: getApiErrorMessage(error),
@@ -253,6 +258,11 @@ export function App() {
     0
   )
   const challengedInvoices = selectChallengedInvoices(invoices)
+  const pendingOntologyItems =
+    workspace.researchItems?.filter(
+      (item) =>
+        item.initiatedAutomatically && item.status.toLowerCase() !== "approved"
+    ).length ?? 0
   const invoiceSelectorOptions = invoiceOptionsForScreen(invoices, activeScreen)
   const screenInvoiceReady =
     activeScreen !== "price-comparison" ||
@@ -271,7 +281,7 @@ export function App() {
       p90ThresholdPct
     )
     applyWorkspace(next)
-    setInvoices(await fetchClaimInvoices(next.claim.id))
+    setInvoices(await fetchClaimInvoices(next.claim.id, p90ThresholdPct))
     return next
   }
 
@@ -856,7 +866,10 @@ export function App() {
           caseReference={workspace.claim.id}
           finalised={caseFinalised}
           onProcessed={async (preferredDocumentId) => {
-            const latestInvoices = await fetchClaimInvoices(workspace.claim.id)
+            const latestInvoices = await fetchClaimInvoices(
+              workspace.claim.id,
+              p90ThresholdPct
+            )
             const preferredInvoice = preferredDocumentId
               ? latestInvoices.find(
                   (invoice) => invoice.document_id === preferredDocumentId
@@ -1016,7 +1029,36 @@ export function App() {
       )
       break
     case "ontology-bank":
-      screen = <OntologyBankScreen workspace={workspace} />
+      screen = (
+        <>
+          {pendingOntologyItems > 0 ? (
+            <Alert className="mb-4">
+              <AlertTitle>
+                {pendingOntologyItems} new scanned repair item
+                {pendingOntologyItems === 1 ? " is" : "s are"} in the ontology
+                bank
+              </AlertTitle>
+              <AlertDescription className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <span>
+                  They were learned from unmatched priced invoice lines and are
+                  provisional. Review and approve them before their prices can
+                  affect a challenge.
+                </span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0"
+                  onClick={() => navigate("missing-items")}
+                >
+                  Review new items
+                </Button>
+              </AlertDescription>
+            </Alert>
+          ) : null}
+          <OntologyBankScreen workspace={workspace} />
+        </>
+      )
       break
     case "benchmark-dashboard":
       screen = (

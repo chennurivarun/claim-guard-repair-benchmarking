@@ -666,9 +666,11 @@ def stage_unmatched_line_proposal(
     contribute price evidence to a comparison until a handler approves them via
     the existing ``approve_research_item`` flow.
 
-    Idempotent on (case, normalised description, part number): if an open or
-    already-approved auto-staged proposal exists for the same line content, it is
-    returned unchanged instead of creating a duplicate.
+    Idempotent first on (case, normalised description, part number), then on the
+    global canonical ontology identity. The second guard matters when one physical
+    part number appears with different wording across lines or cases: the ontology
+    bank owns one canonical code, so comparison must reuse its proposal instead of
+    attempting a duplicate insert and aborting the entire run.
     """
 
     effective_settings = settings or get_settings()
@@ -706,6 +708,31 @@ def stage_unmatched_line_proposal(
     unit = (line.unit or "each").strip()
     category = (line.raw_category or line.item_kind.value.replace("_", " ")).strip().title()
     canonical_name = line.raw_description.strip()
+    canonical_identity = _canonical_identity(
+        item_type=line.item_kind,
+        canonical_name=canonical_name,
+        category=category,
+        unit=unit,
+        part_number=line.part_number,
+    )
+    canonical_code = _identity_code(canonical_identity)
+
+    # ``ontology_items.canonical_code`` is globally unique. Description-based
+    # dedupe above is intentionally case-scoped and can miss the same part number
+    # written differently (for example "rear bumper left" vs "rear bumper (left
+    # area)"). Reuse the proposal already attached to that canonical item. If the
+    # item predates auto-staging and has no proposal, return safely: it is already
+    # present in the ontology bank and must not be inserted a second time.
+    existing_ontology_item = session.scalar(
+        select(OntologyItem).where(OntologyItem.canonical_code == canonical_code)
+    )
+    if existing_ontology_item is not None:
+        return session.scalar(
+            select(ResearchItem).where(
+                ResearchItem.provisional_ontology_item_id == existing_ontology_item.id,
+                ResearchItem.status.in_(_DEDUP_RESEARCH_STATUSES),
+            )
+        )
 
     now = utc_now()
     # Some repair schedules omit the invoice date even though their priced
@@ -734,15 +761,8 @@ def stage_unmatched_line_proposal(
     session.flush()
 
     version = _new_ontology_version(session, task, actor_id)
-    canonical_identity = _canonical_identity(
-        item_type=line.item_kind,
-        canonical_name=canonical_name,
-        category=category,
-        unit=unit,
-        part_number=line.part_number,
-    )
     ontology_item = OntologyItem(
-        canonical_code=_identity_code(canonical_identity),
+        canonical_code=canonical_code,
         canonical_name=canonical_name,
         item_type=line.item_kind,
         category=category,

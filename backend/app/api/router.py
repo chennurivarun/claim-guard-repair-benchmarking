@@ -894,10 +894,15 @@ def _line_payload(line: InvoiceLineItem, db: Session) -> dict[str, Any]:
 
 
 @router.get("/claims/{case_reference}/invoices", tags=["invoices"])
-def get_invoices(case_reference: str, db: DatabaseSession) -> list[dict[str, Any]]:
+def get_invoices(
+    case_reference: str,
+    db: DatabaseSession,
+    p90_threshold_pct: int = Query(DEFAULT_P90_POLICY.default_threshold_pct),
+) -> list[dict[str, Any]]:
     case = db.scalar(select(Case).where(Case.case_reference == case_reference))
     if case is None:
         raise _not_found("Claim not found")
+    threshold = _validated_p90_threshold_pct(p90_threshold_pct)
     invoices = (
         db.scalars(
             select(Invoice)
@@ -918,36 +923,27 @@ def get_invoices(case_reference: str, db: DatabaseSession) -> list[dict[str, Any
         invoice.id: {"positive": 0, "approved": 0, "rejected": 0, "unresolved": 0}
         for invoice in invoices
     }
-    if case.current_processing_run_id:
-        challenge_rows = db.execute(
-            select(ChallengeResult, InvoiceLineItem.invoice_id)
-            .join(
-                PriceComparison,
-                PriceComparison.id == ChallengeResult.price_comparison_id,
-            )
-            .join(
-                InvoiceLineItem,
-                InvoiceLineItem.id == PriceComparison.invoice_line_item_id,
-            )
-            .where(
-                ChallengeResult.processing_run_id == case.current_processing_run_id,
-                ChallengeResult.price_comparison_id.is_not(None),
-            )
-        ).all()
-        for challenge, invoice_id in challenge_rows:
-            if _decimal_value(challenge.challenge_net) <= 0:
-                continue
-            review = challenge_review_by_invoice.setdefault(
-                invoice_id,
-                {"positive": 0, "approved": 0, "rejected": 0, "unresolved": 0},
-            )
-            review["positive"] += 1
-            if challenge.status == ChallengeStatus.APPROVED:
-                review["approved"] += 1
-            elif challenge.status == ChallengeStatus.REJECTED:
-                review["rejected"] += 1
-            else:
-                review["unresolved"] += 1
+    # Benchmarks, Review findings and exports all use the unified read-time P90
+    # decision. Persisted legacy ChallengeResult amounts can disagree with it,
+    # so the invoice selector must use this same result graph as its source of
+    # truth instead of reading the legacy amounts directly.
+    result = build_case_result(db, case_reference, p90_threshold_pct=threshold)
+    for challenge in result["challenges"]:
+        invoice_id = challenge.get("invoice_id")
+        if not invoice_id or _decimal_value(challenge.get("challenge_amount_net")) <= 0:
+            continue
+        review = challenge_review_by_invoice.setdefault(
+            invoice_id,
+            {"positive": 0, "approved": 0, "rejected": 0, "unresolved": 0},
+        )
+        review["positive"] += 1
+        challenge_status = challenge.get("status")
+        if challenge_status == ChallengeStatus.APPROVED.value:
+            review["approved"] += 1
+        elif challenge_status == ChallengeStatus.REJECTED.value:
+            review["rejected"] += 1
+        else:
+            review["unresolved"] += 1
     return [
         {
             "id": invoice.id,

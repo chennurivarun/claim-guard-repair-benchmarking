@@ -1051,18 +1051,7 @@ export function BenchmarkDashboardScreen({
               </tbody>
             </table>
           </div>
-        ) : (
-          <Alert>
-            <DatabaseIcon />
-            <AlertTitle>Not enough earlier matching prices yet</AlertTitle>
-            <AlertDescription>
-              P90 appears from the fourth relevant invoice because three earlier
-              matching prices are required. Uploading or selecting later
-              invoices does not change earlier decisions, and an invoice never
-              benchmarks itself.
-            </AlertDescription>
-          </Alert>
-        )}
+        ) : null}
       </DataCard>
 
       <p className="border-t pt-4 text-xs text-muted-foreground">

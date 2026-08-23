@@ -341,10 +341,11 @@ export function fetchClaimWorkspace(
 }
 
 export function fetchClaimInvoices(
-  caseReference = DEFAULT_CASE_REFERENCE
+  caseReference = DEFAULT_CASE_REFERENCE,
+  p90ThresholdPct = 10
 ): Promise<ClaimInvoiceSummary[]> {
   return requestJson(
-    `/api/v1/claims/${encodeURIComponent(caseReference)}/invoices`
+    `/api/v1/claims/${encodeURIComponent(caseReference)}/invoices?p90_threshold_pct=${encodeURIComponent(String(p90ThresholdPct))}`
   )
 }
 
