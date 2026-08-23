@@ -8,6 +8,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.domain.price_decision import (
+    DEFAULT_POLICY as DEFAULT_P90_POLICY,
+)
+from app.domain.price_decision import (
+    LineDecisionInputs,
+    P90Evidence,
+    PriceDecision,
+    decide_line_price,
+    resolve_threshold_pct,
+)
 from app.enums import (
     ApprovalStatus,
     ClaimPartyRole,
@@ -71,6 +81,60 @@ def _money_float(value: Any) -> float:
 
 def _optional_money_float(value: Any) -> float | None:
     return None if value in (None, "") else _money_float(value)
+
+
+def _is_mot_description(description: Any) -> bool:
+    return "mot" in str(description or "").lower()
+
+
+def _p90_evidence_from_benchmark(benchmark: dict[str, Any]) -> P90Evidence:
+    observations = benchmark.get("observations") or []
+    seen: list[str] = []
+    for observation in observations:
+        reference = str(observation.get("invoiceNumber") or observation.get("invoiceId") or "")
+        if reference and reference not in seen:
+            seen.append(reference)
+    return P90Evidence(
+        value=_decimal(benchmark.get("p90")),
+        historical_count=int(benchmark.get("historicalCount", 0)),
+        method=str(benchmark.get("method") or "Interpolated percentile (PERCENTILE.INC)"),
+        explanation=str(benchmark.get("explanation") or ""),
+        contributing_invoices=tuple(seen),
+    )
+
+
+def _decide_line_from_benchmark(
+    *,
+    billed_net: Any,
+    benchmark: dict[str, Any] | None,
+    external_price: Any,
+    external_approval_status: Any,
+    vat_rate: Any,
+    is_mot: bool,
+    p90_threshold_pct: Decimal,
+) -> PriceDecision:
+    """Run the unified price decision for one line given its P90 benchmark.
+
+    Returns a ``PriceDecision`` with ``has_signal=False`` when there is no
+    benchmark, so callers can leave the line's existing engine-derived
+    payload values unchanged (parity with the JS overlay, which skipped
+    lines without a P90 benchmark too).
+    """
+
+    p90_evidence = _p90_evidence_from_benchmark(benchmark) if benchmark else None
+    external = _decimal(external_price) if external_price not in (None, "") else None
+    if external is not None and external <= 0:
+        external = None
+    inputs = LineDecisionInputs(
+        billed_net=_decimal(billed_net),
+        p90=p90_evidence,
+        external_price=external,
+        external_approval_status=_enum_value(external_approval_status),
+        vat_rate=_decimal(vat_rate),
+        is_mot=is_mot,
+        threshold_pct=p90_threshold_pct,
+    )
+    return decide_line_price(inputs, DEFAULT_P90_POLICY)
 
 
 def _percent(value: Any) -> int:
@@ -466,10 +530,17 @@ def build_case_result(
     case_reference: str,
     *,
     _graph: dict[str, Any] | None = None,
+    p90_threshold_pct: int | str | Decimal | None = None,
 ) -> dict[str, Any]:
     """Build the single normalized graph used by every report format."""
 
+    threshold_decimal = resolve_threshold_pct(p90_threshold_pct)
     graph = _graph or _load_case_graph(session, case_reference)
+    uploaded_p90_benchmarks: dict[str, dict[str, Any]] = {}
+    for uploaded_invoice in graph["invoices"]:
+        uploaded_p90_benchmarks.update(
+            _uploaded_line_p90_benchmarks(graph, current_invoice=uploaded_invoice)
+        )
     case: Case = graph["case"]
     context: ClaimContext | None = graph["context"]
     liability: LiabilityAssessment | None = graph["liability"]
@@ -637,6 +708,97 @@ def build_case_result(
                     "approved_at": challenge.approved_at,
                 }
             )
+
+        # Unified operational price decision (C2/C3): when a line carries a
+        # P90 benchmark signal, it becomes THE operational price/challenge —
+        # overriding the serialized comparison/challenge figures above so
+        # every export agrees with the workspace.  The persisted
+        # PriceComparison/ChallengeResult rows themselves are never mutated;
+        # this only changes what this read-time result graph reports.
+        # Lines without a P90 signal keep their engine-derived values as-is.
+        benchmark = None if rejected else uploaded_p90_benchmarks.get(line.id)
+        decision = _decide_line_from_benchmark(
+            billed_net=line.line_total_net,
+            benchmark=benchmark,
+            external_price=comparison.ontology_line_net if comparison else None,
+            external_approval_status=item.approval_status if item else None,
+            vat_rate=line.vat_rate,
+            is_mot=is_mot,
+            p90_threshold_pct=threshold_decimal,
+        )
+        if decision.has_signal:
+            decision_payload = {
+                "supported_price_net": decision.supported_price,
+                "challenge_amount_net": decision.challenge_net,
+                "challenge_vat": decision.challenge_vat,
+                "comparison_status": decision.comparison_status,
+                "rationale": decision.rationale,
+                "evidence_rationale": decision.evidence_rationale,
+                "historical_count": decision.historical_count,
+                "calculation": decision.calculation,
+                "threshold_pct": float(threshold_decimal),
+            }
+            line_record["price_decision"] = decision_payload
+            if comparison is not None and not rejected:
+                comparison_records[-1].update(
+                    {
+                        "challenge_price_net": decision.supported_price,
+                        "decision_comparison_status": decision.comparison_status,
+                        "decision_calculation": decision.calculation,
+                    }
+                )
+            if challenge is not None and comparison is not None and not rejected:
+                challenge_records[-1].update(
+                    {
+                        "invoice_net": line.line_total_net,
+                        "challenge_price_net": decision.supported_price,
+                        "challenge_amount_net": decision.challenge_net,
+                        "challenge_vat": decision.challenge_vat,
+                        "challenge_gross": decision.challenge_net + decision.challenge_vat,
+                        "is_mot": is_mot,
+                        "approved": True,
+                        "challengeable": decision.comparison_status == "CHALLENGE",
+                        "reason": decision.rationale,
+                        "decision_comparison_status": decision.comparison_status,
+                        "decision_calculation": decision.calculation,
+                    }
+                )
+            elif decision.comparison_status == "CHALLENGE":
+                # No legacy ChallengeResult row exists for this line, but the
+                # unified P90 decision recommends a challenge — synthesize an
+                # export-consumable record so exports stay in step with the
+                # workspace (the legacy engine never invented these; the P90
+                # policy is independent of the 60/40 engine).
+                challenge_records.append(
+                    {
+                        "id": f"p90-decision:{line.id}",
+                        "line_id": line.id,
+                        "invoice_id": line.invoice_id,
+                        "description": line.raw_description,
+                        "invoice_net": line.line_total_net,
+                        "challenge_price_net": decision.supported_price,
+                        "challenge_amount_net": decision.challenge_net,
+                        "challenge_vat": decision.challenge_vat,
+                        "challenge_gross": decision.challenge_net + decision.challenge_vat,
+                        "vat_rate": line.vat_rate,
+                        "is_mot": is_mot,
+                        "approved": True,
+                        "challengeable": True,
+                        "status": None,
+                        "ontology_item_id": mapping.selected_ontology_item_id if mapping else None,
+                        "ontology_approval": _enum_value(item.approval_status) if item else None,
+                        "ontology_price_net": comparison.ontology_line_net if comparison else None,
+                        "historical_median_net": None,
+                        "historical_count": decision.historical_count,
+                        "benchmark_source": "P90 policy (uploaded invoice batch)",
+                        "reason": decision.rationale,
+                        "challenge_score": None,
+                        "approved_by": None,
+                        "approved_at": None,
+                        "decision_comparison_status": decision.comparison_status,
+                        "decision_calculation": decision.calculation,
+                    }
+                )
 
     primary_summary = next(
         (
@@ -1219,11 +1381,15 @@ def build_claim_workspace(
     case_reference: str,
     *,
     invoice_id: str | None = None,
+    p90_threshold_pct: int | str | Decimal | None = None,
 ) -> dict[str, Any]:
     """Serialize a case into the compact shadcn reviewer workspace contract."""
 
+    threshold_decimal = resolve_threshold_pct(p90_threshold_pct)
     graph = _load_case_graph(session, case_reference)
-    result = build_case_result(session, case_reference, _graph=graph)
+    result = build_case_result(
+        session, case_reference, _graph=graph, p90_threshold_pct=threshold_decimal
+    )
     case: Case = graph["case"]
     context: ClaimContext | None = graph["context"]
     liability: LiabilityAssessment | None = graph["liability"]
@@ -1490,6 +1656,36 @@ def build_claim_workspace(
         evidence_confidence = score_breakdown.get("price_evidence_confidence")
         if evidence_confidence is not None:
             workspace_line["evidenceConfidence"] = _percent(evidence_confidence)
+
+        # Unified operational price decision (C2/C3/C4): for any line with a
+        # P90 benchmark signal, this decision IS the operational supported
+        # price / challenge / status — it overrides whatever the legacy
+        # 60/40 engine produced above.  Lines without a P90 signal keep the
+        # engine-derived payload values untouched, exactly like the JS
+        # overlay it replaces.
+        if p90_benchmark:
+            line_decision = _decide_line_from_benchmark(
+                billed_net=workspace_line["currentTotal"],
+                benchmark=p90_benchmark,
+                external_price=workspace_line.get("ontologyTotal"),
+                external_approval_status=approval,
+                vat_rate=workspace_line["vatRate"],
+                is_mot=_is_mot_description(workspace_line["description"]),
+                p90_threshold_pct=threshold_decimal,
+            )
+            if line_decision.has_signal:
+                workspace_line.update(
+                    {
+                        "historicalCount": line_decision.historical_count,
+                        "recommended": _money_float(line_decision.supported_price),
+                        "challenge": _money_float(line_decision.challenge_net),
+                        "challengeVat": _money_float(line_decision.challenge_vat),
+                        "comparisonStatus": line_decision.comparison_status,
+                        "rationale": line_decision.rationale,
+                        "evidenceRationale": line_decision.evidence_rationale,
+                        "calculation": line_decision.calculation,
+                    }
+                )
         lines.append(workspace_line)
 
     invoice_net = _decimal(invoice.subtotal_net) + _decimal(invoice.non_vat_total)
@@ -1504,16 +1700,22 @@ def build_claim_workspace(
     vat_impact = sum(
         (_decimal(line.get("challengeVat")) for line in reviewable_lines), Decimal("0")
     )
-    challenge_price = invoice_net - challenge_amount
+    # Mirror the JS overlay's invoiceNet fallback: when the invoice-level net
+    # is falsy/zero (e.g. missing extraction totals), fall back to the sum of
+    # the line current totals so the summary can still be computed.
+    invoice_net_for_summary = (
+        invoice_net
+        if invoice_net > 0
+        else sum((_decimal(line.get("currentTotal")) for line in lines), Decimal("0"))
+    )
+    challenge_price = max(invoice_net_for_summary - challenge_amount, Decimal("0"))
     invoice_challenge = next(
         (row for row in graph["invoice_challenges"] if row.invoice_id == invoice.id),
         None,
     )
     challenge_percentage = (
-        _decimal(invoice_challenge.challenge_percentage)
-        if invoice_challenge
-        else challenge_amount / invoice_net * Decimal("100")
-        if invoice_net > 0
+        challenge_amount / invoice_net_for_summary * Decimal("100")
+        if invoice_net_for_summary > 0
         else Decimal("0")
     )
     challenge_strength = (
