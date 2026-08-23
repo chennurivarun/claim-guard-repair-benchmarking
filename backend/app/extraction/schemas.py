@@ -7,7 +7,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class PageType(StrEnum):
@@ -89,6 +89,36 @@ class InvoiceTotals(BaseModel):
     total_gross: Decimal | None = None
     sources: dict[str, FieldSource] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def reject_implausible_vat(self) -> InvoiceTotals:
+        """A VAT amount is only meaningful beside the totals it was charged on.
+
+        Extraction sometimes drops a grand total into the VAT field; a VAT
+        figure with no other monetary total, or one exceeding its own base,
+        is discarded rather than displayed as fact.
+        """
+
+        if self.vat_amount is None:
+            return self
+        bases = [
+            value
+            for value in (self.subtotal_net, self.total_gross)
+            if value is not None and value > 0
+        ]
+        other_totals = [
+            value
+            for value in (
+                self.labour_net,
+                self.parts_net,
+                self.subtotal_net,
+                self.total_gross,
+            )
+            if value is not None and value > 0
+        ]
+        if not other_totals or any(self.vat_amount > base for base in bases):
+            self.vat_amount = None
+        return self
+
 
 class InvoiceHeader(BaseModel):
     invoice_number: str | None = None
@@ -132,6 +162,10 @@ class InvoiceHeader(BaseModel):
             "tax invoice",
             "unknown",
         }:
+            return None
+        # A claim reference is never an invoice number; models sometimes place
+        # "Claim Reference: 2025/ABC/12345"-style values in this field.
+        if token.startswith(("claim ", "claim:")) or token.startswith("claim reference"):
             return None
         return cleaned
 
