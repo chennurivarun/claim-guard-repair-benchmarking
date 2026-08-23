@@ -41,6 +41,7 @@ from app.enums import (
 )
 from app.extraction.azure_document_intelligence import AzureDocumentIntelligenceOCR
 from app.extraction.calculation_validator import validate_invoice
+from app.extraction.docx_ingest import docx_to_pdf_bytes
 from app.extraction.engineer_assessment_parser import parse_engineer_assessment
 from app.extraction.pdf_pipeline import PDFPipeline, PipelineConfig
 from app.llm.factory import build_invoice_vision_extractor
@@ -140,12 +141,44 @@ def normalise_document_upload(filename: str, content: bytes) -> NormalisedDocume
     if not content.startswith(signature):
         raise ValueError(f"The uploaded {suffix[1:].upper()} file signature is invalid.")
 
+    stored_name = f"{Path(safe_name).stem}.pdf"
     executable = shutil.which("soffice") or shutil.which("libreoffice")
-    if not executable:
-        raise ValueError(
-            "Word document conversion is unavailable. Install LibreOffice on the "
-            "backend host, or upload the document as PDF."
-        )
+
+    if suffix == ".doc":
+        # Legacy binary .doc cannot be parsed by python-docx; LibreOffice is required.
+        if not executable:
+            raise ValueError(
+                "DOC (legacy) files require LibreOffice to convert. Install LibreOffice "
+                "on the backend host, or upload the document as PDF or DOCX -- DOCX "
+                "uploads work without LibreOffice."
+            )
+        pdf_content = _convert_with_libreoffice(executable, suffix, content)
+        return NormalisedDocumentUpload(pdf_content, stored_name, "doc")
+
+    # .docx: prefer LibreOffice's higher-fidelity conversion when it is present,
+    # but fall back to the pure-Python reportlab renderer otherwise or on failure.
+    pdf_content: bytes | None = None
+    source_format = "docx-python"
+    if executable:
+        try:
+            pdf_content = _convert_with_libreoffice(executable, suffix, content)
+            source_format = "docx-libreoffice"
+        except ValueError:
+            pdf_content = None
+    if pdf_content is None:
+        try:
+            pdf_content = docx_to_pdf_bytes(content)
+        except Exception as exc:
+            raise ValueError(f"DOCX document could not be read: {exc}") from exc
+        if len(pdf_content) > settings.max_upload_bytes:
+            raise ValueError(
+                f"Converted PDF exceeds the {settings.max_upload_bytes}-byte upload limit."
+            )
+    return NormalisedDocumentUpload(pdf_content, stored_name, source_format)
+
+
+def _convert_with_libreoffice(executable: str, suffix: str, content: bytes) -> bytes:
+    """Convert a .doc/.docx payload to PDF bytes via a headless LibreOffice process."""
 
     with TemporaryDirectory(prefix="claimguard-upload-") as directory:
         temp = Path(directory)
@@ -188,8 +221,7 @@ def normalise_document_upload(filename: str, content: bytes) -> NormalisedDocume
             raise ValueError(
                 f"Converted PDF exceeds the {settings.max_upload_bytes}-byte upload limit."
             )
-        stored_name = f"{Path(safe_name).stem}.pdf"
-        return NormalisedDocumentUpload(pdf_content, stored_name, suffix[1:])
+        return pdf_content
 
 
 def _enum_or(enum_type, value: str, fallback):
