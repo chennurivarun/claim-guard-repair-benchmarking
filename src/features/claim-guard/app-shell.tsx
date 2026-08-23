@@ -6,6 +6,7 @@ import {
   ClipboardCheckIcon,
   FileClockIcon,
   FileScanIcon,
+  ReceiptTextIcon,
   FileTextIcon,
   FolderSearch2Icon,
   GaugeIcon,
@@ -68,6 +69,11 @@ const primaryNavigation = [
 
 const administration = [
   { id: "document-pages", label: "Source document", icon: FileScanIcon },
+  {
+    id: "extracted-invoice",
+    label: "Extracted invoice",
+    icon: ReceiptTextIcon,
+  },
   {
     id: "ontology-mapping",
     label: "Repair item matching",
