@@ -48,7 +48,12 @@ const primaryNavigation = [
   { id: "upload-processing", label: "Documents", icon: FileTextIcon },
   {
     id: "benchmark-dashboard",
-    label: "Benchmarks",
+    label: "Claims benchmarks",
+    icon: BarChart3Icon,
+  },
+  {
+    id: "in-house-benchmarks",
+    label: "In-house benchmarks",
     icon: BarChart3Icon,
   },
   {
@@ -61,6 +66,7 @@ const primaryNavigation = [
     label: "Challenge decision",
     icon: ClipboardCheckIcon,
   },
+  { id: "knowledge-graph", label: "Knowledge graph", icon: Share2Icon },
 ] satisfies Array<{
   id: ScreenId
   label: string
@@ -90,7 +96,6 @@ const administration = [
     label: "External price library",
     icon: LibraryBigIcon,
   },
-  { id: "knowledge-graph", label: "Knowledge graph", icon: Share2Icon },
 ] satisfies Array<{
   id: ScreenId
   label: string
@@ -113,7 +118,6 @@ function primaryActiveId(activeScreen: ScreenId): ScreenId {
   if (documentScreens.includes(activeScreen)) return "upload-processing"
   if (activeScreen === "calculation-checks") return "upload-processing"
   if (reviewScreens.includes(activeScreen)) return "price-comparison"
-  if (activeScreen === "knowledge-graph") return "benchmark-dashboard"
   return activeScreen
 }
 

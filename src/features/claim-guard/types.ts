@@ -20,6 +20,7 @@ export type ScreenId =
   | "challenge-review"
   | "ontology-bank"
   | "benchmark-dashboard"
+  | "in-house-benchmarks"
   | "knowledge-graph"
   | "audit-reports"
 
@@ -99,10 +100,23 @@ export interface P90BenchmarkObservation {
   price: number
 }
 
+export interface ExternalPriceSource {
+  price_net: number
+  source_reference: string
+  source_title: string | null
+  vehicle_make: string
+  vehicle_model: string
+}
+
 export interface P90LineBenchmark {
   category: string
   currentPrice: number
   historicalCount: number
+  inHouseP90?: number | null
+  historicalClaimsP90?: number | null
+  externalReferencePrice?: number | null
+  externalPriceSources?: ExternalPriceSource[]
+  externalPriceMethod?: string | null
   historicalMean: number
   p90: number
   difference: number
@@ -146,6 +160,11 @@ export interface InvoiceLine {
   historicalMedian?: number
   historicalRange?: [number, number]
   historicalCount: number
+  inHouseP90?: number | null
+  historicalClaimsP90?: number | null
+  externalReferencePrice?: number | null
+  externalPriceSources?: ExternalPriceSource[]
+  externalPriceMethod?: string | null
   differenceFromOntology?: number | null
   differenceFromHistory?: number | null
   comparables?: ComparableObservation[]

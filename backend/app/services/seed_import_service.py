@@ -511,6 +511,8 @@ def _historical_observation(
         settlement_status=SettlementStatus.PROPOSED,
         comparability_metadata_json={
             "evidence_label": "Previous repair & service invoice",
+            "source_group": "historical_claim",
+            "dataset_role": "historical_claims_seed",
             "amount_status": "invoiced",
             "source_file": record.source_file,
             "invoice_number": record.invoice_number,

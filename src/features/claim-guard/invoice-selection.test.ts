@@ -47,6 +47,14 @@ describe("invoice review selection", () => {
     ).toEqual(["clean", "challenged"])
   })
 
+  it("uses the same challenged invoices in challenge decision", () => {
+    expect(
+      invoiceOptionsForScreen(invoices, "challenge-review").map(
+        (item) => item.id
+      )
+    ).toEqual(["challenged"])
+  })
+
   it("moves to the first challenged invoice when the current invoice is clean", () => {
     expect(
       preferredInvoiceIdForScreen(invoices, "price-comparison", "clean")

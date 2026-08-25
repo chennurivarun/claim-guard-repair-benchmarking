@@ -23,7 +23,10 @@ import {
   ExtractedInvoiceScreen,
   UploadProcessingScreen,
 } from "@/features/claim-guard/screens-liability-documents"
-import { ReviewFindingsScreen } from "@/features/claim-guard/screens-review-findings"
+import {
+  ChallengedInvoicesSummary,
+  ReviewFindingsScreen,
+} from "@/features/claim-guard/screens-review-findings"
 import {
   challengedInvoices as selectChallengedInvoices,
   invoiceOptionsForScreen,
@@ -166,6 +169,8 @@ export function App() {
   const [thresholdApplying, setThresholdApplying] = useState(false)
   const [apiError, setApiError] = useState<string | null>(null)
   const [apiConnecting, setApiConnecting] = useState(true)
+  const [challengedInvoiceDetailOpen, setChallengedInvoiceDetailOpen] =
+    useState(false)
 
   async function finishApiConnection(
     result: Awaited<ReturnType<typeof loadClaimWorkspace>>
@@ -266,6 +271,7 @@ export function App() {
   const invoiceSelectorOptions = invoiceOptionsForScreen(invoices, activeScreen)
   const screenInvoiceReady =
     activeScreen !== "price-comparison" ||
+    !challengedInvoiceDetailOpen ||
     challengedInvoices.some((invoice) => invoice.id === workspace.invoice.id)
 
   function applyWorkspace(nextWorkspace: ClaimWorkspace) {
@@ -286,6 +292,7 @@ export function App() {
   }
 
   function navigate(screen: ScreenId) {
+    if (screen === "price-comparison") setChallengedInvoiceDetailOpen(false)
     setActiveScreen(screen)
     const preferredInvoiceId = preferredInvoiceIdForScreen(
       invoices,
@@ -936,7 +943,16 @@ export function App() {
       )
       break
     case "price-comparison":
-      screen = (
+      screen = challengedInvoiceDetailOpen ? (
+        <div className="space-y-4">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setChallengedInvoiceDetailOpen(false)}
+          >
+            Back to challenged invoices
+          </Button>
         <ReviewFindingsScreen
           workspace={workspace}
           p90ThresholdPct={p90ThresholdPct}
@@ -950,6 +966,16 @@ export function App() {
           onProposeNewItem={handleResearch}
           researchSaving={researchSaving}
           onApproveResearch={handleResearchApproval}
+        />
+        </div>
+      ) : (
+        <ChallengedInvoicesSummary
+          invoices={challengedInvoices}
+          onOpenInvoice={(invoiceId) => {
+            void handleInvoiceSelection(invoiceId).then(() =>
+              setChallengedInvoiceDetailOpen(true)
+            )
+          }}
         />
       )
       break
@@ -1061,6 +1087,7 @@ export function App() {
       )
       break
     case "benchmark-dashboard":
+    case "in-house-benchmarks":
       screen = (
         <BenchmarkDashboardScreen
           apiMode={apiMode}
@@ -1069,6 +1096,11 @@ export function App() {
           onChallengeThresholdChange={setP90ThresholdPct}
           thresholdApplying={thresholdApplying}
           onOpenKnowledgeGraph={() => navigate("knowledge-graph")}
+          sourceGroup={
+            activeScreen === "in-house-benchmarks"
+              ? "in_house"
+              : "historical_claim"
+          }
         />
       )
       break
@@ -1161,7 +1193,9 @@ export function App() {
                   </Button>
                 </div>
               </div>
-            ) : invoiceSelectorOptions.length >= 1 ? (
+            ) : activeScreen === "price-comparison" &&
+              !challengedInvoiceDetailOpen ? null : invoiceSelectorOptions.length >=
+              1 ? (
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-card px-4 py-3">
                 <div>
                   <p className="text-sm font-medium">

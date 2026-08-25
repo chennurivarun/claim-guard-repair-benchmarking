@@ -506,7 +506,7 @@ export function LineEvidenceSheet({
                         Operational price decision
                       </p>
                       <p className="mt-1 font-semibold">
-                        70% P90 + 30% approved external evidence
+                        50% in-house + 30% previous claims + 20% verified external
                       </p>
                     </div>
                     <Badge
@@ -601,9 +601,9 @@ export function LineEvidenceSheet({
                     </p>
                     <p className="mt-2 text-xs text-muted-foreground">
                       {p90.method}. Current invoice excluded: yes. When an
-                      approved external price exists, the final support weights
-                      this P90 at 70% and that external price at 30%; otherwise
-                      P90 is used alone.
+                      available governed sources are weighted against the full
+                      50% in-house, 30% previous-claim and 20% verified-external
+                      policy. Missing sources are reweighted proportionally.
                     </p>
                   </div>
 

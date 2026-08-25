@@ -573,18 +573,52 @@ def test_governed_finalisation_and_report_routes(client: TestClient) -> None:
     assert workspace_payload["claim"]["status"] == "comparison_review"
     assert workspace_payload["invoice"]["id"]
     assert workspace_payload["summary"] == {
-        "challengePrice": 546.51,
-        "challengeAmount": 96.75,
-        "vatImpact": 19.35,
-        "grossEffect": 116.1,
-        "challengePercentage": 15.04,
-        "challengeStrength": 72,
+        "challengePrice": 508.2,
+        "challengeAmount": 135.06,
+        "vatImpact": 27.0,
+        "grossEffect": 162.06,
+        "challengePercentage": 21.0,
+        "challengeStrength": 70,
     }
+    challenged_lines = [
+        line for line in workspace_payload["lines"] if line.get("challenge", 0) > 0
+    ]
+    assert challenged_lines
+    assert all(line["inHouseP90"] is not None for line in challenged_lines)
+    assert all(line["externalReferencePrice"] is None for line in challenged_lines)
     assert len(workspace_payload["ontologyBank"]["items"]) == 72
     assert workspace_payload["versions"]["policy"] == "claimguard-v1.4"
     assert workspace_payload["versions"]["ontology"] == "ontology-v0-bootstrap"
     assert workspace_payload["researchItems"] == []
     assert workspace_payload["auditEvents"]
+
+    in_house_dashboard = client.get("/api/v1/benchmarks/dashboard?source_group=in_house")
+    assert in_house_dashboard.status_code == 200
+    in_house_payload = in_house_dashboard.json()
+    assert in_house_payload["summary"]["observationCount"] == 216
+    assert len(in_house_payload["filterOptions"]["repairItems"]) == 72
+
+    claims_dashboard = client.get("/api/v1/benchmarks/dashboard?source_group=historical_claim")
+    assert claims_dashboard.status_code == 200
+    claims_payload = claims_dashboard.json()
+    assert claims_payload["dataQuality"]["invoiceObservationCount"] == 188
+    assert claims_payload["summary"]["observationCount"] == 187
+
+    synthetic_csv = client.get("/api/v1/admin/in-house-repair-data.csv")
+    assert synthetic_csv.status_code == 200
+    assert synthetic_csv.text.count("\n") == 217
+    first_in_house_benchmark = in_house_payload["benchmarks"][0]
+    source_rows = client.get(
+        f"/api/v1/benchmarks/{first_in_house_benchmark['ontologyItemId']}/observations",
+        params={
+            "vehicle_class": first_in_house_benchmark["vehicleClass"],
+            "source_group": "in_house",
+        },
+    )
+    assert source_rows.status_code == 200
+    assert source_rows.json()["observations"]
+    assert {row["sourceGroup"] for row in source_rows.json()["observations"]} == {"in_house"}
+
     workspace_challenges = [row for row in workspace_payload["lines"] if row["challenge"] > 0]
     assert all(row["challengeResultId"] for row in workspace_challenges)
     assert all(row["challengeStatus"] == "review" for row in workspace_challenges)
@@ -595,12 +629,12 @@ def test_governed_finalisation_and_report_routes(client: TestClient) -> None:
     assert len(result["lines"]) == 18
     assert result["summary"] == {
         "invoice_price_net": "643.26",
-        "challenge_price_net": "546.51",
-        "challenge_amount_net": "96.75",
-        "vat_impact": "19.35",
-        "gross_effect": "116.10",
-        "challenge_percentage": "15.0406",
-            "challenge_strength": 72,
+        "challenge_price_net": "508.20",
+        "challenge_amount_net": "135.06",
+        "vat_impact": "27.00",
+        "gross_effect": "162.06",
+        "challenge_percentage": "20.9962",
+        "challenge_strength": 70,
     }
 
     for report_format in ("json", "xlsx", "sqlite"):
@@ -616,7 +650,13 @@ def test_governed_finalisation_and_report_routes(client: TestClient) -> None:
         for row in result["challenges"]
         if Decimal(row["challenge_amount_net"]) > 0
     }
-    assert set(positive) == {"Air Filter", "Carried Out Full Service"}
+    assert set(positive) == {
+        "Air Filter",
+        "Spark Plugs",
+        "0w30 Synthetic Oil",
+        "Carried Out Full Service",
+        "Fit Front Discs And Pads",
+    }
     for invalid_price in ("0.00", positive["Air Filter"]["invoice_net"]):
         invalid_edit = client.post(
             f"/api/v1/challenge-results/{positive['Air Filter']['id']}/decision",
@@ -648,10 +688,10 @@ def test_governed_finalisation_and_report_routes(client: TestClient) -> None:
     )
     assert edited_line["recommended"] == 14.0
     assert edited_line["challenge"] == 6.02
-    assert edited_workspace["summary"]["challengeAmount"] == 96.02
+    assert edited_workspace["summary"]["challengeAmount"] == 134.47
     edited_result = client.get("/api/v1/claims/CG-GOVERNANCE-91283/result").json()
-    assert edited_result["summary"]["challenge_price_net"] == "547.24"
-    assert edited_result["summary"]["challenge_amount_net"] == "96.02"
+    assert edited_result["summary"]["challenge_price_net"] == "508.79"
+    assert edited_result["summary"]["challenge_amount_net"] == "134.47"
     rejected = client.post(
         f"/api/v1/challenge-results/{positive['Air Filter']['id']}/decision",
         json={
@@ -663,8 +703,8 @@ def test_governed_finalisation_and_report_routes(client: TestClient) -> None:
     assert rejected.status_code == 200
     assert rejected.json()["status"] == "rejected"
     rejected_result = client.get("/api/v1/claims/CG-GOVERNANCE-91283/result").json()
-    assert rejected_result["summary"]["challenge_price_net"] == "553.26"
-    assert rejected_result["summary"]["challenge_amount_net"] == "90.00"
+    assert rejected_result["summary"]["challenge_price_net"] == "514.81"
+    assert rejected_result["summary"]["challenge_amount_net"] == "128.45"
     approved = client.post(
         f"/api/v1/challenge-results/{positive['Carried Out Full Service']['id']}/decision",
         json={
@@ -675,6 +715,17 @@ def test_governed_finalisation_and_report_routes(client: TestClient) -> None:
     )
     assert approved.status_code == 200
     assert approved.json()["status"] == "approved"
+    for description in ("Spark Plugs", "0w30 Synthetic Oil", "Fit Front Discs And Pads"):
+        remaining_approval = client.post(
+            f"/api/v1/challenge-results/{positive[description]['id']}/decision",
+            json={
+                "actor": "pytest.handler",
+                "approved": True,
+                "rationale": "In-house P90 evidence supports this challenge.",
+            },
+        )
+        assert remaining_approval.status_code == 200
+        assert remaining_approval.json()["status"] == "approved"
 
     finalised = client.post(
         "/api/v1/claims/CG-GOVERNANCE-91283/finalise",
@@ -686,12 +737,12 @@ def test_governed_finalisation_and_report_routes(client: TestClient) -> None:
     final_result = client.get("/api/v1/claims/CG-GOVERNANCE-91283/result").json()
     assert final_result["summary"] == {
         "invoice_price_net": "643.26",
-        "challenge_price_net": "553.26",
-        "challenge_amount_net": "90.00",
-        "vat_impact": "18.00",
-        "gross_effect": "108.00",
-        "challenge_percentage": "13.9912",
-        "challenge_strength": 74,
+        "challenge_price_net": "514.81",
+        "challenge_amount_net": "128.45",
+        "vat_impact": "25.68",
+        "gross_effect": "154.13",
+        "challenge_percentage": "19.9686",
+        "challenge_strength": 70,
     }
     final_workspace = client.get("/api/v1/claims/CG-GOVERNANCE-91283/workspace").json()
     assert final_workspace["claim"]["status"] == "finalised"
@@ -702,17 +753,27 @@ def test_governed_finalisation_and_report_routes(client: TestClient) -> None:
     }
     assert final_decisions == {
         "Air Filter": ("rejected", False),
+        "Spark Plugs": ("approved", True),
+        "0w30 Synthetic Oil": ("approved", True),
         "Carried Out Full Service": ("approved", True),
+        "Fit Front Discs And Pads": ("approved", True),
     }
-    invoice_reviews = client.get(
-        "/api/v1/claims/CG-GOVERNANCE-91283/invoices"
-    ).json()
+    invoice_reviews = client.get("/api/v1/claims/CG-GOVERNANCE-91283/invoices").json()
     assert invoice_reviews[0]["challenge_review"] == {
-        "positive": 2,
-        "approved": 1,
+        "positive": 5,
+        "approved": 4,
         "rejected": 1,
         "unresolved": 0,
     }
+    assert len(invoice_reviews[0]["challenge_lines"]) == 5
+    assert all(
+        {
+            "in_house_p90_net",
+            "historical_claims_p90_net",
+            "external_price_net",
+        }.issubset(line)
+        for line in invoice_reviews[0]["challenge_lines"]
+    )
     for report_format, media_type in (
         ("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
         ("pdf", "application/pdf"),
@@ -745,8 +806,6 @@ def test_governed_finalisation_and_report_routes(client: TestClient) -> None:
         )
     assert blocked_upload.status_code == 409
     assert blocked_upload.json()["detail"]["code"] == "CASE_ALREADY_FINALISED"
-    blocked_reprocess = client.post(
-        f"/api/v1/documents/{uploaded.json()['id']}/process?force=true"
-    )
+    blocked_reprocess = client.post(f"/api/v1/documents/{uploaded.json()['id']}/process?force=true")
     assert blocked_reprocess.status_code == 409
     assert blocked_reprocess.json()["detail"]["code"] == "CASE_ALREADY_FINALISED"

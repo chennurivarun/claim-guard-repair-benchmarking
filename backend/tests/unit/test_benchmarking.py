@@ -12,8 +12,11 @@ from app.services.benchmarking import (
     canonical_benchmark_category,
 )
 from app.services.case_result import (
+    _historical_p90_evidence,
     _uploaded_batch_benchmark_dashboard,
     _uploaded_line_p90_benchmarks,
+    _verified_external_observations,
+    _verified_external_price,
 )
 
 
@@ -32,6 +35,56 @@ def test_benchmark_statistics_include_requested_values_and_no_fake_mode() -> Non
     assert stats.percentile_90 == Decimal("480.00")
     assert stats.outlier_count == 0
     assert stats.count == 5
+
+
+def test_strict_p90_requires_current_make_and_model() -> None:
+    comparable = {
+        "id": "history-1",
+        "source_type": "historical",
+        "price_net": "100.00",
+        "vehicle": {"make": "BMW", "model": "3 Series"},
+        "comparability_metadata": {"source_group": "in_house"},
+        "provenance": {"claim_reference": "INV-1"},
+    }
+
+    assert (
+        _historical_p90_evidence(
+            [comparable], SimpleNamespace(make="BMW", model=None), source_group="in_house"
+        )
+        is None
+    )
+    assert (
+        _historical_p90_evidence(
+            [comparable],
+            SimpleNamespace(make="BMW", model="3 Series"),
+            source_group="in_house",
+        ).value
+        == Decimal("100.00")
+    )
+
+
+def test_external_price_uses_lowest_traceable_exact_vehicle_source() -> None:
+    comparables = [
+        {
+            "source_type": "ontology_price",
+            "approval_status": "approved",
+            "price_net": price,
+            "vehicle": {"make": make, "model": model},
+            "provenance": {"source_reference": source},
+        }
+        for price, make, model, source in [
+            ("140.00", "BMW", "3 Series", "https://example.com/a"),
+            ("125.00", "BMW", "3 Series", "https://example.com/b"),
+            ("90.00", "Audi", "A4", "https://example.com/c"),
+            ("80.00", "BMW", "3 Series", None),
+        ]
+    ]
+    vehicle = SimpleNamespace(make="BMW", model="3 Series")
+
+    selected = _verified_external_observations(comparables, vehicle)
+    assert [row["price_net"] for row in selected] == ["125.00", "140.00"]
+    assert _verified_external_price(comparables, vehicle) == Decimal("125.00")
+    assert _verified_external_price(comparables, SimpleNamespace(make="BMW", model=None)) is None
 
 
 def test_benchmark_statistics_calculate_a_mode_only_when_repeated() -> None:
@@ -210,10 +263,12 @@ def test_uploaded_line_p90_excludes_the_current_invoice_and_explains_challenge()
     lines = []
     start = date(2026, 1, 1)
     for index, price in enumerate(prices, start=1):
+        vehicle = SimpleNamespace(make="BMW", model="3 Series")
         invoice = SimpleNamespace(
             id=f"invoice-{index}",
             invoice_number=f"INV-{index:03}",
             invoice_date=start + timedelta(days=index),
+            vehicle=vehicle,
         )
         invoices.append(invoice)
         lines.append(
@@ -230,6 +285,7 @@ def test_uploaded_line_p90_excludes_the_current_invoice_and_explains_challenge()
         id="invoice-current",
         invoice_number="INV-009",
         invoice_date=start + timedelta(days=20),
+        vehicle=SimpleNamespace(make="BMW", model="3 Series"),
     )
     invoices.append(current_invoice)
     lines.append(
@@ -271,12 +327,14 @@ def test_uploaded_dashboard_and_graph_share_the_same_rolling_p90_exceptions() ->
     lines = []
     start = date(2026, 2, 1)
     for index, (price, repairer) in enumerate(zip(prices, repairers, strict=True), start=1):
+        vehicle = SimpleNamespace(make="BMW", model="3 Series")
         invoice = SimpleNamespace(
             id=f"batch-invoice-{index}",
             invoice_number=f"BATCH-{index:03}",
             invoice_date=start + timedelta(days=index),
             supplier_name=repairer,
             vehicle_id=None,
+            vehicle=vehicle,
         )
         invoices.append(invoice)
         lines.append(

@@ -34,6 +34,7 @@ export interface BenchmarkObservationPayload {
   rawDescription: string | null
   sourceRecordId: string | null
   repairer: string
+  sourceGroup?: "in_house" | "historical_claim" | string
   source: Record<string, unknown>
 }
 
@@ -157,6 +158,7 @@ export interface ClaimInvoiceSummary {
   id: string
   invoice_number: string | null
   invoice_date: string | null
+  uploaded_at?: string | null
   document_id?: string
   document_filename: string
   supplier_name: string | null
@@ -169,6 +171,27 @@ export interface ClaimInvoiceSummary {
     rejected: number
     unresolved: number
   }
+  challenge_lines?: Array<{
+    id: string | null
+    line_id: string | null
+    description: string | null
+    billed_net: number
+    supported_net: number
+    in_house_p90_net: number | null
+    historical_claims_p90_net: number | null
+    external_price_net: number | null
+    external_price_sources?: Array<{
+      price_net: number
+      source_reference: string
+      source_title: string | null
+      vehicle_make: string
+      vehicle_model: string
+    }>
+    external_price_method?: string | null
+    challenge_net: number
+    status: string
+    benchmark_source: string | null
+  }>
   lines: unknown[]
 }
 
@@ -413,6 +436,7 @@ export function fetchBenchmarkDashboard(filters?: {
   ontologyItemId?: string
   minimumCount?: number
   challengeThresholdPct?: number
+  sourceGroup?: "in_house" | "historical_claim"
 }): Promise<BenchmarkDashboardPayload> {
   const query = new URLSearchParams()
   if (filters?.caseReference) query.set("case_reference", filters.caseReference)
@@ -423,16 +447,19 @@ export function fetchBenchmarkDashboard(filters?: {
     query.set("minimum_count", String(filters.minimumCount))
   if (filters?.challengeThresholdPct !== undefined)
     query.set("challenge_threshold_pct", String(filters.challengeThresholdPct))
+  if (filters?.sourceGroup) query.set("source_group", filters.sourceGroup)
   const suffix = query.size ? `?${query.toString()}` : ""
   return requestJson(`/api/v1/benchmarks/dashboard${suffix}`)
 }
 
 export function fetchBenchmarkObservations(
   ontologyItemId: string,
-  vehicleClass?: string
+  vehicleClass?: string,
+  sourceGroup?: "in_house" | "historical_claim"
 ): Promise<{ observations: BenchmarkObservationPayload[] }> {
   const query = new URLSearchParams()
   if (vehicleClass) query.set("vehicle_class", vehicleClass)
+  if (sourceGroup) query.set("source_group", sourceGroup)
   const suffix = query.size ? `?${query.toString()}` : ""
   return requestJson(
     `/api/v1/benchmarks/${encodeURIComponent(ontologyItemId)}/observations${suffix}`

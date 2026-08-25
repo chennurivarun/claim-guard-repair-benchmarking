@@ -335,6 +335,7 @@ export function BenchmarkDashboardScreen({
   onChallengeThresholdChange,
   thresholdApplying = false,
   onOpenKnowledgeGraph,
+  sourceGroup,
 }: {
   apiMode: "api" | "demo"
   workspace: ClaimWorkspace
@@ -342,6 +343,7 @@ export function BenchmarkDashboardScreen({
   onChallengeThresholdChange: (value: number) => void
   thresholdApplying?: boolean
   onOpenKnowledgeGraph: () => void
+  sourceGroup: "in_house" | "historical_claim"
 }) {
   const [dashboard, setDashboard] = useState<BenchmarkDashboardPayload>(
     apiMode === "demo" ? demoDashboard : emptyDashboard
@@ -373,6 +375,7 @@ export function BenchmarkDashboardScreen({
       ontologyItemId: repairItem === "all" ? undefined : repairItem,
       minimumCount: Number(minimumCount),
       challengeThresholdPct: challengeThreshold,
+      sourceGroup,
     })
       .then((result) => {
         setDashboard(result)
@@ -389,6 +392,7 @@ export function BenchmarkDashboardScreen({
     challengeThreshold,
     minimumCount,
     repairItem,
+    sourceGroup,
     vehicleClass,
     workspace.claim.id,
   ])
@@ -504,7 +508,11 @@ export function BenchmarkDashboardScreen({
       setSourceLoading(false)
       return
     }
-    void fetchBenchmarkObservations(item.ontologyItemId, item.vehicleClass)
+    void fetchBenchmarkObservations(
+      item.ontologyItemId,
+      item.vehicleClass,
+      sourceGroup
+    )
       .then((result) => {
         setSourceRows(result.observations)
         setLoadError(null)
@@ -527,8 +535,16 @@ export function BenchmarkDashboardScreen({
   return (
     <div className="flex flex-col gap-6">
       <ScreenHeading
-        title="Repair benchmarks"
-        description="Compare every uploaded invoice line with earlier mapped lines from the same batch."
+        title={
+          sourceGroup === "in_house"
+            ? "In-house repair benchmarks"
+            : "Historical claims benchmarks"
+        }
+        description={
+          sourceGroup === "in_house"
+            ? "Review synthetic in-house repair-book prices generated for every ontology item and the current vehicle make/model."
+            : "Review approved prices from previously finalised claims, kept separate from in-house and external evidence."
+        }
         action={
           <Button
             type="button"
@@ -648,8 +664,16 @@ export function BenchmarkDashboardScreen({
       ) : null}
 
       <DataCard
-        title="Aggregate repair benchmark summary"
-        description={`All uploaded invoices in this claim batch. Red counts require both more than ${challengeThreshold}% above the earlier-invoice P90 and at least ${preciseMoney(MINIMUM_CHALLENGE_AMOUNT)} difference.`}
+        title={
+          sourceGroup === "in_house"
+            ? "In-house repair benchmark summary"
+            : "Historical claims benchmark summary"
+        }
+        description={`Only ${
+          sourceGroup === "in_house"
+            ? "in-house repair-book"
+            : "previously finalised claim"
+        } observations are included here. Red counts require both more than ${challengeThreshold}% above P90 and at least ${preciseMoney(MINIMUM_CHALLENGE_AMOUNT)} difference.`}
         action={<Badge variant="outline">P90 · interpolated</Badge>}
       >
         <div className="overflow-x-auto">
@@ -893,6 +917,7 @@ export function BenchmarkDashboardScreen({
                       <th className="px-3 py-3 font-medium">
                         Source reference
                       </th>
+                      <th className="px-3 py-3 font-medium">Source group</th>
                       <th className="px-3 py-3 font-medium">
                         Original description
                       </th>
@@ -909,6 +934,13 @@ export function BenchmarkDashboardScreen({
                         <td className="px-3 py-3">{row.invoiceDate ?? "—"}</td>
                         <td className="px-3 py-3 font-medium">
                           {row.sourceRecordId ?? "—"}
+                        </td>
+                        <td className="px-3 py-3 text-muted-foreground">
+                          {row.sourceGroup === "historical_claim"
+                            ? "Previous claim"
+                            : row.sourceGroup === "in_house"
+                              ? "In-house repair data"
+                              : row.sourceGroup || "—"}
                         </td>
                         <td className="px-3 py-3 text-muted-foreground">
                           {row.rawDescription ?? "—"}

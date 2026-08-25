@@ -34,6 +34,7 @@ def _inputs(**overrides: object) -> LineDecisionInputs:
     defaults: dict[str, object] = {
         "billed_net": Decimal("200"),
         "p90": _p90(),
+        "historical": None,
         "external_price": None,
         "external_approval_status": None,
         "vat_rate": Decimal("20"),
@@ -47,17 +48,22 @@ def _inputs(**overrides: object) -> LineDecisionInputs:
 # --- Golden parity with p90-policy.test.ts -------------------------------
 
 
-def test_weights_p90_at_70_and_external_evidence_at_30() -> None:
+def test_weights_in_house_historical_and_external_at_50_30_20() -> None:
     decision = decide_line_price(
-        _inputs(billed_net=Decimal("200"), external_price=Decimal("160"))
+        _inputs(
+            billed_net=Decimal("200"),
+            historical=_p90("120", count=6),
+            external_price=Decimal("160"),
+        )
     )
 
     assert decision.supported_price == Decimal("118.00")
     assert decision.challenge_net == Decimal("82.00")
     assert decision.challenge_vat == Decimal("16.40")
     assert decision.comparison_status == "CHALLENGE"
-    assert "70%" in decision.evidence_rationale
-    assert "30%" in decision.evidence_rationale
+    assert "50% in-house" in decision.evidence_rationale
+    assert "30% historical" in decision.evidence_rationale
+    assert "20% verified external" in decision.evidence_rationale
 
 
 def test_uses_p90_alone_when_external_evidence_is_unavailable() -> None:
@@ -65,12 +71,16 @@ def test_uses_p90_alone_when_external_evidence_is_unavailable() -> None:
 
     assert decision.supported_price == Decimal("100.00")
     assert decision.challenge_net == Decimal("100.00")
-    assert "No approved external price is available" in decision.evidence_rationale
+    assert "100% in-house" in decision.evidence_rationale
 
 
 def test_does_not_challenge_unless_both_policy_gates_are_exceeded() -> None:
     decision = decide_line_price(
-        _inputs(billed_net=Decimal("122"), external_price=Decimal("160"))
+        _inputs(
+            billed_net=Decimal("122"),
+            historical=_p90("120", count=6),
+            external_price=Decimal("160"),
+        )
     )
 
     assert decision.supported_price == Decimal("118.00")
@@ -88,7 +98,9 @@ def test_same_line_is_challenged_at_5_percent_and_within_at_10_percent() -> None
         external_price=None,
     )
 
-    at_5 = decide_line_price(LineDecisionInputs(**{**inputs.__dict__, "threshold_pct": Decimal("5")}))
+    at_5 = decide_line_price(
+        LineDecisionInputs(**{**inputs.__dict__, "threshold_pct": Decimal("5")})
+    )
     at_10 = decide_line_price(
         LineDecisionInputs(**{**inputs.__dict__, "threshold_pct": Decimal("10")})
     )
@@ -141,7 +153,7 @@ def test_mot_line_suppresses_challenge_vat() -> None:
 
 
 def test_no_p90_signal_leaves_decision_unset() -> None:
-    decision = decide_line_price(_inputs(p90=None))
+    decision = decide_line_price(_inputs(p90=None, historical=None))
 
     assert decision.has_signal is False
     assert decision.supported_price is None
@@ -150,18 +162,41 @@ def test_no_p90_signal_leaves_decision_unset() -> None:
     assert decision.rationale is None
 
 
+def test_historical_claims_can_support_a_decision_without_in_house_history() -> None:
+    decision = decide_line_price(
+        _inputs(p90=None, historical=_p90("110", count=5), external_price=Decimal("130"))
+    )
+
+    assert decision.has_signal is True
+    assert decision.supported_price == Decimal("118.00")
+    assert "60% historical claims" in decision.evidence_rationale
+    assert "40% verified external" in decision.evidence_rationale
+
+
+def test_external_price_alone_never_creates_an_automatic_challenge() -> None:
+    decision = decide_line_price(_inputs(p90=None, historical=None, external_price=Decimal("80")))
+
+    assert decision.has_signal is False
+    assert decision.challenge_net == Decimal("0")
+
+
 # --- Breakdown completeness (C3) --------------------------------------------
 
 
 def test_calculation_breakdown_includes_both_gates_and_the_min_step() -> None:
     decision = decide_line_price(
-        _inputs(billed_net=Decimal("200"), external_price=Decimal("160"))
+        _inputs(
+            billed_net=Decimal("200"),
+            historical=_p90("120", count=6),
+            external_price=Decimal("160"),
+        )
     )
 
     labels = [step["label"] for step in decision.calculation]
     assert "Billed net" in labels
-    assert "Historical P90 benchmark" in labels
-    assert "Approved external price" in labels
+    assert "In-house P90 benchmark" in labels
+    assert "Historical claims P90" in labels
+    assert "Verified external price" in labels
     assert "Weighting applied" in labels
     assert "Evidence price" in labels
     assert "Supported price" in labels
@@ -170,7 +205,9 @@ def test_calculation_breakdown_includes_both_gates_and_the_min_step() -> None:
     assert "Status" in labels
     assert "VAT impact" in labels
 
-    supported_step = next(step for step in decision.calculation if step["label"] == "Supported price")
+    supported_step = next(
+        step for step in decision.calculation if step["label"] == "Supported price"
+    )
     assert "min(" in supported_step["detail"]
 
     pct_step = next(step for step in decision.calculation if step["label"] == "Percentage gate")
@@ -181,9 +218,7 @@ def test_calculation_breakdown_includes_both_gates_and_the_min_step() -> None:
 
 
 def test_calculation_breakdown_reports_failed_gates() -> None:
-    decision = decide_line_price(
-        _inputs(billed_net=Decimal("122"), external_price=Decimal("160"))
-    )
+    decision = decide_line_price(_inputs(billed_net=Decimal("122"), external_price=Decimal("160")))
 
     amount_step = next(step for step in decision.calculation if step["label"] == "Absolute gate")
     assert amount_step["passed"] is False
@@ -191,10 +226,16 @@ def test_calculation_breakdown_reports_failed_gates() -> None:
 
 def test_rationale_and_evidence_rationale_are_generated_from_the_same_steps() -> None:
     decision = decide_line_price(
-        _inputs(billed_net=Decimal("200"), external_price=Decimal("160"))
+        _inputs(
+            billed_net=Decimal("200"),
+            historical=_p90("120", count=6),
+            external_price=Decimal("160"),
+        )
     )
 
-    supported_step = next(step for step in decision.calculation if step["label"] == "Supported price")
+    supported_step = next(
+        step for step in decision.calculation if step["label"] == "Supported price"
+    )
     assert str(decision.supported_price) in supported_step["value"]
-    assert "70%" in decision.rationale
+    assert "50% in-house" in decision.rationale
     assert "82.00" in decision.rationale

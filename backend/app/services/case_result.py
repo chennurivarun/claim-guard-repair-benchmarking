@@ -20,6 +20,7 @@ from app.domain.price_decision import (
 )
 from app.enums import (
     ApprovalStatus,
+    ChallengeStatus,
     ClaimPartyRole,
     ClaimVehicleRole,
     LineItemKind,
@@ -100,13 +101,19 @@ def _p90_evidence_from_benchmark(benchmark: dict[str, Any]) -> P90Evidence:
         method=str(benchmark.get("method") or "Interpolated percentile (PERCENTILE.INC)"),
         explanation=str(benchmark.get("explanation") or ""),
         contributing_invoices=tuple(seen),
+        contributing_prices=tuple(
+            _decimal(observation.get("price"))
+            for observation in observations
+            if _decimal(observation.get("price")) > 0
+        ),
     )
 
 
 def _decide_line_from_benchmark(
     *,
     billed_net: Any,
-    benchmark: dict[str, Any] | None,
+    in_house: P90Evidence | None,
+    historical: P90Evidence | None,
     external_price: Any,
     external_approval_status: Any,
     vat_rate: Any,
@@ -121,13 +128,13 @@ def _decide_line_from_benchmark(
     lines without a P90 benchmark too).
     """
 
-    p90_evidence = _p90_evidence_from_benchmark(benchmark) if benchmark else None
     external = _decimal(external_price) if external_price not in (None, "") else None
     if external is not None and external <= 0:
         external = None
     inputs = LineDecisionInputs(
         billed_net=_decimal(billed_net),
-        p90=p90_evidence,
+        p90=in_house,
+        historical=historical,
         external_price=external,
         external_approval_status=_enum_value(external_approval_status),
         vat_rate=_decimal(vat_rate),
@@ -135,6 +142,142 @@ def _decide_line_from_benchmark(
         threshold_pct=p90_threshold_pct,
     )
     return decide_line_price(inputs, DEFAULT_P90_POLICY)
+
+
+def _normalised_vehicle_value(value: Any) -> str:
+    return " ".join(str(value or "").casefold().split())
+
+
+def _historical_p90_evidence(
+    comparables: list[dict[str, Any]],
+    vehicle: Vehicle | None,
+    *,
+    source_group: str,
+) -> P90Evidence | None:
+    """Build a strict make/model P90 from already-eligible claim comparables."""
+
+    current_make = _normalised_vehicle_value(vehicle.make if vehicle else None)
+    current_model = _normalised_vehicle_value(vehicle.model if vehicle else None)
+    # A make/model-scoped benchmark must never broaden silently when the
+    # current invoice is missing vehicle identity. That case belongs in manual
+    # review until the handler supplies both values.
+    if not current_make or not current_model:
+        return None
+    eligible: list[dict[str, Any]] = []
+    for row in comparables:
+        if row.get("source_type") != "historical":
+            continue
+        metadata = row.get("comparability_metadata") or {}
+        source_file = str(metadata.get("source_file") or "").lower()
+        row_source_group = (
+            "historical_claim"
+            if "historical_claim" in source_file
+            else metadata.get("source_group")
+        )
+        if not row_source_group:
+            row_source_group = "historical_claim"
+        if row_source_group != source_group:
+            continue
+        candidate_vehicle = row.get("vehicle") or {}
+        if (
+            _normalised_vehicle_value(candidate_vehicle.get("make")) != current_make
+            or _normalised_vehicle_value(candidate_vehicle.get("model")) != current_model
+        ):
+            continue
+        price = _decimal(row.get("price_net"))
+        if price <= 0:
+            continue
+        eligible.append(row)
+    if not eligible:
+        return None
+    statistics = calculate_benchmark_statistics(_decimal(row.get("price_net")) for row in eligible)
+    if statistics.percentile_90 is None:
+        return None
+    return P90Evidence(
+        value=statistics.percentile_90,
+        historical_count=statistics.count,
+        method=(
+            "In-house repair-book P90 (strict vehicle match)"
+            if source_group == "in_house"
+            else "Historical claims P90 (strict vehicle match)"
+        ),
+        explanation=(
+            "Eligible governed observations were matched to the repair item and, when "
+            "vehicle data was available, the exact make and model."
+        ),
+        contributing_invoices=tuple(
+            str((row.get("provenance") or {}).get("claim_reference") or row.get("id"))
+            for row in eligible
+        ),
+        contributing_prices=tuple(_decimal(row.get("price_net")) for row in eligible),
+    )
+
+
+def _verified_external_observations(
+    comparables: list[dict[str, Any]], vehicle: Vehicle | None
+) -> list[dict[str, Any]]:
+    """Return source-linked external prices for the exact current make/model."""
+
+    current_make = _normalised_vehicle_value(vehicle.make if vehicle else None)
+    current_model = _normalised_vehicle_value(vehicle.model if vehicle else None)
+    if not current_make or not current_model:
+        return []
+    eligible = []
+    for row in comparables:
+        candidate_vehicle = row.get("vehicle") or {}
+        if (
+            row.get("source_type") != "ontology_price"
+            or row.get("approval_status") != ApprovalStatus.APPROVED.value
+            or not (row.get("provenance") or {}).get("source_reference")
+            or _decimal(row.get("price_net")) <= 0
+            or _normalised_vehicle_value(candidate_vehicle.get("make")) != current_make
+            or _normalised_vehicle_value(candidate_vehicle.get("model")) != current_model
+        ):
+            continue
+        eligible.append(row)
+    return sorted(eligible, key=lambda row: _decimal(row.get("price_net")))
+
+
+def _verified_external_price(
+    comparables: list[dict[str, Any]], vehicle: Vehicle | None
+) -> Decimal | None:
+    """Use the lowest approved, traceable, exact-vehicle external observation."""
+
+    eligible = _verified_external_observations(comparables, vehicle)
+    return _decimal(eligible[0].get("price_net")) if eligible else None
+
+
+def _merge_p90_evidence(
+    primary: P90Evidence | None,
+    additional: P90Evidence | None,
+    *,
+    method: str,
+    explanation: str,
+) -> P90Evidence | None:
+    """Combine disjoint observation populations before calculating their P90."""
+
+    evidence = [item for item in (primary, additional) if item is not None]
+    if not evidence:
+        return None
+    prices = tuple(price for item in evidence for price in item.contributing_prices)
+    if not prices:
+        # Backward-compatible fallback for callers/tests that only provide an
+        # aggregate P90 value rather than its governed observations.
+        prices = tuple(item.value for item in evidence)
+    statistics = calculate_benchmark_statistics(prices)
+    if statistics.percentile_90 is None:
+        return None
+    references = tuple(
+        dict.fromkeys(reference for item in evidence for reference in item.contributing_invoices)
+    )
+    return P90Evidence(
+        value=statistics.percentile_90,
+        historical_count=len(prices),
+        method=method,
+        explanation=explanation,
+        contributing_invoices=references,
+        contributing_prices=prices,
+    )
 
 
 def _percent(value: Any) -> int:
@@ -470,6 +613,10 @@ def _load_case_graph(session: Session, case_reference: str) -> dict[str, Any]:
 def _comparable_record(row: ComparisonComparable, graph: dict[str, Any]) -> dict[str, Any]:
     price = graph["price_observations"].get(row.price_observation_id or "")
     history = graph["historical_observations"].get(row.historical_observation_id or "")
+    evidence_by_id = {item.id: item for item in graph["evidence"]}
+    external_evidence = (
+        evidence_by_id.get(price.evidence_id) if price and price.evidence_id else None
+    )
     source = history or price
     observed_date = (
         history.invoice_date
@@ -505,6 +652,7 @@ def _comparable_record(row: ComparisonComparable, graph: dict[str, Any]) -> dict
             "observation_type": _enum_value(history.observation_type) if history else None,
             "approved_amount_net": history.approved_amount_net if history else None,
             "settled_amount_net": history.settled_amount_net if history else None,
+            "source_title": external_evidence.title if external_evidence else None,
         },
         "vehicle": (
             {
@@ -514,6 +662,15 @@ def _comparable_record(row: ComparisonComparable, graph: dict[str, Any]) -> dict
                 "year": history.vehicle_year,
             }
             if history
+            else {
+                "make": (external_evidence.fitment_json or {}).get("make")
+                or (external_evidence.fitment_json or {}).get("vehicle_make"),
+                "model": (external_evidence.fitment_json or {}).get("model")
+                or (external_evidence.fitment_json or {}).get("vehicle_model"),
+                "variant": (external_evidence.fitment_json or {}).get("variant"),
+                "year": (external_evidence.fitment_json or {}).get("year"),
+            }
+            if external_evidence
             else None
         ),
         "comparability_metadata": history.comparability_metadata_json if history else None,
@@ -556,6 +713,7 @@ def build_case_result(
     }
     ontology: dict[str, OntologyItem] = graph["ontology"]
     vehicles: dict[str, Vehicle] = graph["vehicles"]
+    invoices_by_id = {invoice.id: invoice for invoice in invoices}
     comparables_by_comparison: dict[str, list[dict[str, Any]]] = {}
     for comparable in graph["comparables"]:
         comparables_by_comparison.setdefault(comparable.price_comparison_id, []).append(
@@ -592,6 +750,7 @@ def build_case_result(
         mapping = mappings_by_line.get(line.id)
         comparison = comparisons_by_line.get(line.id)
         challenge = challenges_by_comparison.get(comparison.id) if comparison else None
+        comparable_records = comparables_by_comparison.get(comparison.id, []) if comparison else []
         item = (
             ontology.get(mapping.selected_ontology_item_id)
             if mapping and mapping.selected_ontology_item_id
@@ -649,7 +808,6 @@ def build_case_result(
             )
         if comparison and not rejected:
             formula = comparison.benchmark_formula_json or {}
-            comparable_records = comparables_by_comparison.get(comparison.id, [])
             line_record.update(
                 {
                     "difference_from_ontology_net": formula.get("difference_from_ontology"),
@@ -717,20 +875,93 @@ def build_case_result(
         # this only changes what this read-time result graph reports.
         # Lines without a P90 signal keep their engine-derived values as-is.
         benchmark = None if rejected else uploaded_p90_benchmarks.get(line.id)
+        invoice = invoices_by_id.get(line.invoice_id)
+        vehicle = vehicles.get(invoice.vehicle_id or "") if invoice else None
+        uploaded_historical_evidence = (
+            _p90_evidence_from_benchmark(benchmark) if benchmark else None
+        )
+        in_house_evidence = (
+            None
+            if rejected
+            else _historical_p90_evidence(comparable_records, vehicle, source_group="in_house")
+        )
+        stored_historical_evidence = (
+            None
+            if rejected
+            else _historical_p90_evidence(
+                comparable_records, vehicle, source_group="historical_claim"
+            )
+        )
+        historical_evidence = _merge_p90_evidence(
+            stored_historical_evidence,
+            uploaded_historical_evidence,
+            method="Historical claims P90 (strict vehicle match)",
+            explanation=(
+                "Eligible previous-claim observations were matched to the repair item "
+                "and exact vehicle make and model; the current invoice was excluded."
+            ),
+        )
+        external_observations = (
+            [] if rejected else _verified_external_observations(comparable_records, vehicle)
+        )
+        external_price = None if rejected else _verified_external_price(comparable_records, vehicle)
+        external_sources = [
+            {
+                "price_net": _money_float(_decimal(row.get("price_net"))),
+                "source_reference": (row.get("provenance") or {}).get("source_reference"),
+                "source_title": (row.get("provenance") or {}).get("source_title"),
+                "vehicle_make": (row.get("vehicle") or {}).get("make"),
+                "vehicle_model": (row.get("vehicle") or {}).get("model"),
+            }
+            for row in external_observations
+        ]
         decision = _decide_line_from_benchmark(
             billed_net=line.line_total_net,
-            benchmark=benchmark,
-            external_price=comparison.ontology_line_net if comparison else None,
-            external_approval_status=item.approval_status if item else None,
+            in_house=in_house_evidence,
+            historical=historical_evidence,
+            external_price=external_price,
+            external_approval_status=(
+                ApprovalStatus.APPROVED if external_price is not None else None
+            ),
             vat_rate=line.vat_rate,
             is_mot=is_mot,
             p90_threshold_pct=threshold_decimal,
         )
         if decision.has_signal:
+            human_approved = bool(
+                challenge
+                and challenge.reviewer_approved
+                and challenge.status == ChallengeStatus.APPROVED
+            )
+            supported_price = (
+                _decimal(challenge.recommended_payable_net)
+                if human_approved
+                else decision.supported_price
+            )
+            challenge_amount = (
+                _decimal(challenge.challenge_net)
+                if human_approved
+                else decision.challenge_net
+            )
+            challenge_vat = (
+                _decimal(challenge.challenge_vat)
+                if human_approved
+                else decision.challenge_vat
+            )
             decision_payload = {
-                "supported_price_net": decision.supported_price,
-                "challenge_amount_net": decision.challenge_net,
-                "challenge_vat": decision.challenge_vat,
+                "in_house_p90_net": decision.in_house_price,
+                "historical_claims_p90_net": decision.historical_price,
+                "external_price_net": decision.external_price,
+                "external_price_sources": external_sources,
+                "external_price_method": (
+                    f"Lowest of {len(external_sources)} approved, source-linked external "
+                    "prices for the exact vehicle make and model."
+                    if external_sources
+                    else None
+                ),
+                "supported_price_net": supported_price,
+                "challenge_amount_net": challenge_amount,
+                "challenge_vat": challenge_vat,
                 "comparison_status": decision.comparison_status,
                 "rationale": decision.rationale,
                 "evidence_rationale": decision.evidence_rationale,
@@ -742,7 +973,7 @@ def build_case_result(
             if comparison is not None and not rejected:
                 comparison_records[-1].update(
                     {
-                        "challenge_price_net": decision.supported_price,
+                        "challenge_price_net": supported_price,
                         "decision_comparison_status": decision.comparison_status,
                         "decision_calculation": decision.calculation,
                     }
@@ -751,12 +982,16 @@ def build_case_result(
                 challenge_records[-1].update(
                     {
                         "invoice_net": line.line_total_net,
-                        "challenge_price_net": decision.supported_price,
-                        "challenge_amount_net": decision.challenge_net,
-                        "challenge_vat": decision.challenge_vat,
-                        "challenge_gross": decision.challenge_net + decision.challenge_vat,
+                        "in_house_p90_net": decision.in_house_price,
+                        "historical_claims_p90_net": decision.historical_price,
+                        "external_price_net": decision.external_price,
+                        "external_price_sources": external_sources,
+                        "external_price_method": decision_payload["external_price_method"],
+                        "challenge_price_net": supported_price,
+                        "challenge_amount_net": challenge_amount,
+                        "challenge_vat": challenge_vat,
+                        "challenge_gross": challenge_amount + challenge_vat,
                         "is_mot": is_mot,
-                        "approved": True,
                         "challengeable": decision.comparison_status == "CHALLENGE",
                         "reason": decision.rationale,
                         "decision_comparison_status": decision.comparison_status,
@@ -776,13 +1011,18 @@ def build_case_result(
                         "invoice_id": line.invoice_id,
                         "description": line.raw_description,
                         "invoice_net": line.line_total_net,
+                        "in_house_p90_net": decision.in_house_price,
+                        "historical_claims_p90_net": decision.historical_price,
+                        "external_price_net": decision.external_price,
+                        "external_price_sources": external_sources,
+                        "external_price_method": decision_payload["external_price_method"],
                         "challenge_price_net": decision.supported_price,
                         "challenge_amount_net": decision.challenge_net,
                         "challenge_vat": decision.challenge_vat,
                         "challenge_gross": decision.challenge_net + decision.challenge_vat,
                         "vat_rate": line.vat_rate,
                         "is_mot": is_mot,
-                        "approved": True,
+                        "approved": False,
                         "challengeable": True,
                         "status": None,
                         "ontology_item_id": mapping.selected_ontology_item_id if mapping else None,
@@ -790,7 +1030,7 @@ def build_case_result(
                         "ontology_price_net": comparison.ontology_line_net if comparison else None,
                         "historical_median_net": None,
                         "historical_count": decision.historical_count,
-                        "benchmark_source": "P90 policy (uploaded invoice batch)",
+                        "benchmark_source": "Three-source P90 policy",
                         "reason": decision.rationale,
                         "challenge_score": None,
                         "approved_by": None,
@@ -807,6 +1047,43 @@ def build_case_result(
             if invoice.id in invoice_challenges
         ),
         None,
+    )
+    primary_invoice = invoices[-1] if invoices else None
+    primary_line_ids = {
+        line.id for line in lines if primary_invoice and line.invoice_id == primary_invoice.id
+    }
+    operational_challenges = [
+        row
+        for row in challenge_records
+        if row.get("line_id") in primary_line_ids
+        and _decimal(row.get("challenge_amount_net")) > 0
+        and row.get("status") != ChallengeStatus.REJECTED.value
+    ]
+    operational_challenge_amount = sum(
+        (_decimal(row.get("challenge_amount_net")) for row in operational_challenges),
+        Decimal("0"),
+    )
+    operational_vat = sum(
+        (_decimal(row.get("challenge_vat")) for row in operational_challenges),
+        Decimal("0"),
+    )
+    operational_invoice_price = (
+        _decimal(primary_invoice.subtotal_net) + _decimal(primary_invoice.non_vat_total)
+        if primary_invoice
+        else Decimal("0")
+    )
+    if operational_invoice_price <= 0:
+        operational_invoice_price = sum(
+            (_decimal(line.line_total_net) for line in lines if line.id in primary_line_ids),
+            Decimal("0"),
+        )
+    operational_challenge_price = max(
+        operational_invoice_price - operational_challenge_amount, Decimal("0")
+    )
+    operational_percentage = (
+        operational_challenge_amount / operational_invoice_price * Decimal("100")
+        if operational_invoice_price > 0
+        else Decimal("0")
     )
     return {
         "report_date": datetime.now(UTC).date(),
@@ -909,16 +1186,17 @@ def build_case_result(
         ],
         "summary": (
             {
-                "invoice_price_net": _decimal(primary_summary.recommended_payable_net)
-                + _decimal(primary_summary.challenge_net),
-                "challenge_price_net": primary_summary.recommended_payable_net,
-                "challenge_amount_net": primary_summary.challenge_net,
-                "vat_impact": primary_summary.challenge_vat,
-                "gross_effect": primary_summary.challenge_gross,
-                "challenge_percentage": primary_summary.challenge_percentage,
-                "challenge_strength": primary_summary.evidence_strength_score,
+                "invoice_price_net": f"{operational_invoice_price:.2f}",
+                "challenge_price_net": f"{operational_challenge_price:.2f}",
+                "challenge_amount_net": f"{operational_challenge_amount:.2f}",
+                "vat_impact": f"{operational_vat:.2f}",
+                "gross_effect": f"{operational_challenge_amount + operational_vat:.2f}",
+                "challenge_percentage": f"{operational_percentage:.4f}",
+                "challenge_strength": (
+                    primary_summary.evidence_strength_score if primary_summary else 0
+                ),
             }
-            if primary_summary
+            if primary_invoice
             else {}
         ),
     }
@@ -970,6 +1248,18 @@ def _uploaded_line_p90_benchmarks(
     except StopIteration:
         return {}
     prior_invoices = invoices[:current_index]
+    current_vehicle = getattr(current_invoice, "vehicle", None)
+    current_make = _normalised_vehicle_value(getattr(current_vehicle, "make", None))
+    current_model = _normalised_vehicle_value(getattr(current_vehicle, "model", None))
+    if not current_make or not current_model:
+        return {}
+    prior_invoices = [
+        invoice
+        for invoice in prior_invoices
+        if getattr(invoice, "vehicle", None)
+        and _normalised_vehicle_value(invoice.vehicle.make) == current_make
+        and _normalised_vehicle_value(invoice.vehicle.model) == current_model
+    ]
     if not prior_invoices:
         return {}
 
@@ -1657,35 +1947,32 @@ def build_claim_workspace(
         if evidence_confidence is not None:
             workspace_line["evidenceConfidence"] = _percent(evidence_confidence)
 
-        # Unified operational price decision (C2/C3/C4): for any line with a
-        # P90 benchmark signal, this decision IS the operational supported
-        # price / challenge / status — it overrides whatever the legacy
-        # 60/40 engine produced above.  Lines without a P90 signal keep the
-        # engine-derived payload values untouched, exactly like the JS
-        # overlay it replaces.
-        if p90_benchmark:
-            line_decision = _decide_line_from_benchmark(
-                billed_net=workspace_line["currentTotal"],
-                benchmark=p90_benchmark,
-                external_price=workspace_line.get("ontologyTotal"),
-                external_approval_status=approval,
-                vat_rate=workspace_line["vatRate"],
-                is_mot=_is_mot_description(workspace_line["description"]),
-                p90_threshold_pct=threshold_decimal,
+        # Reuse the decision already produced by build_case_result. Recomputing
+        # it here previously allowed the workspace to drift from exports.
+        if line_decision := row.get("price_decision"):
+            workspace_line.update(
+                {
+                    "historicalCount": line_decision["historical_count"],
+                    "inHouseP90": _optional_money_float(
+                        line_decision["in_house_p90_net"]
+                    ),
+                    "historicalClaimsP90": _optional_money_float(
+                        line_decision["historical_claims_p90_net"]
+                    ),
+                    "externalReferencePrice": _optional_money_float(
+                        line_decision["external_price_net"]
+                    ),
+                    "externalPriceSources": line_decision["external_price_sources"],
+                    "externalPriceMethod": line_decision["external_price_method"],
+                    "recommended": _money_float(line_decision["supported_price_net"]),
+                    "challenge": _money_float(line_decision["challenge_amount_net"]),
+                    "challengeVat": _money_float(line_decision["challenge_vat"]),
+                    "comparisonStatus": line_decision["comparison_status"],
+                    "rationale": line_decision["rationale"],
+                    "evidenceRationale": line_decision["evidence_rationale"],
+                    "calculation": line_decision["calculation"],
+                }
             )
-            if line_decision.has_signal:
-                workspace_line.update(
-                    {
-                        "historicalCount": line_decision.historical_count,
-                        "recommended": _money_float(line_decision.supported_price),
-                        "challenge": _money_float(line_decision.challenge_net),
-                        "challengeVat": _money_float(line_decision.challenge_vat),
-                        "comparisonStatus": line_decision.comparison_status,
-                        "rationale": line_decision.rationale,
-                        "evidenceRationale": line_decision.evidence_rationale,
-                        "calculation": line_decision.calculation,
-                    }
-                )
         lines.append(workspace_line)
 
     invoice_net = _decimal(invoice.subtotal_net) + _decimal(invoice.non_vat_total)

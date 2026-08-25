@@ -12,6 +12,7 @@ export const screenStage: Record<ScreenId, StageId> = {
   "challenge-review": "challenge",
   "ontology-bank": "challenge",
   "benchmark-dashboard": "challenge",
+  "in-house-benchmarks": "challenge",
   "knowledge-graph": "challenge",
   "audit-reports": "challenge",
 }
@@ -28,6 +29,7 @@ export const screenTitles: Record<ScreenId, string> = {
   "challenge-review": "Challenge Review",
   "ontology-bank": "External Price Library",
   "benchmark-dashboard": "Repair Benchmarks",
+  "in-house-benchmarks": "In-house Repair Benchmarks",
   "knowledge-graph": "Repairer Knowledge Graph",
   "audit-reports": "Audit & Reports",
 }

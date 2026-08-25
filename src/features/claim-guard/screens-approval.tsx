@@ -440,7 +440,7 @@ export function ApprovalScreen({
             Policy {workspace.versions?.policy ?? "v1.4"}
           </p>
           <p className="text-xs text-muted-foreground">
-            Historical P90 · earlier matching invoices only
+            50% in-house P90 · 30% previous claims · 20% verified external
           </p>
         </div>
       </div>

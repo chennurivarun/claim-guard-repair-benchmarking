@@ -12,7 +12,9 @@ export function invoiceOptionsForScreen(
   invoices: ClaimInvoiceSummary[],
   screen: "price-comparison" | "review-findings-all" | string
 ): ClaimInvoiceSummary[] {
-  return screen === "price-comparison" ? challengedInvoices(invoices) : invoices
+  return screen === "price-comparison" || screen === "challenge-review"
+    ? challengedInvoices(invoices)
+    : invoices
 }
 
 export function preferredInvoiceIdForScreen(

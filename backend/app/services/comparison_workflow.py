@@ -170,7 +170,7 @@ def _history_domain(
                     _decimal(observation.quantity) if observation.quantity is not None else None
                 ),
                 unit=observation.unit,
-                eligible=True,
+                eligible=metadata.get("eligible_for_price_decision", True),
                 unit_compatible=metadata.get("unit_compatible", True),
                 quantity_scope_equivalent=metadata.get("quantity_scope_equivalent", True),
                 comparability_score=_decimal(metadata.get("comparability_score", "1")),
@@ -364,6 +364,16 @@ def run_case_comparison(
         .unique()
         .all()
     )
+    # The demo in-house repair book is deterministic and stored through the
+    # existing governed historical-observation model. It covers every current
+    # ontology item and exact uploaded vehicle make/model before comparisons run.
+    from app.services.in_house_repair_data import ensure_synthetic_in_house_data
+
+    ensure_synthetic_in_house_data(
+        session,
+        invoices=list(invoices),
+        ontology_items=list(ontology_items),
+    )
     domain_items = _domain_items(list(ontology_items))
     item_by_id = {item.id: item for item in ontology_items}
 
@@ -501,8 +511,7 @@ def run_case_comparison(
                 selected_item
                 and (
                     override is not None
-                    or mapping_confidence
-                    > Decimal(str(settings.auto_accept_confidence_threshold))
+                    or mapping_confidence > Decimal(str(settings.auto_accept_confidence_threshold))
                 )
             )
             mapping = OntologyMapping(
@@ -608,6 +617,11 @@ def run_case_comparison(
                 if selected_item
                 else []
             )
+            history_rows = [
+                row
+                for row in history_rows
+                if (row.comparability_metadata_json or {}).get("eligible_for_price_decision", True)
+            ]
             history_rows, vehicle_benchmark = select_vehicle_category_history(
                 list(history_rows),
                 current_vehicle=invoice.vehicle,

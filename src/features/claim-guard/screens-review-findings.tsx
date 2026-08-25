@@ -15,6 +15,13 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import {
   Card,
   CardContent,
   CardDescription,
@@ -52,10 +59,300 @@ import type { ClaimWorkspace, InvoiceLine, ResearchQueueItem } from "./types"
 import {
   fetchEngineerAssessments,
   type EngineerAssessmentPayload,
+  type ClaimInvoiceSummary,
   type MappingDecisionInput,
 } from "@/lib/api"
 
 type DecisionMode = "approve" | "reject" | "edit"
+
+export function ChallengedInvoicesSummary({
+  invoices,
+  onOpenInvoice,
+}: {
+  invoices: ClaimInvoiceSummary[]
+  onOpenInvoice: (invoiceId: string) => void
+}) {
+  const [query, setQuery] = useState("")
+  const [status, setStatus] = useState("all")
+  const [invoiceFilter, setInvoiceFilter] = useState("all")
+  const [lineFilter, setLineFilter] = useState("all")
+  const [dateFrom, setDateFrom] = useState("")
+  const [dateTo, setDateTo] = useState("")
+  const [externalEvidence, setExternalEvidence] = useState<{
+    method: string
+    sources: NonNullable<
+      NonNullable<ClaimInvoiceSummary["challenge_lines"]>[number]["external_price_sources"]
+    >
+  } | null>(null)
+  const needle = query.trim().toLocaleLowerCase()
+  const invoiceChoices = invoices.map((invoice) => ({
+    id: invoice.id,
+    label: invoice.invoice_number || invoice.document_filename,
+  }))
+  const lineChoices = Array.from(
+    new Set(
+      invoices.flatMap((invoice) =>
+        (invoice.challenge_lines ?? [])
+          .map((line) => line.description?.trim())
+          .filter((value): value is string => Boolean(value))
+      )
+    )
+  ).sort((left, right) => left.localeCompare(right))
+  const rows = invoices
+    .flatMap((invoice) =>
+      (invoice.challenge_lines ?? []).map((line) => ({ invoice, line }))
+    )
+    .filter(({ invoice, line }) => {
+      const lineStatus = line.status.toLocaleLowerCase()
+      const uploadDate = (invoice.uploaded_at ?? "").slice(0, 10)
+      const matchesStatus =
+        status === "all" ||
+        lineStatus === status ||
+        (status === "pending" && ["draft", "review"].includes(lineStatus))
+      const searchable = [
+        invoice.invoice_number,
+        invoice.document_filename,
+        invoice.supplier_name,
+        line.description,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLocaleLowerCase()
+      return (
+        matchesStatus &&
+        (invoiceFilter === "all" || invoice.id === invoiceFilter) &&
+        (lineFilter === "all" || line.description === lineFilter) &&
+        (!dateFrom || uploadDate >= dateFrom) &&
+        (!dateTo || uploadDate <= dateTo) &&
+        (!needle || searchable.includes(needle))
+      )
+    })
+    .sort(
+      (left, right) =>
+        right.line.challenge_net - left.line.challenge_net ||
+        Date.parse(right.invoice.uploaded_at ?? "") -
+          Date.parse(left.invoice.uploaded_at ?? "")
+    )
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Challenged invoices</CardTitle>
+        <CardDescription>
+          Only invoice lines with a positive price challenge are shown. Select
+          a row to open the existing evidence and decision flow.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+          <InputGroup className="max-w-md">
+            <InputGroupAddon>
+              <SearchIcon />
+            </InputGroupAddon>
+            <InputGroupInput
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search challenged invoices"
+              aria-label="Search challenged invoices"
+            />
+          </InputGroup>
+          <select
+            className="h-9 rounded-md border bg-background px-3 text-sm"
+            value={invoiceFilter}
+            onChange={(event) => setInvoiceFilter(event.target.value)}
+            aria-label="Filter by invoice"
+          >
+            <option value="all">All invoices</option>
+            {invoiceChoices.map((invoice) => (
+              <option key={invoice.id} value={invoice.id}>
+                {invoice.label}
+              </option>
+            ))}
+          </select>
+          <select
+            className="h-9 rounded-md border bg-background px-3 text-sm"
+            value={lineFilter}
+            onChange={(event) => setLineFilter(event.target.value)}
+            aria-label="Filter by challenged item"
+          >
+            <option value="all">All repair items</option>
+            {lineChoices.map((description) => (
+              <option key={description} value={description}>
+                {description}
+              </option>
+            ))}
+          </select>
+          <input
+            type="date"
+            className="h-9 rounded-md border bg-background px-3 text-sm"
+            value={dateFrom}
+            onChange={(event) => setDateFrom(event.target.value)}
+            aria-label="Upload date from"
+          />
+          <input
+            type="date"
+            className="h-9 rounded-md border bg-background px-3 text-sm"
+            value={dateTo}
+            onChange={(event) => setDateTo(event.target.value)}
+            aria-label="Upload date to"
+          />
+          <select
+            className="h-9 rounded-md border bg-background px-3 text-sm"
+            value={status}
+            onChange={(event) => setStatus(event.target.value)}
+            aria-label="Filter challenge status"
+          >
+            <option value="all">All statuses</option>
+            <option value="pending">Pending</option>
+            <option value="approved">Approved</option>
+            <option value="rejected">Rejected</option>
+          </select>
+        </div>
+        <div className="overflow-x-auto rounded-lg border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Uploaded</TableHead>
+                <TableHead>Invoice</TableHead>
+                <TableHead>Repairer</TableHead>
+                <TableHead>Challenged item</TableHead>
+                <TableHead className="text-right">Billed</TableHead>
+                <TableHead className="text-right">In-house repair P90</TableHead>
+                <TableHead className="text-right">Historical claims P90</TableHead>
+                <TableHead className="text-right">External reference price</TableHead>
+                <TableHead className="text-right">Supported</TableHead>
+                <TableHead className="text-right">Challenge</TableHead>
+                <TableHead>Status</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map(({ invoice, line }) => (
+                <TableRow
+                  key={`${invoice.id}:${line.line_id ?? line.id}`}
+                  className="cursor-pointer"
+                  tabIndex={0}
+                  onClick={() => onOpenInvoice(invoice.id)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault()
+                      onOpenInvoice(invoice.id)
+                    }
+                  }}
+                >
+                  <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                    {invoice.uploaded_at
+                      ? new Date(invoice.uploaded_at).toLocaleString()
+                      : "—"}
+                  </TableCell>
+                  <TableCell className="font-medium">
+                    {invoice.invoice_number || invoice.document_filename}
+                  </TableCell>
+                  <TableCell>{invoice.supplier_name || "—"}</TableCell>
+                  <TableCell>{line.description || "Unlabelled line"}</TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {formatMoney(line.billed_net)}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {line.in_house_p90_net == null
+                      ? "—"
+                      : formatMoney(line.in_house_p90_net)}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {line.historical_claims_p90_net == null
+                      ? "—"
+                      : formatMoney(line.historical_claims_p90_net)}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    <div className="flex items-center justify-end gap-1">
+                      <span>
+                        {line.external_price_net == null
+                          ? "—"
+                          : formatMoney(line.external_price_net)}
+                      </span>
+                      {(line.external_price_sources ?? []).length ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={`View external price sources for ${line.description || "invoice line"}`}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            setExternalEvidence({
+                              method:
+                                line.external_price_method ??
+                                "The lowest approved exact-vehicle external reference price is used.",
+                              sources: line.external_price_sources ?? [],
+                            })
+                          }}
+                        >
+                          <InfoIcon />
+                        </Button>
+                      ) : null}
+                    </div>
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {formatMoney(line.supported_net)}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums text-destructive">
+                    {formatMoney(line.challenge_net)}
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant="outline">
+                      {line.status.replaceAll("_", " ")}
+                    </Badge>
+                  </TableCell>
+                </TableRow>
+              ))}
+              {!rows.length ? (
+                <TableRow>
+                  <TableCell colSpan={11} className="py-8 text-center text-muted-foreground">
+                    No challenged invoice lines match these filters.
+                  </TableCell>
+                </TableRow>
+              ) : null}
+            </TableBody>
+          </Table>
+        </div>
+      </CardContent>
+      <Dialog
+        open={externalEvidence !== null}
+        onOpenChange={(open) => {
+          if (!open) setExternalEvidence(null)
+        }}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>External reference price sources</DialogTitle>
+            <DialogDescription>{externalEvidence?.method}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            {externalEvidence?.sources.map((source) => (
+              <a
+                key={`${source.source_reference}:${source.price_net}`}
+                href={source.source_reference}
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-start justify-between gap-3 rounded-lg border p-3 hover:bg-muted/50"
+              >
+                <span>
+                  <span className="block font-medium">
+                    {source.source_title || source.source_reference}
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    {source.vehicle_make} {source.vehicle_model}
+                  </span>
+                </span>
+                <span className="whitespace-nowrap font-medium tabular-nums">
+                  {formatMoney(source.price_net)}
+                </span>
+              </a>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
+    </Card>
+  )
+}
 
 function EngineerAssessmentCard({
   assessment,
@@ -591,7 +888,7 @@ export function ReviewFindingsScreen({
             </div>
           </CardHeader>
           <CardContent className="flex flex-col gap-6">
-            <div className="grid overflow-hidden rounded-lg border sm:grid-cols-4">
+            <div className="grid overflow-hidden rounded-lg border md:grid-cols-3 xl:grid-cols-6">
               <div className="p-5">
                 <p className="text-xs font-medium text-muted-foreground">
                   Repairer billed
@@ -600,20 +897,44 @@ export function ReviewFindingsScreen({
                   {formatMoney(line.currentTotal)}
                 </p>
               </div>
-              <div className="border-y p-5 sm:border-x sm:border-y-0">
+              <div className="border-y p-5 md:border-x md:border-y-0">
                 <p className="text-xs font-medium text-muted-foreground">
-                  Benchmark price
+                  In-house repair P90
                 </p>
                 <p className="mt-2 text-2xl font-semibold tabular-nums">
-                  {benchmark ? formatMoney(benchmark.p90) : "—"}
+                  {line.inHouseP90 == null
+                    ? "—"
+                    : formatMoney(line.inHouseP90)}
                 </p>
               </div>
-              <div className="border-b p-5 sm:border-r sm:border-b-0">
+              <div className="border-b p-5 md:border-b-0 xl:border-r">
                 <p className="text-xs font-medium text-muted-foreground">
-                  External price
+                  Historical claims P90
                 </p>
                 <p className="mt-2 text-2xl font-semibold tabular-nums">
-                  {line.ontologyTotal ? formatMoney(line.ontologyTotal) : "—"}
+                  {line.historicalClaimsP90 == null
+                    ? "—"
+                    : formatMoney(line.historicalClaimsP90)}
+                </p>
+              </div>
+              <div className="border-b p-5 md:border-r xl:border-b-0">
+                <p className="text-xs font-medium text-muted-foreground">
+                  External reference price
+                </p>
+                <p className="mt-2 text-2xl font-semibold tabular-nums">
+                  {line.externalReferencePrice == null
+                    ? "—"
+                    : formatMoney(line.externalReferencePrice)}
+                </p>
+              </div>
+              <div className="border-b p-5 md:border-b-0 xl:border-r">
+                <p className="text-xs font-medium text-muted-foreground">
+                  Supported price
+                </p>
+                <p className="mt-2 text-2xl font-semibold tabular-nums">
+                  {line.recommended == null
+                    ? "—"
+                    : formatMoney(line.recommended)}
                 </p>
               </div>
               <div className="bg-primary/5 p-5">
@@ -630,7 +951,7 @@ export function ReviewFindingsScreen({
               <div className="rounded-lg border bg-muted/25 p-4">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div>
-                    <p className="font-semibold">Historical P90 benchmark</p>
+                    <p className="font-semibold">Historical claims P90 benchmark</p>
                     <p className="mt-1 text-xs text-muted-foreground">
                       {benchmark.category} · {benchmark.historicalCount} earlier
                       invoice{benchmark.historicalCount === 1 ? "" : "s"} ·
@@ -692,21 +1013,25 @@ export function ReviewFindingsScreen({
                 <InfoIcon />
                 <AlertTitle>P90 benchmark not available yet</AlertTitle>
                 <AlertDescription>
-                  At least three earlier matching invoice prices are required.
-                  The existing governed price evidence is shown below.
+                  No eligible in-house or previous-claim observation matches
+                  this repair item and vehicle. The governed evidence available
+                  for manual review is shown below.
                 </AlertDescription>
               </Alert>
             )}
 
             <div>
-              <h2 className="text-sm font-semibold">Why it was flagged</h2>
+              <h2 className="text-sm font-semibold">
+                Why this price challenge is recommended
+              </h2>
               <p className="mt-2 text-sm leading-6 text-muted-foreground">
                 {line.rationale}
               </p>
               <p className="mt-2 text-xs leading-5 text-muted-foreground">
-                When both prices are available, the supported price uses 70%
-                benchmark and 30% approved external price. If only one is
-                available, that available price is used.
+                The full policy uses 50% in-house P90, 30% previous-claim P90
+                and 20% verified external price. Missing governed sources are
+                reweighted proportionally; external evidence alone never
+                creates an automatic challenge.
               </p>
             </div>
 

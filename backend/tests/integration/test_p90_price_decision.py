@@ -31,7 +31,7 @@ from app.enums import (
 from app.exports.common import approved_challenge_lines, compute_financial_summary
 from app.init_db import initialize_database
 from app.main import app
-from app.models import Case, Document, Invoice, InvoiceLineItem
+from app.models import Case, Document, Invoice, InvoiceLineItem, Vehicle
 from app.services.case_result import build_case_result, build_claim_workspace
 
 CASE_REFERENCE = "CG-P90-DECISION"
@@ -65,6 +65,15 @@ def _add_invoice(
     vat_total: str | None = None,
     gross_total: str | None = None,
 ) -> Invoice:
+    vehicle = Vehicle(
+        case_id=case_id,
+        make="BMW",
+        model="3 Series",
+        source="pytest",
+        verification_status=ReviewStatus.APPROVED,
+    )
+    session.add(vehicle)
+    session.flush()
     invoice = Invoice(
         case_id=case_id,
         document_id=document_id,
@@ -72,6 +81,7 @@ def _add_invoice(
         document_role=InvoiceDocumentRole.INVOICE,
         invoice_number=group_id,
         invoice_date=invoice_date,
+        vehicle_id=vehicle.id,
         extraction_method=ExtractionMethod.NATIVE_TEXT,
         review_status=ReviewStatus.APPROVED,
         subtotal_net=subtotal_net,
@@ -117,7 +127,9 @@ def _add_line(
 
 @pytest.fixture()
 def p90_engine(tmp_path: Path):
-    engine = create_engine(f"sqlite:///{tmp_path / 'p90.db'}", connect_args={"check_same_thread": False})
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'p90.db'}", connect_args={"check_same_thread": False}
+    )
 
     @event.listens_for(engine, "connect")
     def enable_foreign_keys(dbapi_connection, connection_record):
@@ -221,9 +233,7 @@ def test_wheel_alignment_line_is_challenged_at_5_and_within_at_10_via_workspace(
     assert at_5.status_code == 200
     assert at_10.status_code == 200
 
-    line_at_5 = next(
-        row for row in at_5.json()["lines"] if row["description"] == "Wheel alignment"
-    )
+    line_at_5 = next(row for row in at_5.json()["lines"] if row["description"] == "Wheel alignment")
     line_at_10 = next(
         row for row in at_10.json()["lines"] if row["description"] == "Wheel alignment"
     )
@@ -253,6 +263,7 @@ def test_invoice_list_uses_same_operational_p90_challenges_as_workspace(p90_clie
     assert at_5.status_code == 200
     reviews_at_10 = {row["invoice_number"]: row["challenge_review"] for row in at_10.json()}
     reviews_at_5 = {row["invoice_number"]: row["challenge_review"] for row in at_5.json()}
+    invoice_rows_at_10 = {row["invoice_number"]: row for row in at_10.json()}
 
     # This fixture has no persisted legacy comparison/challenge rows. The
     # invoice list must still expose the operational P90 decisions.
@@ -269,6 +280,12 @@ def test_invoice_list_uses_same_operational_p90_challenges_as_workspace(p90_clie
         "unresolved": 3,
     }
     assert all(reviews_at_10[f"invoice-{index}"]["positive"] == 0 for index in range(1, 4))
+    assert len(invoice_rows_at_10["invoice-4"]["challenge_lines"]) == 2
+    assert all(
+        line["challenge_net"] > 0 and line["billed_net"] > line["supported_net"]
+        for line in invoice_rows_at_10["invoice-4"]["challenge_lines"]
+    )
+    assert invoice_rows_at_10["invoice-4"]["uploaded_at"]
 
 
 # --- Aggregation: rejected lines excluded, breakdown present --------------
@@ -320,36 +337,31 @@ def test_mot_line_suppresses_vat_in_workspace(p90_session) -> None:
     assert mot_line["challengeVat"] == 0.0
 
 
-# --- Consistency: workspace summary == exports financial summary ----------
+# --- Review recommendations stay separate from approved exports -----------
 
 
-def test_workspace_and_export_summaries_agree_for_same_threshold(p90_session) -> None:
+def test_workspace_recommendations_are_not_exported_before_approval(p90_session) -> None:
     workspace = build_claim_workspace(p90_session, CASE_REFERENCE, p90_threshold_pct=10)
     result = build_case_result(p90_session, CASE_REFERENCE, p90_threshold_pct=10)
     export_summary = compute_financial_summary(result)
 
-    assert Decimal(str(workspace["summary"]["challengeAmount"])) == export_summary.challenge_amount_net
-    assert Decimal(str(workspace["summary"]["vatImpact"])) == export_summary.vat_impact
-    assert Decimal(str(workspace["summary"]["challengePrice"])) == export_summary.challenge_price_net
-
-    letter_lines = {line.description: line for line in approved_challenge_lines(result)}
-    assert "Front bumper reinforcement" in letter_lines
-    assert "MOT Test" in letter_lines
-    assert "Wheel alignment" not in letter_lines
-    assert "Rejected replacement panel" not in letter_lines
-    assert letter_lines["Front bumper reinforcement"].challenge_amount_net == Decimal("101.00")
-    assert letter_lines["MOT Test"].vat_impact == Decimal("0.00")
+    assert Decimal(str(workspace["summary"]["challengeAmount"])) == Decimal("151.0")
+    assert Decimal(str(workspace["summary"]["vatImpact"])) == Decimal("20.2")
+    assert export_summary.challenge_amount_net == Decimal("0.00")
+    assert export_summary.vat_impact == Decimal("0.00")
+    assert approved_challenge_lines(result) == []
 
 
-def test_workspace_and_export_summaries_agree_at_five_percent_threshold(p90_session) -> None:
+def test_five_percent_recommendations_still_require_approval_for_export(p90_session) -> None:
     workspace = build_claim_workspace(p90_session, CASE_REFERENCE, p90_threshold_pct=5)
     result = build_case_result(p90_session, CASE_REFERENCE, p90_threshold_pct=5)
     export_summary = compute_financial_summary(result)
 
-    assert Decimal(str(workspace["summary"]["challengeAmount"])) == export_summary.challenge_amount_net
+    assert Decimal(str(workspace["summary"]["challengeAmount"])) == Decimal("159.0")
+    assert export_summary.challenge_amount_net == Decimal("0.00")
     letter_lines = {line.description for line in approved_challenge_lines(result)}
     # At the 5% threshold the wheel-alignment line also clears the gate.
-    assert "Wheel alignment" in letter_lines
+    assert "Wheel alignment" not in letter_lines
 
 
 # --- invoiceNet fallback ----------------------------------------------------

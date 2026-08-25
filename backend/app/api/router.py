@@ -733,9 +733,7 @@ def get_pages(case_reference: str, db: DatabaseSession) -> list[dict[str, Any]]:
 
 
 @router.get("/claims/{case_reference}/engineer-assessments", tags=["documents"])
-def get_engineer_assessments(
-    case_reference: str, db: DatabaseSession
-) -> list[dict[str, Any]]:
+def get_engineer_assessments(case_reference: str, db: DatabaseSession) -> list[dict[str, Any]]:
     case = db.scalar(select(Case).where(Case.case_reference == case_reference))
     if case is None:
         raise _not_found("Claim not found")
@@ -743,9 +741,7 @@ def get_engineer_assessments(
         select(EngineerAssessment)
         .where(EngineerAssessment.case_id == case.id)
         .options(
-            selectinload(EngineerAssessment.operations).selectinload(
-                AssessmentOperation.variances
-            )
+            selectinload(EngineerAssessment.operations).selectinload(AssessmentOperation.variances)
         )
         .order_by(EngineerAssessment.created_at)
     ).all()
@@ -923,6 +919,9 @@ def get_invoices(
         invoice.id: {"positive": 0, "approved": 0, "rejected": 0, "unresolved": 0}
         for invoice in invoices
     }
+    challenge_lines_by_invoice: dict[str, list[dict[str, Any]]] = {
+        invoice.id: [] for invoice in invoices
+    }
     # Benchmarks, Review findings and exports all use the unified read-time P90
     # decision. Persisted legacy ChallengeResult amounts can disagree with it,
     # so the invoice selector must use this same result graph as its source of
@@ -944,11 +943,41 @@ def get_invoices(
             review["rejected"] += 1
         else:
             review["unresolved"] += 1
+        challenge_lines_by_invoice.setdefault(invoice_id, []).append(
+            {
+                "id": challenge.get("id"),
+                "line_id": challenge.get("line_id"),
+                "description": challenge.get("description"),
+                "billed_net": float(_decimal_value(challenge.get("invoice_net"))),
+                "supported_net": float(_decimal_value(challenge.get("challenge_price_net"))),
+                "in_house_p90_net": (
+                    float(_decimal_value(challenge.get("in_house_p90_net")))
+                    if challenge.get("in_house_p90_net") is not None
+                    else None
+                ),
+                "historical_claims_p90_net": (
+                    float(_decimal_value(challenge.get("historical_claims_p90_net")))
+                    if challenge.get("historical_claims_p90_net") is not None
+                    else None
+                ),
+                "external_price_net": (
+                    float(_decimal_value(challenge.get("external_price_net")))
+                    if challenge.get("external_price_net") is not None
+                    else None
+                ),
+                "external_price_sources": challenge.get("external_price_sources") or [],
+                "external_price_method": challenge.get("external_price_method"),
+                "challenge_net": float(_decimal_value(challenge.get("challenge_amount_net"))),
+                "status": challenge_status or ChallengeStatus.DRAFT.value,
+                "benchmark_source": challenge.get("benchmark_source"),
+            }
+        )
     return [
         {
             "id": invoice.id,
             "invoice_number": invoice.invoice_number,
             "invoice_date": invoice.invoice_date.isoformat() if invoice.invoice_date else None,
+            "uploaded_at": invoice.created_at.isoformat(),
             "document_id": invoice.document_id,
             "document_filename": invoice.document.original_filename,
             "document_role": invoice.document_role.value,
@@ -973,6 +1002,7 @@ def get_invoices(
                 "gross": invoice.gross_total,
             },
             "challenge_review": challenge_review_by_invoice[invoice.id],
+            "challenge_lines": challenge_lines_by_invoice[invoice.id],
             "lines": [_line_payload(line, db) for line in invoice.line_items],
             "checks": [
                 {
@@ -1076,7 +1106,10 @@ def add_manual_invoice_line(
     except ValueError as exc:
         raise HTTPException(
             status_code=422,
-            detail={"code": "INVALID_LINE_KIND", "message": f"Unknown item_kind: {request.item_kind}"},
+            detail={
+                "code": "INVALID_LINE_KIND",
+                "message": f"Unknown item_kind: {request.item_kind}",
+            },
         ) from exc
     description = request.description.strip()
     next_sequence = (
@@ -1316,6 +1349,21 @@ def import_pilot_seeds(request: SeedImportRequest, db: DatabaseSession) -> dict[
     return asdict(result)
 
 
+@router.get("/admin/in-house-repair-data.csv", tags=["admin"])
+def download_synthetic_in_house_data(db: DatabaseSession) -> Response:
+    """Download the governed synthetic in-house observations used by the demo."""
+
+    from app.services.in_house_repair_data import synthetic_in_house_csv
+
+    return Response(
+        content=synthetic_in_house_csv(db),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": 'attachment; filename="claim-guard-in-house-repair-data.csv"'
+        },
+    )
+
+
 @router.get("/benchmarks/dashboard", tags=["benchmarks"])
 def benchmark_dashboard(
     db: DatabaseSession,
@@ -1326,10 +1374,11 @@ def benchmark_dashboard(
     date_to: date | None = None,
     minimum_count: Annotated[int, Query(ge=1, le=1000)] = 1,
     challenge_threshold_pct: Annotated[float, Query(ge=0, le=100)] = 10,
+    source_group: Annotated[str | None, Query(pattern="^(in_house|historical_claim)$")] = None,
 ) -> dict[str, Any]:
     """Read the governed, invoice-only repair benchmarking database."""
 
-    if case_reference:
+    if case_reference and source_group is None:
         try:
             uploaded_dashboard = build_uploaded_batch_benchmark_dashboard(
                 db,
@@ -1354,6 +1403,7 @@ def benchmark_dashboard(
         date_to=date_to,
         minimum_count=minimum_count,
         challenge_threshold_pct=challenge_threshold_pct,
+        source_group=source_group,
     )
 
 
@@ -1362,6 +1412,7 @@ def benchmark_source_observations(
     ontology_item_id: str,
     db: DatabaseSession,
     vehicle_class: str | None = None,
+    source_group: Annotated[str | None, Query(pattern="^(in_house|historical_claim)$")] = None,
     limit: Annotated[int, Query(ge=1, le=250)] = 100,
 ) -> dict[str, Any]:
     """Return the bounded source invoices behind a benchmark row."""
@@ -1373,6 +1424,7 @@ def benchmark_source_observations(
             db,
             ontology_item_id,
             vehicle_class=vehicle_class,
+            source_group=source_group,
             limit=limit,
         ),
     }
@@ -1673,6 +1725,40 @@ def decide_challenge(
         challenge.narrative = (
             f"Handler edited the line Challenge Price to £{edited_price:.2f}. {request.rationale}"
         )
+    elif request.approved and case is not None:
+        # Persist the exact operational recommendation the reviewer saw. The
+        # legacy comparison row can contain an older policy amount; approving
+        # without a manual edit must not silently switch back to that value.
+        live_result = build_case_result(db, case.case_reference)
+        live_challenge = next(
+            (row for row in live_result["challenges"] if row.get("id") == challenge.id),
+            None,
+        )
+        if live_challenge and _decimal_value(live_challenge.get("challenge_amount_net")) > 0:
+            live_price = _decimal_value(live_challenge.get("challenge_price_net")).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+            live_amount = _decimal_value(live_challenge.get("challenge_amount_net")).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+            live_vat = _decimal_value(live_challenge.get("challenge_vat")).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+            invoice_line_net = _decimal_value(
+                live_challenge.get("invoice_net")
+                or (comparison.invoice_line_net if comparison else None)
+            )
+            live_percentage = (
+                live_amount / invoice_line_net * Decimal("100")
+                if invoice_line_net > 0
+                else Decimal("0")
+            ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            challenge.recommended_payable_net = f"{live_price:.2f}"
+            challenge.challenge_net = f"{live_amount:.2f}"
+            challenge.challenge_vat = f"{live_vat:.2f}"
+            challenge.challenge_gross = f"{live_amount + live_vat:.2f}"
+            challenge.challenge_percentage = f"{live_percentage:.2f}"
+            challenge.narrative = request.rationale
     evidence_is_approved = bool(
         comparison
         and (

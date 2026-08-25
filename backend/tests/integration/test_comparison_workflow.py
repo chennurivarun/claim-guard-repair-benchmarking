@@ -140,16 +140,18 @@ def test_native_invoice_comparison_persists_reviewable_results(
         assert result["status"] == "succeeded"
         assert result["line_count"] == 18
         assert result["mapped_count"] == 18
-        assert result["challenged_line_count"] == 2
+        # Governed in-house repair observations now participate in the
+        # three-source decision, so two additional lines clear the gates.
+        assert result["challenged_line_count"] == 4
         assert result["invoice_summaries"] == [
             {
                 "invoice_id": result["invoice_summaries"][0]["invoice_id"],
                 "invoice_price_net": "643.26",
-                "challenge_price_net": "546.51",
-                "challenge_amount_net": "96.75",
-                "vat_impact": "19.35",
-                "gross_effect": "116.10",
-                "challenged_lines": 2,
+                "challenge_price_net": "528.70",
+                "challenge_amount_net": "114.56",
+                "vat_impact": "22.91",
+                "gross_effect": "137.47",
+                "challenged_lines": 4,
             }
         ]
         assert case.status == CaseStatus.COMPARISON_REVIEW
@@ -239,10 +241,11 @@ def test_native_invoice_comparison_persists_reviewable_results(
             else:
                 assert comparison.selected_benchmark_source == "none"
 
-        assert comparable_count == 86
+        # Strict vehicle make/model matching removes formerly broad candidates.
+        assert comparable_count == 54
         serialized = build_case_result(session, case.case_reference)
         serialized_comparisons = serialized["comparisons"]
-        assert sum(len(row["comparables"]) for row in serialized_comparisons) == 86
+        assert sum(len(row["comparables"]) for row in serialized_comparisons) == 54
         assert all("difference_from_ontology_net" in row for row in serialized_comparisons)
         assert all("difference_from_history_net" in row for row in serialized_comparisons)
         workspace = build_claim_workspace(session, case.case_reference)
@@ -258,8 +261,8 @@ def test_native_invoice_comparison_persists_reviewable_results(
             row for row in workspace["lines"] if row["description"] == "Air Filter"
         )
         assert air_filter_workspace["differenceFromOntology"] == 7.6
-        assert air_filter_workspace["differenceFromHistory"] == 6.75
-        assert len(air_filter_workspace["comparables"]) == 9
+        assert air_filter_workspace["differenceFromHistory"] == 7.6
+        assert len(air_filter_workspace["comparables"]) == 3
         assert {
             "priceNet",
             "observedDate",
@@ -279,7 +282,7 @@ def test_native_invoice_comparison_persists_reviewable_results(
             if row.price_comparison_id is not None
         }
         oil_filter = comparison_by_description["Oil Filter"]
-        assert oil_filter.benchmark_formula_json["difference_from_history"] == "2.85"
+        assert oil_filter.benchmark_formula_json["difference_from_history"] == "1.65"
         assert Decimal(challenge_by_comparison[oil_filter.id].challenge_net) == Decimal("0.00")
 
         mot_result = session.scalar(

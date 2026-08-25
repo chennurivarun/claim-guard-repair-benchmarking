@@ -68,8 +68,8 @@ describe("formatStepValue", () => {
 
   it("stringifies numbers and passes through strings", () => {
     expect(formatStepValue(600)).toBe("600")
-    expect(formatStepValue("70% P90 / 30% external")).toBe(
-      "70% P90 / 30% external"
+    expect(formatStepValue("50% in-house / 30% claims / 20% external")).toBe(
+      "50% in-house / 30% claims / 20% external"
     )
   })
 })

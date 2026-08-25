@@ -94,6 +94,19 @@ def _number(value: Decimal | None) -> float | None:
     return float(value) if value is not None else None
 
 
+def _observation_source_group(observation: HistoricalObservation) -> str:
+    metadata = observation.comparability_metadata_json or {}
+    source_file = str(metadata.get("source_file") or "").lower()
+    if "historical_claim" in source_file:
+        return "historical_claim"
+    explicit_group = metadata.get("source_group")
+    if explicit_group:
+        return str(explicit_group)
+    if metadata.get("source") == "ClaimGuard finalised invoice":
+        return "historical_claim"
+    return "historical_claim"
+
+
 def _percentile(values: list[Decimal], percentile: Decimal) -> Decimal:
     """Return an interpolated percentile for an already sorted population."""
 
@@ -193,11 +206,7 @@ def _observation_invoice_reference(observation: HistoricalObservation) -> str:
 
 def _observation_repairer(observation: HistoricalObservation) -> str:
     metadata = observation.comparability_metadata_json or {}
-    return str(
-        metadata.get("garage_name")
-        or observation.workshop_category
-        or "Unknown repairer"
-    )
+    return str(metadata.get("garage_name") or observation.workshop_category or "Unknown repairer")
 
 
 def _repairer_group_key(value: str) -> str:
@@ -237,9 +246,7 @@ def _build_repairer_trends(
                 "ontologyItemId": item_id,
                 "item": item_name,
                 "challengeCount": len(exceptions),
-                "invoiceCount": len(
-                    {str(item["invoiceNumber"]) for item in exceptions}
-                ),
+                "invoiceCount": len({str(item["invoiceNumber"]) for item in exceptions}),
                 "totalDifference": _number(_money(sum(differences, Decimal("0")))),
                 "maximumDifference": _number(_money(max(differences))),
                 "maximumPercentageAboveP90": max(
@@ -350,6 +357,7 @@ def build_benchmark_dashboard(
     date_to: date | None = None,
     minimum_count: int = 1,
     challenge_threshold_pct: Decimal | int | float = Decimal("10"),
+    source_group: str | None = None,
 ) -> dict[str, Any]:
     """Return statistics grouped by canonical repair item and vehicle dimension."""
 
@@ -361,6 +369,8 @@ def build_benchmark_dashboard(
             .order_by(OntologyItem.canonical_name, HistoricalObservation.invoice_date)
         ).all()
     )
+    if source_group:
+        all_rows = [row for row in all_rows if _observation_source_group(row[0]) == source_group]
     available_vehicle_classes = sorted({_vehicle_label(session, row) for row, _ in all_rows})
     available_items = sorted(
         ({"id": item.id, "name": item.canonical_name} for _, item in all_rows),
@@ -420,9 +430,9 @@ def build_benchmark_dashboard(
         )
         for exception in exceptions:
             repairer = str(exception["repairer"])
-            repairer_item_exceptions[
-                (_repairer_group_key(repairer), item_id, item_name)
-            ].append(exception)
+            repairer_item_exceptions[(_repairer_group_key(repairer), item_id, item_name)].append(
+                exception
+            )
         details.append(
             {
                 "ontologyItemId": item_id,
@@ -517,9 +527,8 @@ def build_benchmark_dashboard(
             "dateTo": date_to,
             "minimumCount": max(1, minimum_count),
             "challengeThresholdPct": float(threshold_percentage),
-            "minimumChallengeAmount": _number(
-                DEFAULT_COMPARISON_POLICY.minimum_challenge_amount
-            ),
+            "sourceGroup": source_group,
+            "minimumChallengeAmount": _number(DEFAULT_COMPARISON_POLICY.minimum_challenge_amount),
         },
         "dataQuality": {
             "invoiceObservationCount": len(invoice_rows),
@@ -555,6 +564,7 @@ def benchmark_observations(
     ontology_item_id: str,
     *,
     vehicle_class: str | None = None,
+    source_group: str | None = None,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
     """Return bounded source rows behind a dashboard benchmark."""
@@ -567,11 +577,13 @@ def benchmark_observations(
                 HistoricalObservation.observation_type == InvoiceDocumentRole.INVOICE,
             )
             .order_by(HistoricalObservation.invoice_date.desc())
-            .limit(min(max(limit, 1), 250))
         ).all()
     )
     if vehicle_class:
         rows = [row for row in rows if _vehicle_label(session, row) == vehicle_class]
+    if source_group:
+        rows = [row for row in rows if _observation_source_group(row) == source_group]
+    rows = rows[: min(max(limit, 1), 250)]
     return [
         {
             "id": row.id,
@@ -583,6 +595,7 @@ def benchmark_observations(
             "rawDescription": row.raw_description,
             "sourceRecordId": row.source_record_id,
             "repairer": _observation_repairer(row),
+            "sourceGroup": _observation_source_group(row),
             "source": row.comparability_metadata_json or {},
         }
         for row in rows
@@ -662,6 +675,7 @@ def sync_finalised_case_to_benchmarks(session: Session, case: Case) -> int:
                 approval_status=ApprovalStatus.APPROVED,
                 comparability_metadata_json={
                     "source": "ClaimGuard finalised invoice",
+                    "source_group": "historical_claim",
                     "case_reference": case.case_reference,
                     "invoice_number": invoice.invoice_number,
                     "mapping_status": mapping.final_status.value,
