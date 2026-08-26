@@ -547,8 +547,8 @@ export function BenchmarkDashboardScreen({
         }
         description={
           sourceGroup === "in_house"
-            ? "Review the synthetic in-house repair dataset generated from extracted invoice parts. The configured LLM proposes six independent prices per repair item. Each set is validated and stored as dated samples for every exact vehicle make/model, with an auditable offline fallback."
-            : "Review approved prices from previously finalised claims, kept separate from in-house and external evidence."
+            ? "Review the synthetic in-house repair dataset generated from extracted invoice parts. The configured LLM proposes multiple independent prices per repair item; each set is validated and stored as dated samples for every exact vehicle make/model, with an auditable offline fallback."
+            : "Review prices extracted from uploaded repair invoices, kept separate from in-house and external evidence."
         }
         action={
           <div className="flex flex-wrap gap-2">
@@ -708,8 +708,8 @@ export function BenchmarkDashboardScreen({
         }
         description={
           sourceGroup === "in_house"
-            ? "Only the active synthetic in-house CSV is included. Each P90 is calculated from the six validated prices for that repair item and exact vehicle make/model."
-            : `Only previously finalised claim observations are included here. Red counts require both more than ${challengeThreshold}% above P90 and at least ${preciseMoney(MINIMUM_CHALLENGE_AMOUNT)} difference.`
+            ? "Only the active synthetic in-house CSV is included. Each P90 is calculated from the validated prices stored for that repair item and exact vehicle make/model; the Samples column shows the exact count."
+            : `Only uploaded historical-claim invoice observations are included here. Red counts require both more than ${challengeThreshold}% above P90 and at least ${preciseMoney(MINIMUM_CHALLENGE_AMOUNT)} difference.`
         }
         action={<Badge variant="outline">P90 · interpolated</Badge>}
       >

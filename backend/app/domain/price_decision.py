@@ -168,11 +168,11 @@ def decide_line_price(
             "In-house P90 benchmark",
             str(in_house_value) if in_house_value is not None else None,
             (
-                f"{inputs.p90.method}: £{in_house_value:.2f} from {in_house_count} earlier "
-                f"matching invoice price{'' if in_house_count == 1 else 's'} "
-                f"({in_house_refs}); the current invoice is excluded."
+                f"{inputs.p90.method}: £{in_house_value:.2f} from {in_house_count} validated "
+                f"synthetic in-house price{'' if in_house_count == 1 else 's'} "
+                f"({in_house_refs})."
                 if inputs.p90 and in_house_value is not None
-                else "No eligible earlier in-house invoice price is available."
+                else "No eligible synthetic in-house benchmark price is available."
             ),
         )
     )
@@ -335,9 +335,9 @@ def decide_line_price(
     )
     rationale = f"{evidence_explanations} {price_explanation} {gate_summary}".strip()
     evidence_rationale = (
-        f"{price_explanation} {in_house_count} earlier matching invoice price"
-        f"{'' if in_house_count == 1 else 's'} and {historical_count} eligible previous "
-        "claim prices contributed; current invoice excluded. The mapping model "
+        f"{price_explanation} {in_house_count} validated synthetic in-house price"
+        f"{'' if in_house_count == 1 else 's'} and {historical_count} uploaded historical-claim "
+        f"price{'' if historical_count == 1 else 's'} contributed. The mapping model "
         "selects a bounded repair category and never supplies a price."
     )
 

@@ -306,7 +306,7 @@ export function ApprovalScreen({
             {pendingMappings.length
               ? "Approve the challenged repair item matches before generating the challenge package."
               : caseUnresolvedChallenges
-                ? "Review every uploaded invoice before generating the combined challenge package."
+                ? "Complete every challenged-line decision before generating the combined challenge package."
                 : "All findings are reviewed. Confirm the figures and generate the challenge package."}
           </p>
         </div>
