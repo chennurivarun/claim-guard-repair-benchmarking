@@ -972,7 +972,6 @@ export function ReviewFindingsScreen({
               onClick={() =>
                 void onDecision(line, {
                   approved: true,
-                  challengePriceNet: line.recommended,
                   rationale:
                     "Accepted after reviewing the supported price and its in-house, historical-claims, and external-reference evidence.",
                 })
