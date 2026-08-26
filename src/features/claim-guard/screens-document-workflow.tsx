@@ -142,7 +142,7 @@ function ReusableBankCard({
         </div>
       </CardHeader>
       <CardContent>
-        <p className="truncate text-sm font-medium">{detail}</p>
+        <p className="break-words text-sm font-medium">{detail}</p>
       </CardContent>
       <CardFooter className="justify-between gap-3">
         <Badge variant="outline">Active bank reused</Badge>
