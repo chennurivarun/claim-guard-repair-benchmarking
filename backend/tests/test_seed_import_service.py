@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -27,7 +28,10 @@ from app.models import (
 )
 from app.services.benchmarking import benchmark_observations, build_benchmark_dashboard
 from app.services.in_house_repair_data import (
+    _eligible_unique_items,
+    _invoice_price_anchors,
     ensure_synthetic_in_house_data,
+    is_plausible_repair_label,
     synthetic_in_house_csv,
 )
 from app.services.seed_import_service import import_seed_workbooks
@@ -77,6 +81,45 @@ def seed_engine(tmp_path: Path):
 
 def _count(session: Session, model: type[object]) -> int:
     return session.scalar(select(func.count()).select_from(model)) or 0
+
+
+def test_synthetic_seed_uses_invoice_price_anchor_and_rejects_ocr_noise() -> None:
+    valid_item = SimpleNamespace(
+        id="valid",
+        canonical_code="LAB-FULL",
+        canonical_name="Full / main service labour",
+        unit="job",
+        approval_status=ApprovalStatus.PROVISIONAL,
+        created_by="seed-import:test",
+        synonyms=[SimpleNamespace(synonym="full service")],
+    )
+    duplicate_item = SimpleNamespace(
+        **{**vars(valid_item), "id": "duplicate", "canonical_code": "LAB-FULL-2"}
+    )
+    ocr_noise = SimpleNamespace(
+        id="noise",
+        canonical_code="RSR-NOISE",
+        canonical_name='Invoice Number Date " / / Mileage Fa Job Value',
+        unit="job",
+        approval_status=ApprovalStatus.APPROVED,
+        created_by="claimguard.auto-staging",
+        synonyms=[],
+    )
+    invoice = SimpleNamespace(
+        line_items=[
+            SimpleNamespace(
+                raw_description="Carried Out Full Service",
+                line_total_net="190.00",
+            )
+        ]
+    )
+
+    assert is_plausible_repair_label(valid_item.canonical_name)
+    assert not is_plausible_repair_label(ocr_noise.canonical_name)
+    assert _eligible_unique_items([valid_item, duplicate_item, ocr_noise]) == (valid_item,)
+    assert _invoice_price_anchors([invoice], [valid_item]) == {
+        "LAB-FULL": Decimal("190.00")
+    }
 
 
 def test_synthetic_in_house_csv_has_six_independent_active_rows_per_exact_vehicle(

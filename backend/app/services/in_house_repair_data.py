@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import re
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
@@ -29,7 +30,7 @@ from app.models import (
 )
 
 PROVIDER_NAME = "ClaimGuard synthetic in-house repair data"
-DATASET_SCHEMA_VERSION = "v4"
+DATASET_SCHEMA_VERSION = "v5"
 SAMPLES_PER_COMBINATION = 6
 LLM_BATCH_SIZE = 40
 SYNTHETIC_VEHICLE_MIX = (
@@ -41,12 +42,12 @@ SYNTHETIC_VEHICLE_MIX = (
     ("Volkswagen", "Golf"),
 )
 FALLBACK_SAMPLE_FACTORS = (
-    Decimal("0.82"),
-    Decimal("0.91"),
+    Decimal("0.90"),
+    Decimal("0.94"),
     Decimal("0.98"),
-    Decimal("1.04"),
-    Decimal("1.11"),
-    Decimal("1.19"),
+    Decimal("1.02"),
+    Decimal("1.06"),
+    Decimal("1.10"),
 )
 CSV_COLUMNS = (
     "repair_part",
@@ -63,6 +64,96 @@ def _eligible_for_in_house_pricing(item: OntologyItem) -> bool:
     return item.approval_status == ApprovalStatus.APPROVED or item.created_by.startswith(
         ("seed-import:", "system-bootstrap")
     )
+
+
+def _normalise_label(value: str) -> str:
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", value.casefold()).split())
+
+
+def is_plausible_repair_label(value: str) -> bool:
+    """Reject obvious OCR/header noise before it can become price evidence."""
+
+    label = value.strip()
+    normalised = _normalise_label(label)
+    if len(normalised) < 3 or len(normalised) > 160:
+        return False
+    if any(marker in label for marker in ('"', "@", "|", "©")):
+        return False
+    if "/ /" in label or len(re.findall(r"[A-Za-z]", label)) < 3:
+        return False
+    return True
+
+
+def _eligible_unique_items(ontology_items: list[OntologyItem]) -> tuple[OntologyItem, ...]:
+    """Return one governed, readable ontology record per repair-part label."""
+
+    selected: dict[str, OntologyItem] = {}
+    for item in ontology_items:
+        if not _eligible_for_in_house_pricing(item) or not is_plausible_repair_label(
+            item.canonical_name
+        ):
+            continue
+        key = _normalise_label(item.canonical_name)
+        existing = selected.get(key)
+        if existing is None or (
+            existing.approval_status != ApprovalStatus.APPROVED
+            and item.approval_status == ApprovalStatus.APPROVED
+        ):
+            selected[key] = item
+    return tuple(selected.values())
+
+
+def _median(values: list[Decimal]) -> Decimal:
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / Decimal("2")
+
+
+def _invoice_price_anchors(
+    invoices: list[Invoice], ontology_items: list[OntologyItem]
+) -> dict[str, Decimal]:
+    """Match uploaded invoice descriptions to governed items and return median billed prices."""
+
+    aliases: list[tuple[OntologyItem, tuple[str, ...]]] = []
+    for item in ontology_items:
+        values = {
+            _normalise_label(item.canonical_name),
+            *(
+                _normalise_label(synonym.synonym)
+                for synonym in getattr(item, "synonyms", [])
+                if synonym.synonym
+            ),
+        }
+        aliases.append((item, tuple(value for value in values if value)))
+
+    matched: dict[str, list[Decimal]] = {}
+    for invoice in invoices:
+        for line in getattr(invoice, "line_items", []):
+            description = str(getattr(line, "raw_description", "") or "").strip()
+            raw_amount = getattr(line, "line_total_net", None)
+            if not is_plausible_repair_label(description) or raw_amount is None:
+                continue
+            try:
+                amount = Decimal(str(raw_amount))
+            except ArithmeticError:
+                continue
+            if amount <= 0:
+                continue
+            normalised = _normalise_label(description)
+            candidates: list[tuple[int, OntologyItem]] = []
+            for item, item_aliases in aliases:
+                for alias in item_aliases:
+                    exact = alias == normalised
+                    contained = len(alias.split()) >= 2 and alias in normalised
+                    if exact or contained:
+                        candidates.append((len(alias) + (1000 if exact else 0), item))
+            if not candidates:
+                continue
+            _, selected = max(candidates, key=lambda row: row[0])
+            matched.setdefault(selected.canonical_code, []).append(amount)
+    return {code: _median(amounts) for code, amounts in matched.items()}
 
 
 def _provider(session: Session) -> SourceProvider:
@@ -90,11 +181,7 @@ def _provider(session: Session) -> SourceProvider:
 
 
 def _base_price(item: OntologyItem) -> Decimal:
-    """Return an independent, deterministic synthetic price for a repair item.
-
-    The in-house repair book must be an independent evidence source, so this
-    deliberately does not use the item's external reference price.
-    """
+    """Return a deterministic fallback price when no invoice anchor exists."""
 
     digest = hashlib.sha256(item.canonical_code.encode()).hexdigest()
     return Decimal(40 + int(digest[:8], 16) % 261)
@@ -138,16 +225,19 @@ def _llm_seed_prices(
     invoices: list[Invoice],
     ontology_items: list[OntologyItem],
 ) -> tuple[dict[str, tuple[Decimal, ...]], dict[str, Any]]:
-    """Ask the configured model for six independent synthetic prices per item.
+    """Ask the configured model for six varied synthetic prices per item.
 
     Model output is schema-constrained, allow-listed to supplied repair-item codes,
     range-checked, and never allowed to interrupt comparison. Any missing or invalid
     value receives the deterministic fallback so offline deployments still work.
     """
 
+    invoice_anchors = _invoice_price_anchors(invoices, ontology_items)
     fallback = {
         item.canonical_code: tuple(
-            (_base_price(item) * factor).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            (invoice_anchors.get(item.canonical_code, _base_price(item)) * factor).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
             for factor in FALLBACK_SAMPLE_FACTORS
         )
         for item in ontology_items
@@ -202,8 +292,8 @@ def _llm_seed_prices(
                     "Create a synthetic UK in-house motor-repair price dataset for demonstration. "
                     "Return exactly six different realistic NET GBP prices for every supplied "
                     "repair item, representing plausible in-house invoices on different dates. "
-                    "Use general automotive knowledge and the supplied invoice-part context only; "
-                    "do not copy any external-reference or uploaded billed price. Return only the "
+                    "Use the supplied median invoice anchor where present and vary all six prices "
+                    "within 10% above or below it. Never use an external-reference price. Return only the "
                     "schema-constrained JSON and never invent repair-item codes."
                 ),
                 payload={
@@ -212,6 +302,11 @@ def _llm_seed_prices(
                             "repair_item_code": item.canonical_code,
                             "repair_part": item.canonical_name,
                             "unit": item.unit,
+                            "median_invoice_anchor_net": (
+                                float(invoice_anchors[item.canonical_code])
+                                if item.canonical_code in invoice_anchors
+                                else None
+                            ),
                         }
                         for item in batch
                     ],
@@ -233,6 +328,15 @@ def _llm_seed_prices(
                     and len(amounts) == SAMPLES_PER_COMBINATION
                     and len(set(amounts)) == SAMPLES_PER_COMBINATION
                     and all(Decimal("1") <= amount <= Decimal("10000") for amount in amounts)
+                    and (
+                        code not in invoice_anchors
+                        or all(
+                            invoice_anchors[code] * Decimal("0.90")
+                            <= amount
+                            <= invoice_anchors[code] * Decimal("1.10")
+                            for amount in amounts
+                        )
+                    )
                 ):
                     generated[code] = amounts
         except (LLMProviderError, ValueError, TypeError, ArithmeticError) as exc:
@@ -261,16 +365,19 @@ def ensure_synthetic_in_house_data(
     """Create traceable LLM-seeded synthetic rows for current repair-item coverage."""
 
     vehicles = _vehicle_mix(invoices)
-    if not ontology_items:
+    eligible_items = _eligible_unique_items(ontology_items)
+    if not eligible_items:
         return 0
-    eligible_item_ids = {item.id for item in ontology_items if _eligible_for_in_house_pricing(item)}
+    invoice_anchors = _invoice_price_anchors(invoices, list(eligible_items))
+    eligible_item_ids = {item.id for item in eligible_items}
     generator_key = (
         f"{getattr(llm_client, 'provider', 'fallback')}:"
         f"{getattr(llm_client, 'model_id', 'deterministic')}"
     )
     signature = "|".join(
         [
-            *(f"{item.id}:{item.approval_status.value}" for item in ontology_items),
+            *(f"{item.id}:{item.approval_status.value}" for item in eligible_items),
+            *(f"{code}:{amount}" for code, amount in sorted(invoice_anchors.items())),
             *(f"{make}:{model}" for make, model in vehicles),
             generator_key,
         ]
@@ -346,9 +453,9 @@ def ensure_synthetic_in_house_data(
     base_prices, generation_report = _llm_seed_prices(
         llm_client,
         invoices=invoices,
-        ontology_items=ontology_items,
+        ontology_items=list(eligible_items),
     )
-    row_count = len(ontology_items) * SAMPLES_PER_COMBINATION
+    row_count = len(eligible_items) * SAMPLES_PER_COMBINATION
     source_import = SourceImport(
         provider_id=provider.id,
         dataset_version=dataset_version,
@@ -361,9 +468,10 @@ def ensure_synthetic_in_house_data(
             "active_dataset": True,
             "schema_version": DATASET_SCHEMA_VERSION,
             "source_group": "in_house",
-            "ontology_items": len(ontology_items),
+            "ontology_items": len(eligible_items),
             "vehicle_make_models": len(vehicles),
             "samples_per_repair_item": SAMPLES_PER_COMBINATION,
+            "invoice_anchored_items": len(invoice_anchors),
             **generation_report,
         },
         status=ImportStatus.IMPORTED,
@@ -375,14 +483,10 @@ def ensure_synthetic_in_house_data(
         (invoice.invoice_date for invoice in invoices if invoice.invoice_date),
         default=date.today(),
     )
-    for item in ontology_items:
+    for item in eligible_items:
         for sample_index, sample_price in enumerate(base_prices[item.canonical_code], start=1):
             make, model = vehicles[sample_index - 1]
-            vehicle_digest = hashlib.sha256(f"{make}:{model}".casefold().encode()).hexdigest()
-            vehicle_adjustment = Decimal(85 + int(vehicle_digest[:8], 16) % 31) / Decimal("100")
-            amount = (sample_price * vehicle_adjustment).quantize(
-                Decimal("0.01"), rounding=ROUND_HALF_UP
-            )
+            amount = sample_price
             observed_on = as_of - timedelta(days=sample_index * 90)
             source_record_id = _source_record_id(item, make, model, sample_index)
             session.add(
@@ -413,7 +517,12 @@ def ensure_synthetic_in_house_data(
                         "dataset_role": "in_house_repair_book",
                         "synthetic": True,
                         "active_dataset": True,
-                        "eligible_for_price_decision": item.id in eligible_item_ids,
+                        "eligible_for_price_decision": True,
+                        "invoice_anchor_net": (
+                            str(invoice_anchors[item.canonical_code])
+                            if item.canonical_code in invoice_anchors
+                            else None
+                        ),
                         "invoice_number": source_record_id,
                         "garage_name": "Synthetic in-house garage",
                         "classification_status": "mixed_vehicle_sample",
@@ -456,7 +565,7 @@ def synthetic_in_house_csv(session: Session) -> str:
         )
     ).all()
     output = io.StringIO()
-    writer = csv.writer(output)
+    writer = csv.writer(output, lineterminator="\n")
     writer.writerow(CSV_COLUMNS)
     for row in rows:
         writer.writerow(

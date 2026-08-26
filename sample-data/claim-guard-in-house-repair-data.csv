@@ -1,0 +1,433 @@
+repair_part,billed_amount,vehicle_make,vehicle_model,repair_invoice_date
+AdBlue (per litre),277.34,Ford,Fiesta Zetec,2025-11-09
+AdBlue (per litre),288.66,Ford,Focus Titanium,2025-08-11
+AdBlue (per litre),311.30,VW,Polo Match,2025-02-12
+AdBlue (per litre),254.70,Vauxhall,Adam Glam,2026-05-08
+AdBlue (per litre),266.02,Vauxhall,Adam Jam,2026-02-07
+AdBlue (per litre),299.98,Vauxhall,Corsa SE,2025-05-13
+Air filter (engine),20.04,Ford,Fiesta Zetec,2025-11-09
+Air filter (engine),20.86,Ford,Focus Titanium,2025-08-11
+Air filter (engine),22.50,VW,Polo Match,2025-02-12
+Air filter (engine),18.41,Vauxhall,Adam Glam,2026-05-08
+Air filter (engine),19.22,Vauxhall,Adam Jam,2026-02-07
+Air filter (engine),21.68,Vauxhall,Corsa SE,2025-05-13
+Air-con pressure test & regas,78.40,Ford,Fiesta Zetec,2025-11-09
+Air-con pressure test & regas,81.60,Ford,Focus Titanium,2025-08-11
+Air-con pressure test & regas,88.00,VW,Polo Match,2025-02-12
+Air-con pressure test & regas,72.00,Vauxhall,Adam Glam,2026-05-08
+Air-con pressure test & regas,75.20,Vauxhall,Adam Jam,2026-02-07
+Air-con pressure test & regas,84.80,Vauxhall,Corsa SE,2025-05-13
+Air-con refrigerant gas,259.70,Ford,Fiesta Zetec,2025-11-09
+Air-con refrigerant gas,270.30,Ford,Focus Titanium,2025-08-11
+Air-con refrigerant gas,291.50,VW,Polo Match,2025-02-12
+Air-con refrigerant gas,238.50,Vauxhall,Adam Glam,2026-05-08
+Air-con refrigerant gas,249.10,Vauxhall,Adam Jam,2026-02-07
+Air-con refrigerant gas,280.90,Vauxhall,Corsa SE,2025-05-13
+Alloy wheel (OEM),48.02,Ford,Fiesta Zetec,2025-11-09
+Alloy wheel (OEM),49.98,Ford,Focus Titanium,2025-08-11
+Alloy wheel (OEM),53.90,VW,Polo Match,2025-02-12
+Alloy wheel (OEM),44.10,Vauxhall,Adam Glam,2026-05-08
+Alloy wheel (OEM),46.06,Vauxhall,Adam Jam,2026-02-07
+Alloy wheel (OEM),51.94,Vauxhall,Corsa SE,2025-05-13
+Anti-roll bar bush kit,11.16,Ford,Fiesta Zetec,2025-11-09
+Anti-roll bar bush kit,11.62,Ford,Focus Titanium,2025-08-11
+Anti-roll bar bush kit,12.53,VW,Polo Match,2025-02-12
+Anti-roll bar bush kit,10.25,Vauxhall,Adam Glam,2026-05-08
+Anti-roll bar bush kit,10.71,Vauxhall,Adam Jam,2026-02-07
+Anti-roll bar bush kit,12.07,Vauxhall,Corsa SE,2025-05-13
+Antifreeze / coolant (per litre),19.11,Ford,Fiesta Zetec,2025-11-09
+Antifreeze / coolant (per litre),19.89,Ford,Focus Titanium,2025-08-11
+Antifreeze / coolant (per litre),21.45,VW,Polo Match,2025-02-12
+Antifreeze / coolant (per litre),17.55,Vauxhall,Adam Glam,2026-05-08
+Antifreeze / coolant (per litre),18.33,Vauxhall,Adam Jam,2026-02-07
+Antifreeze / coolant (per litre),20.67,Vauxhall,Corsa SE,2025-05-13
+Auxiliary drive belt,243.04,Ford,Fiesta Zetec,2025-11-09
+Auxiliary drive belt,252.96,Ford,Focus Titanium,2025-08-11
+Auxiliary drive belt,272.80,VW,Polo Match,2025-02-12
+Auxiliary drive belt,223.20,Vauxhall,Adam Glam,2026-05-08
+Auxiliary drive belt,233.12,Vauxhall,Adam Jam,2026-02-07
+Auxiliary drive belt,262.88,Vauxhall,Corsa SE,2025-05-13
+Base service - standard scope (dealer menu),271.46,Ford,Fiesta Zetec,2025-11-09
+Base service - standard scope (dealer menu),282.54,Ford,Focus Titanium,2025-08-11
+Base service - standard scope (dealer menu),304.70,VW,Polo Match,2025-02-12
+Base service - standard scope (dealer menu),249.30,Vauxhall,Adam Glam,2026-05-08
+Base service - standard scope (dealer menu),260.38,Vauxhall,Adam Jam,2026-02-07
+Base service - standard scope (dealer menu),293.62,Vauxhall,Corsa SE,2025-05-13
+Battery,284.20,Ford,Fiesta Zetec,2025-11-09
+Battery,295.80,Ford,Focus Titanium,2025-08-11
+Battery,319.00,VW,Polo Match,2025-02-12
+Battery,261.00,Vauxhall,Adam Glam,2026-05-08
+Battery,272.60,Vauxhall,Adam Jam,2026-02-07
+Battery,307.40,Vauxhall,Corsa SE,2025-05-13
+Belt tensioner,76.44,Ford,Fiesta Zetec,2025-11-09
+Belt tensioner,79.56,Ford,Focus Titanium,2025-08-11
+Belt tensioner,85.80,VW,Polo Match,2025-02-12
+Belt tensioner,70.20,Vauxhall,Adam Glam,2026-05-08
+Belt tensioner,73.32,Vauxhall,Adam Jam,2026-02-07
+Belt tensioner,82.68,Vauxhall,Corsa SE,2025-05-13
+Brake / clutch cleaner,1.47,Ford,Fiesta Zetec,2025-11-09
+Brake / clutch cleaner,1.53,Ford,Focus Titanium,2025-08-11
+Brake / clutch cleaner,1.65,VW,Polo Match,2025-02-12
+Brake / clutch cleaner,1.35,Vauxhall,Adam Glam,2026-05-08
+Brake / clutch cleaner,1.41,Vauxhall,Adam Jam,2026-02-07
+Brake / clutch cleaner,1.59,Vauxhall,Corsa SE,2025-05-13
+Brake pad paste,73.50,Ford,Fiesta Zetec,2025-11-09
+Brake pad paste,76.50,Ford,Focus Titanium,2025-08-11
+Brake pad paste,82.50,VW,Polo Match,2025-02-12
+Brake pad paste,67.50,Vauxhall,Adam Glam,2026-05-08
+Brake pad paste,70.50,Vauxhall,Adam Jam,2026-02-07
+Brake pad paste,79.50,Vauxhall,Corsa SE,2025-05-13
+Brake pad wear sensor,12.45,Ford,Fiesta Zetec,2025-11-09
+Brake pad wear sensor,12.95,Ford,Focus Titanium,2025-08-11
+Brake pad wear sensor,13.97,VW,Polo Match,2025-02-12
+Brake pad wear sensor,11.43,Vauxhall,Adam Glam,2026-05-08
+Brake pad wear sensor,11.94,Vauxhall,Adam Jam,2026-02-07
+Brake pad wear sensor,13.46,Vauxhall,Corsa SE,2025-05-13
+"Bulb (exterior, minor)",3.87,Ford,Fiesta Zetec,2025-11-09
+"Bulb (exterior, minor)",4.03,Ford,Focus Titanium,2025-08-11
+"Bulb (exterior, minor)",4.35,VW,Polo Match,2025-02-12
+"Bulb (exterior, minor)",3.56,Vauxhall,Adam Glam,2026-05-08
+"Bulb (exterior, minor)",3.71,Vauxhall,Adam Jam,2026-02-07
+"Bulb (exterior, minor)",4.19,Vauxhall,Corsa SE,2025-05-13
+Cabin / pollen filter,11.83,Ford,Fiesta Zetec,2025-11-09
+Cabin / pollen filter,12.31,Ford,Focus Titanium,2025-08-11
+Cabin / pollen filter,13.28,VW,Polo Match,2025-02-12
+Cabin / pollen filter,10.86,Vauxhall,Adam Glam,2026-05-08
+Cabin / pollen filter,11.35,Vauxhall,Adam Jam,2026-02-07
+Cabin / pollen filter,12.79,Vauxhall,Corsa SE,2025-05-13
+Cooling system repair labour,131.32,Ford,Fiesta Zetec,2025-11-09
+Cooling system repair labour,136.68,Ford,Focus Titanium,2025-08-11
+Cooling system repair labour,147.40,VW,Polo Match,2025-02-12
+Cooling system repair labour,120.60,Vauxhall,Adam Glam,2026-05-08
+Cooling system repair labour,125.96,Vauxhall,Adam Jam,2026-02-07
+Cooling system repair labour,142.04,Vauxhall,Corsa SE,2025-05-13
+DSG oil & filter kit,273.42,Ford,Fiesta Zetec,2025-11-09
+DSG oil & filter kit,284.58,Ford,Focus Titanium,2025-08-11
+DSG oil & filter kit,306.90,VW,Polo Match,2025-02-12
+DSG oil & filter kit,251.10,Vauxhall,Adam Glam,2026-05-08
+DSG oil & filter kit,262.26,Vauxhall,Adam Jam,2026-02-07
+DSG oil & filter kit,295.74,Vauxhall,Corsa SE,2025-05-13
+Diagnostic inspection,47.94,Ford,Fiesta Zetec,2025-11-09
+Diagnostic inspection,49.90,Ford,Focus Titanium,2025-08-11
+Diagnostic inspection,53.81,VW,Polo Match,2025-02-12
+Diagnostic inspection,44.03,Vauxhall,Adam Glam,2026-05-08
+Diagnostic inspection,45.98,Vauxhall,Adam Jam,2026-02-07
+Diagnostic inspection,51.86,Vauxhall,Corsa SE,2025-05-13
+Engine oil (per litre),47.04,Ford,Fiesta Zetec,2025-11-09
+Engine oil (per litre),48.96,Ford,Focus Titanium,2025-08-11
+Engine oil (per litre),52.80,VW,Polo Match,2025-02-12
+Engine oil (per litre),43.20,Vauxhall,Adam Glam,2026-05-08
+Engine oil (per litre),45.12,Vauxhall,Adam Jam,2026-02-07
+Engine oil (per litre),50.88,Vauxhall,Corsa SE,2025-05-13
+Engine oil stabiliser,245.98,Ford,Fiesta Zetec,2025-11-09
+Engine oil stabiliser,256.02,Ford,Focus Titanium,2025-08-11
+Engine oil stabiliser,276.10,VW,Polo Match,2025-02-12
+Engine oil stabiliser,225.90,Vauxhall,Adam Glam,2026-05-08
+Engine oil stabiliser,235.94,Vauxhall,Adam Jam,2026-02-07
+Engine oil stabiliser,266.06,Vauxhall,Corsa SE,2025-05-13
+Engine oil system flush treatment,8.33,Ford,Fiesta Zetec,2025-11-09
+Engine oil system flush treatment,8.67,Ford,Focus Titanium,2025-08-11
+Engine oil system flush treatment,9.35,VW,Polo Match,2025-02-12
+Engine oil system flush treatment,7.65,Vauxhall,Adam Glam,2026-05-08
+Engine oil system flush treatment,7.99,Vauxhall,Adam Jam,2026-02-07
+Engine oil system flush treatment,9.01,Vauxhall,Corsa SE,2025-05-13
+Exhaust clamp,5.55,Ford,Fiesta Zetec,2025-11-09
+Exhaust clamp,5.77,Ford,Focus Titanium,2025-08-11
+Exhaust clamp,6.23,VW,Polo Match,2025-02-12
+Exhaust clamp,5.09,Vauxhall,Adam Glam,2026-05-08
+Exhaust clamp,5.32,Vauxhall,Adam Jam,2026-02-07
+Exhaust clamp,6.00,Vauxhall,Corsa SE,2025-05-13
+Exhaust flexi pipe,35.49,Ford,Fiesta Zetec,2025-11-09
+Exhaust flexi pipe,36.93,Ford,Focus Titanium,2025-08-11
+Exhaust flexi pipe,39.83,VW,Polo Match,2025-02-12
+Exhaust flexi pipe,32.59,Vauxhall,Adam Glam,2026-05-08
+Exhaust flexi pipe,34.04,Vauxhall,Adam Jam,2026-02-07
+Exhaust flexi pipe,38.38,Vauxhall,Corsa SE,2025-05-13
+Fasteners / grommets (misc),195.02,Ford,Fiesta Zetec,2025-11-09
+Fasteners / grommets (misc),202.98,Ford,Focus Titanium,2025-08-11
+Fasteners / grommets (misc),218.90,VW,Polo Match,2025-02-12
+Fasteners / grommets (misc),179.10,Vauxhall,Adam Glam,2026-05-08
+Fasteners / grommets (misc),187.06,Vauxhall,Adam Jam,2026-02-07
+Fasteners / grommets (misc),210.94,Vauxhall,Corsa SE,2025-05-13
+Fit front brake discs & pads,93.10,Ford,Fiesta Zetec,2025-11-09
+Fit front brake discs & pads,96.90,Ford,Focus Titanium,2025-08-11
+Fit front brake discs & pads,104.50,VW,Polo Match,2025-02-12
+Fit front brake discs & pads,85.50,Vauxhall,Adam Glam,2026-05-08
+Fit front brake discs & pads,89.30,Vauxhall,Adam Jam,2026-02-07
+Fit front brake discs & pads,100.70,Vauxhall,Corsa SE,2025-05-13
+Fit front brake pads (+ wear sensor),141.12,Ford,Fiesta Zetec,2025-11-09
+Fit front brake pads (+ wear sensor),146.88,Ford,Focus Titanium,2025-08-11
+Fit front brake pads (+ wear sensor),158.40,VW,Polo Match,2025-02-12
+Fit front brake pads (+ wear sensor),129.60,Vauxhall,Adam Glam,2026-05-08
+Fit front brake pads (+ wear sensor),135.36,Vauxhall,Adam Jam,2026-02-07
+Fit front brake pads (+ wear sensor),152.64,Vauxhall,Corsa SE,2025-05-13
+Fit rear brake discs & pads,143.08,Ford,Fiesta Zetec,2025-11-09
+Fit rear brake discs & pads,148.92,Ford,Focus Titanium,2025-08-11
+Fit rear brake discs & pads,160.60,VW,Polo Match,2025-02-12
+Fit rear brake discs & pads,131.40,Vauxhall,Adam Glam,2026-05-08
+Fit rear brake discs & pads,137.24,Vauxhall,Adam Jam,2026-02-07
+Fit rear brake discs & pads,154.76,Vauxhall,Corsa SE,2025-05-13
+Fit track rod ends,74.48,Ford,Fiesta Zetec,2025-11-09
+Fit track rod ends,77.52,Ford,Focus Titanium,2025-08-11
+Fit track rod ends,83.60,VW,Polo Match,2025-02-12
+Fit track rod ends,68.40,Vauxhall,Adam Glam,2026-05-08
+Fit track rod ends,71.44,Vauxhall,Adam Jam,2026-02-07
+Fit track rod ends,80.56,Vauxhall,Corsa SE,2025-05-13
+Fit tyre (per job),221.48,Ford,Fiesta Zetec,2025-11-09
+Fit tyre (per job),230.52,Ford,Focus Titanium,2025-08-11
+Fit tyre (per job),248.60,VW,Polo Match,2025-02-12
+Fit tyre (per job),203.40,Vauxhall,Adam Glam,2026-05-08
+Fit tyre (per job),212.44,Vauxhall,Adam Jam,2026-02-07
+Fit tyre (per job),239.56,Vauxhall,Corsa SE,2025-05-13
+Front brake disc,67.87,Ford,Fiesta Zetec,2025-11-09
+Front brake disc,70.65,Ford,Focus Titanium,2025-08-11
+Front brake disc,76.19,VW,Polo Match,2025-02-12
+Front brake disc,62.33,Vauxhall,Adam Glam,2026-05-08
+Front brake disc,65.10,Vauxhall,Adam Jam,2026-02-07
+Front brake disc,73.42,Vauxhall,Corsa SE,2025-05-13
+Front brake disc replacement add-on (pads off),84.28,Ford,Fiesta Zetec,2025-11-09
+Front brake disc replacement add-on (pads off),87.72,Ford,Focus Titanium,2025-08-11
+Front brake disc replacement add-on (pads off),94.60,VW,Polo Match,2025-02-12
+Front brake disc replacement add-on (pads off),77.40,Vauxhall,Adam Glam,2026-05-08
+Front brake disc replacement add-on (pads off),80.84,Vauxhall,Adam Jam,2026-02-07
+Front brake disc replacement add-on (pads off),91.16,Vauxhall,Corsa SE,2025-05-13
+Front brake discs & pads kit,257.74,Ford,Fiesta Zetec,2025-11-09
+Front brake discs & pads kit,268.26,Ford,Focus Titanium,2025-08-11
+Front brake discs & pads kit,289.30,VW,Polo Match,2025-02-12
+Front brake discs & pads kit,236.70,Vauxhall,Adam Glam,2026-05-08
+Front brake discs & pads kit,247.22,Vauxhall,Adam Jam,2026-02-07
+Front brake discs & pads kit,278.78,Vauxhall,Corsa SE,2025-05-13
+Front brake pads (axle set),57.51,Ford,Fiesta Zetec,2025-11-09
+Front brake pads (axle set),59.85,Ford,Focus Titanium,2025-08-11
+Front brake pads (axle set),64.55,VW,Polo Match,2025-02-12
+Front brake pads (axle set),52.81,Vauxhall,Adam Glam,2026-05-08
+Front brake pads (axle set),55.16,Vauxhall,Adam Jam,2026-02-07
+Front brake pads (axle set),62.20,Vauxhall,Corsa SE,2025-05-13
+Front wheel alignment,49.00,Ford,Fiesta Zetec,2025-11-09
+Front wheel alignment,51.00,Ford,Focus Titanium,2025-08-11
+Front wheel alignment,55.00,VW,Polo Match,2025-02-12
+Front wheel alignment,45.00,Vauxhall,Adam Glam,2026-05-08
+Front wheel alignment,47.00,Vauxhall,Adam Jam,2026-02-07
+Front wheel alignment,53.00,Vauxhall,Corsa SE,2025-05-13
+Fuel filter,141.12,Ford,Fiesta Zetec,2025-11-09
+Fuel filter,146.88,Ford,Focus Titanium,2025-08-11
+Fuel filter,158.40,VW,Polo Match,2025-02-12
+Fuel filter,129.60,Vauxhall,Adam Glam,2026-05-08
+Fuel filter,135.36,Vauxhall,Adam Jam,2026-02-07
+Fuel filter,152.64,Vauxhall,Corsa SE,2025-05-13
+Fuel injection treatment,9.80,Ford,Fiesta Zetec,2025-11-09
+Fuel injection treatment,10.20,Ford,Focus Titanium,2025-08-11
+Fuel injection treatment,11.00,VW,Polo Match,2025-02-12
+Fuel injection treatment,9.00,Vauxhall,Adam Glam,2026-05-08
+Fuel injection treatment,9.40,Vauxhall,Adam Jam,2026-02-07
+Fuel injection treatment,10.60,Vauxhall,Corsa SE,2025-05-13
+Full / main service labour,186.20,Ford,Fiesta Zetec,2025-11-09
+Full / main service labour,193.80,Ford,Focus Titanium,2025-08-11
+Full / main service labour,209.00,VW,Polo Match,2025-02-12
+Full / main service labour,171.00,Vauxhall,Adam Glam,2026-05-08
+Full / main service labour,178.60,Vauxhall,Adam Jam,2026-02-07
+Full / main service labour,201.40,Vauxhall,Corsa SE,2025-05-13
+Heater resistor,152.66,Ford,Fiesta Zetec,2025-11-09
+Heater resistor,158.90,Ford,Focus Titanium,2025-08-11
+Heater resistor,171.36,VW,Polo Match,2025-02-12
+Heater resistor,140.20,Vauxhall,Adam Glam,2026-05-08
+Heater resistor,146.43,Vauxhall,Adam Jam,2026-02-07
+Heater resistor,165.13,Vauxhall,Corsa SE,2025-05-13
+"Hourly labour rate (independent garage, Herts / South-East)",111.72,Ford,Fiesta Zetec,2025-11-09
+"Hourly labour rate (independent garage, Herts / South-East)",116.28,Ford,Focus Titanium,2025-08-11
+"Hourly labour rate (independent garage, Herts / South-East)",125.40,VW,Polo Match,2025-02-12
+"Hourly labour rate (independent garage, Herts / South-East)",102.60,Vauxhall,Adam Glam,2026-05-08
+"Hourly labour rate (independent garage, Herts / South-East)",107.16,Vauxhall,Adam Jam,2026-02-07
+"Hourly labour rate (independent garage, Herts / South-East)",120.84,Vauxhall,Corsa SE,2025-05-13
+Interim / small service labour,255.78,Ford,Fiesta Zetec,2025-11-09
+Interim / small service labour,266.22,Ford,Focus Titanium,2025-08-11
+Interim / small service labour,287.10,VW,Polo Match,2025-02-12
+Interim / small service labour,234.90,Vauxhall,Adam Glam,2026-05-08
+Interim / small service labour,245.34,Vauxhall,Adam Jam,2026-02-07
+Interim / small service labour,276.66,Vauxhall,Corsa SE,2025-05-13
+MOT test (Class IV),28.59,Ford,Fiesta Zetec,2025-11-09
+MOT test (Class IV),29.76,Ford,Focus Titanium,2025-08-11
+MOT test (Class IV),32.09,VW,Polo Match,2025-02-12
+MOT test (Class IV),26.26,Vauxhall,Adam Glam,2026-05-08
+MOT test (Class IV),27.42,Vauxhall,Adam Jam,2026-02-07
+MOT test (Class IV),30.93,Vauxhall,Corsa SE,2025-05-13
+"Minor fitting labour (bulbs, sensors, wipers, misc)",227.36,Ford,Fiesta Zetec,2025-11-09
+"Minor fitting labour (bulbs, sensors, wipers, misc)",236.64,Ford,Focus Titanium,2025-08-11
+"Minor fitting labour (bulbs, sensors, wipers, misc)",255.20,VW,Polo Match,2025-02-12
+"Minor fitting labour (bulbs, sensors, wipers, misc)",208.80,Vauxhall,Adam Glam,2026-05-08
+"Minor fitting labour (bulbs, sensors, wipers, misc)",218.08,Vauxhall,Adam Jam,2026-02-07
+"Minor fitting labour (bulbs, sensors, wipers, misc)",245.92,Vauxhall,Corsa SE,2025-05-13
+Oil & filter / environmental disposal charge,4.63,Ford,Fiesta Zetec,2025-11-09
+Oil & filter / environmental disposal charge,4.82,Ford,Focus Titanium,2025-08-11
+Oil & filter / environmental disposal charge,5.20,VW,Polo Match,2025-02-12
+Oil & filter / environmental disposal charge,4.25,Vauxhall,Adam Glam,2026-05-08
+Oil & filter / environmental disposal charge,4.44,Vauxhall,Adam Jam,2026-02-07
+Oil & filter / environmental disposal charge,5.01,Vauxhall,Corsa SE,2025-05-13
+Oil filter,10.39,Ford,Fiesta Zetec,2025-11-09
+Oil filter,10.81,Ford,Focus Titanium,2025-08-11
+Oil filter,11.66,VW,Polo Match,2025-02-12
+Oil filter,9.54,Vauxhall,Adam Glam,2026-05-08
+Oil filter,9.96,Vauxhall,Adam Jam,2026-02-07
+Oil filter,11.24,Vauxhall,Corsa SE,2025-05-13
+Rear brake disc,86.24,Ford,Fiesta Zetec,2025-11-09
+Rear brake disc,89.76,Ford,Focus Titanium,2025-08-11
+Rear brake disc,96.80,VW,Polo Match,2025-02-12
+Rear brake disc,79.20,Vauxhall,Adam Glam,2026-05-08
+Rear brake disc,82.72,Vauxhall,Adam Jam,2026-02-07
+Rear brake disc,93.28,Vauxhall,Corsa SE,2025-05-13
+Rear brake discs & pads kit,292.04,Ford,Fiesta Zetec,2025-11-09
+Rear brake discs & pads kit,303.96,Ford,Focus Titanium,2025-08-11
+Rear brake discs & pads kit,327.80,VW,Polo Match,2025-02-12
+Rear brake discs & pads kit,268.20,Vauxhall,Adam Glam,2026-05-08
+Rear brake discs & pads kit,280.12,Vauxhall,Adam Jam,2026-02-07
+Rear brake discs & pads kit,315.88,Vauxhall,Corsa SE,2025-05-13
+Rear brake pads (axle set),30.38,Ford,Fiesta Zetec,2025-11-09
+Rear brake pads (axle set),31.62,Ford,Focus Titanium,2025-08-11
+Rear brake pads (axle set),34.10,VW,Polo Match,2025-02-12
+Rear brake pads (axle set),27.90,Vauxhall,Adam Glam,2026-05-08
+Rear brake pads (axle set),29.14,Vauxhall,Adam Jam,2026-02-07
+Rear brake pads (axle set),32.86,Vauxhall,Corsa SE,2025-05-13
+Renew air filter (labour),246.96,Ford,Fiesta Zetec,2025-11-09
+Renew air filter (labour),257.04,Ford,Focus Titanium,2025-08-11
+Renew air filter (labour),277.20,VW,Polo Match,2025-02-12
+Renew air filter (labour),226.80,Vauxhall,Adam Glam,2026-05-08
+Renew air filter (labour),236.88,Vauxhall,Adam Jam,2026-02-07
+Renew air filter (labour),267.12,Vauxhall,Corsa SE,2025-05-13
+Renew fuel filter (labour),70.56,Ford,Fiesta Zetec,2025-11-09
+Renew fuel filter (labour),73.44,Ford,Focus Titanium,2025-08-11
+Renew fuel filter (labour),79.20,VW,Polo Match,2025-02-12
+Renew fuel filter (labour),64.80,Vauxhall,Adam Glam,2026-05-08
+Renew fuel filter (labour),67.68,Vauxhall,Adam Jam,2026-02-07
+Renew fuel filter (labour),76.32,Vauxhall,Corsa SE,2025-05-13
+Renew pollen filter (labour),185.22,Ford,Fiesta Zetec,2025-11-09
+Renew pollen filter (labour),192.78,Ford,Focus Titanium,2025-08-11
+Renew pollen filter (labour),207.90,VW,Polo Match,2025-02-12
+Renew pollen filter (labour),170.10,Vauxhall,Adam Glam,2026-05-08
+Renew pollen filter (labour),177.66,Vauxhall,Adam Jam,2026-02-07
+Renew pollen filter (labour),200.34,Vauxhall,Corsa SE,2025-05-13
+Replace DSG oil & filter (labour),151.90,Ford,Fiesta Zetec,2025-11-09
+Replace DSG oil & filter (labour),158.10,Ford,Focus Titanium,2025-08-11
+Replace DSG oil & filter (labour),170.50,VW,Polo Match,2025-02-12
+Replace DSG oil & filter (labour),139.50,Vauxhall,Adam Glam,2026-05-08
+Replace DSG oil & filter (labour),145.70,Vauxhall,Adam Jam,2026-02-07
+Replace DSG oil & filter (labour),164.30,Vauxhall,Corsa SE,2025-05-13
+Replace auxiliary drive belt (labour),288.12,Ford,Fiesta Zetec,2025-11-09
+Replace auxiliary drive belt (labour),299.88,Ford,Focus Titanium,2025-08-11
+Replace auxiliary drive belt (labour),323.40,VW,Polo Match,2025-02-12
+Replace auxiliary drive belt (labour),264.60,Vauxhall,Adam Glam,2026-05-08
+Replace auxiliary drive belt (labour),276.36,Vauxhall,Adam Jam,2026-02-07
+Replace auxiliary drive belt (labour),311.64,Vauxhall,Corsa SE,2025-05-13
+Replace water pump / belt / tensioner (labour),53.90,Ford,Fiesta Zetec,2025-11-09
+Replace water pump / belt / tensioner (labour),56.10,Ford,Focus Titanium,2025-08-11
+Replace water pump / belt / tensioner (labour),60.50,VW,Polo Match,2025-02-12
+Replace water pump / belt / tensioner (labour),49.50,Vauxhall,Adam Glam,2026-05-08
+Replace water pump / belt / tensioner (labour),51.70,Vauxhall,Adam Jam,2026-02-07
+Replace water pump / belt / tensioner (labour),58.30,Vauxhall,Corsa SE,2025-05-13
+Screen wash,1.47,Ford,Fiesta Zetec,2025-11-09
+Screen wash,1.53,Ford,Focus Titanium,2025-08-11
+Screen wash,1.65,VW,Polo Match,2025-02-12
+Screen wash,1.35,Vauxhall,Adam Glam,2026-05-08
+Screen wash,1.41,Vauxhall,Adam Jam,2026-02-07
+Screen wash,1.59,Vauxhall,Corsa SE,2025-05-13
+Screen wash level sensor,30.72,Ford,Fiesta Zetec,2025-11-09
+Screen wash level sensor,31.98,Ford,Focus Titanium,2025-08-11
+Screen wash level sensor,34.49,VW,Polo Match,2025-02-12
+Screen wash level sensor,28.22,Vauxhall,Adam Glam,2026-05-08
+Screen wash level sensor,29.47,Vauxhall,Adam Jam,2026-02-07
+Screen wash level sensor,33.23,Vauxhall,Corsa SE,2025-05-13
+Seals & O-rings (misc),6.24,Ford,Fiesta Zetec,2025-11-09
+Seals & O-rings (misc),6.50,Ford,Focus Titanium,2025-08-11
+Seals & O-rings (misc),7.01,VW,Polo Match,2025-02-12
+Seals & O-rings (misc),5.73,Vauxhall,Adam Glam,2026-05-08
+Seals & O-rings (misc),5.99,Vauxhall,Adam Jam,2026-02-07
+Seals & O-rings (misc),6.75,Vauxhall,Corsa SE,2025-05-13
+Sensor wiring loom,15.48,Ford,Fiesta Zetec,2025-11-09
+Sensor wiring loom,16.12,Ford,Focus Titanium,2025-08-11
+Sensor wiring loom,17.38,VW,Polo Match,2025-02-12
+Sensor wiring loom,14.22,Vauxhall,Adam Glam,2026-05-08
+Sensor wiring loom,14.85,Vauxhall,Adam Jam,2026-02-07
+Sensor wiring loom,16.75,Vauxhall,Corsa SE,2025-05-13
+Spark plug,36.89,Ford,Fiesta Zetec,2025-11-09
+Spark plug,38.39,Ford,Focus Titanium,2025-08-11
+Spark plug,41.40,VW,Polo Match,2025-02-12
+Spark plug,33.88,Vauxhall,Adam Glam,2026-05-08
+Spark plug,35.38,Vauxhall,Adam Jam,2026-02-07
+Spark plug,39.90,Vauxhall,Corsa SE,2025-05-13
+Sump plug / sealing washer,1.47,Ford,Fiesta Zetec,2025-11-09
+Sump plug / sealing washer,1.53,Ford,Focus Titanium,2025-08-11
+Sump plug / sealing washer,1.65,VW,Polo Match,2025-02-12
+Sump plug / sealing washer,1.35,Vauxhall,Adam Glam,2026-05-08
+Sump plug / sealing washer,1.41,Vauxhall,Adam Jam,2026-02-07
+Sump plug / sealing washer,1.59,Vauxhall,Corsa SE,2025-05-13
+Sundries - grease / oils,161.70,Ford,Fiesta Zetec,2025-11-09
+Sundries - grease / oils,168.30,Ford,Focus Titanium,2025-08-11
+Sundries - grease / oils,181.50,VW,Polo Match,2025-02-12
+Sundries - grease / oils,148.50,Vauxhall,Adam Glam,2026-05-08
+Sundries - grease / oils,155.10,Vauxhall,Adam Jam,2026-02-07
+Sundries - grease / oils,174.90,Vauxhall,Corsa SE,2025-05-13
+Thermostat housing,107.52,Ford,Fiesta Zetec,2025-11-09
+Thermostat housing,111.90,Ford,Focus Titanium,2025-08-11
+Thermostat housing,120.68,VW,Polo Match,2025-02-12
+Thermostat housing,98.74,Vauxhall,Adam Glam,2026-05-08
+Thermostat housing,103.13,Vauxhall,Adam Jam,2026-02-07
+Thermostat housing,116.29,Vauxhall,Corsa SE,2025-05-13
+Track rod end,51.96,Ford,Fiesta Zetec,2025-11-09
+Track rod end,54.08,Ford,Focus Titanium,2025-08-11
+Track rod end,58.32,VW,Polo Match,2025-02-12
+Track rod end,47.72,Vauxhall,Adam Glam,2026-05-08
+Track rod end,49.84,Vauxhall,Adam Jam,2026-02-07
+Track rod end,56.20,Vauxhall,Corsa SE,2025-05-13
+Tubeless valve,4.39,Ford,Fiesta Zetec,2025-11-09
+Tubeless valve,4.56,Ford,Focus Titanium,2025-08-11
+Tubeless valve,4.92,VW,Polo Match,2025-02-12
+Tubeless valve,4.03,Vauxhall,Adam Glam,2026-05-08
+Tubeless valve,4.21,Vauxhall,Adam Jam,2026-02-07
+Tubeless valve,4.74,Vauxhall,Corsa SE,2025-05-13
+Tyre 205/55 R17 (runflat class),142.05,Ford,Fiesta Zetec,2025-11-09
+Tyre 205/55 R17 (runflat class),147.85,Ford,Focus Titanium,2025-08-11
+Tyre 205/55 R17 (runflat class),159.45,VW,Polo Match,2025-02-12
+Tyre 205/55 R17 (runflat class),130.46,Vauxhall,Adam Glam,2026-05-08
+Tyre 205/55 R17 (runflat class),136.25,Vauxhall,Adam Jam,2026-02-07
+Tyre 205/55 R17 (runflat class),153.65,Vauxhall,Corsa SE,2025-05-13
+Tyre disposal,8.33,Ford,Fiesta Zetec,2025-11-09
+Tyre disposal,8.67,Ford,Focus Titanium,2025-08-11
+Tyre disposal,9.35,VW,Polo Match,2025-02-12
+Tyre disposal,7.65,Vauxhall,Adam Glam,2026-05-08
+Tyre disposal,7.99,Vauxhall,Adam Jam,2026-02-07
+Tyre disposal,9.01,Vauxhall,Corsa SE,2025-05-13
+Tyre pressure monitoring sensor,249.90,Ford,Fiesta Zetec,2025-11-09
+Tyre pressure monitoring sensor,260.10,Ford,Focus Titanium,2025-08-11
+Tyre pressure monitoring sensor,280.50,VW,Polo Match,2025-02-12
+Tyre pressure monitoring sensor,229.50,Vauxhall,Adam Glam,2026-05-08
+Tyre pressure monitoring sensor,239.70,Vauxhall,Adam Jam,2026-02-07
+Tyre pressure monitoring sensor,270.30,Vauxhall,Corsa SE,2025-05-13
+Vanos / exhaust solenoid,187.18,Ford,Fiesta Zetec,2025-11-09
+Vanos / exhaust solenoid,194.82,Ford,Focus Titanium,2025-08-11
+Vanos / exhaust solenoid,210.10,VW,Polo Match,2025-02-12
+Vanos / exhaust solenoid,171.90,Vauxhall,Adam Glam,2026-05-08
+Vanos / exhaust solenoid,179.54,Vauxhall,Adam Jam,2026-02-07
+Vanos / exhaust solenoid,202.46,Vauxhall,Corsa SE,2025-05-13
+Water pump,90.70,Ford,Fiesta Zetec,2025-11-09
+Water pump,94.40,Ford,Focus Titanium,2025-08-11
+Water pump,101.81,VW,Polo Match,2025-02-12
+Water pump,83.30,Vauxhall,Adam Glam,2026-05-08
+Water pump,87.00,Vauxhall,Adam Jam,2026-02-07
+Water pump,98.10,Vauxhall,Corsa SE,2025-05-13
+Water pump pulley,36.73,Ford,Fiesta Zetec,2025-11-09
+Water pump pulley,38.23,Ford,Focus Titanium,2025-08-11
+Water pump pulley,41.23,VW,Polo Match,2025-02-12
+Water pump pulley,33.73,Vauxhall,Adam Glam,2026-05-08
+Water pump pulley,35.23,Vauxhall,Adam Jam,2026-02-07
+Water pump pulley,39.73,Vauxhall,Corsa SE,2025-05-13
+Wheel balance (per wheel),259.70,Ford,Fiesta Zetec,2025-11-09
+Wheel balance (per wheel),270.30,Ford,Focus Titanium,2025-08-11
+Wheel balance (per wheel),291.50,VW,Polo Match,2025-02-12
+Wheel balance (per wheel),238.50,Vauxhall,Adam Glam,2026-05-08
+Wheel balance (per wheel),249.10,Vauxhall,Adam Jam,2026-02-07
+Wheel balance (per wheel),280.90,Vauxhall,Corsa SE,2025-05-13
+Wiper blade,13.57,Ford,Fiesta Zetec,2025-11-09
+Wiper blade,14.13,Ford,Focus Titanium,2025-08-11
+Wiper blade,15.24,VW,Polo Match,2025-02-12
+Wiper blade,12.47,Vauxhall,Adam Glam,2026-05-08
+Wiper blade,13.02,Vauxhall,Adam Jam,2026-02-07
+Wiper blade,14.68,Vauxhall,Corsa SE,2025-05-13

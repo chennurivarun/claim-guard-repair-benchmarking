@@ -51,6 +51,7 @@ import { StatusBadge } from "./shared"
 import type { ClaimWorkspace, InvoiceLine } from "./types"
 import {
   fetchEngineerAssessments,
+  inHouseRepairCsvUrl,
   type EngineerAssessmentPayload,
   type ClaimInvoiceSummary,
   type MappingDecisionInput,
@@ -617,7 +618,6 @@ export function ReviewFindingsScreen({
   mappingSavingLineId,
   onProposeNewItem,
   researchSaving,
-  onDownloadInHouseCsv,
 }: {
   workspace: ClaimWorkspace
   mode?: "challenged" | "all"
@@ -645,7 +645,6 @@ export function ReviewFindingsScreen({
     values: ResearchFormValues
   ) => Promise<void>
   researchSaving?: boolean
-  onDownloadInHouseCsv?: () => void
 }) {
   const ontologyOptions = workspace.ontologyBank?.items ?? []
   const challenged = workspace.lines
@@ -812,7 +811,7 @@ export function ReviewFindingsScreen({
             </div>
           </CardHeader>
           <CardContent className="flex flex-col gap-6">
-            <div className="grid overflow-hidden rounded-lg border md:grid-cols-3 xl:grid-cols-6">
+            <div className="grid overflow-hidden rounded-lg border md:grid-cols-3 2xl:grid-cols-6">
               <div className="bg-primary/5 p-5">
                 <p className="text-xs font-medium text-muted-foreground">
                   Challenge amount
@@ -829,7 +828,7 @@ export function ReviewFindingsScreen({
                   {formatMoney(line.currentTotal)}
                 </p>
               </div>
-              <div className="border-b p-5 md:border-b-0 xl:border-r">
+              <div className="border-b p-5 md:border-b-0 2xl:border-r">
                 <p className="text-xs font-medium text-muted-foreground">
                   In-house benchmark P90
                 </p>
@@ -837,7 +836,7 @@ export function ReviewFindingsScreen({
                   {line.inHouseP90 == null ? "—" : formatMoney(line.inHouseP90)}
                 </p>
               </div>
-              <div className="border-b p-5 md:border-r xl:border-b-0">
+              <div className="border-b p-5 md:border-r 2xl:border-b-0">
                 <p className="text-xs font-medium text-muted-foreground">
                   Historical claims P90
                 </p>
@@ -847,7 +846,7 @@ export function ReviewFindingsScreen({
                     : formatMoney(line.historicalClaimsP90)}
                 </p>
               </div>
-              <div className="border-b p-5 md:border-b-0 xl:border-r">
+              <div className="border-b p-5 md:border-b-0 2xl:border-r">
                 <p className="text-xs font-medium text-muted-foreground">
                   External reference price
                 </p>
@@ -884,6 +883,39 @@ export function ReviewFindingsScreen({
               </p>
             </div>
 
+            <Card className="bg-muted/20">
+              <CardHeader>
+                <CardTitle className="text-base">Evidence used</CardTitle>
+                <CardDescription>
+                  The source file supporting this line&apos;s in-house benchmark.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="flex flex-col gap-4 rounded-lg border bg-background p-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-sm font-medium">In-house P90</p>
+                    <p className="mt-1 text-xl font-semibold tabular-nums">
+                      {line.inHouseP90 == null
+                        ? "Not available"
+                        : formatMoney(line.inHouseP90)}
+                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Calculated from the active in-house repair dataset.
+                    </p>
+                  </div>
+                  <Button asChild variant="outline" size="sm">
+                    <a
+                      href={inHouseRepairCsvUrl()}
+                      download="claim-guard-in-house-repair-data.csv"
+                    >
+                      <DownloadIcon data-icon="inline-start" />
+                      Download source CSV
+                    </a>
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+
             <Alert>
               <InfoIcon />
               <AlertTitle>How the price was calculated</AlertTitle>
@@ -892,17 +924,6 @@ export function ReviewFindingsScreen({
                   {line.evidenceRationale ??
                     "Supported price is the weighted average of the available sources: 50% in-house benchmark P90, 30% historical claims P90 and 20% external reference price. Missing sources contribute zero and their weights are excluded from the denominator."}
                 </p>
-                {onDownloadInHouseCsv ? (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={onDownloadInHouseCsv}
-                  >
-                    <DownloadIcon data-icon="inline-start" />
-                    Download in-house source CSV
-                  </Button>
-                ) : null}
               </AlertDescription>
             </Alert>
             <CalculationBreakdown steps={line.calculation} />

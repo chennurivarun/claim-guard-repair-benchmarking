@@ -51,7 +51,6 @@ import {
   decideLineMapping,
   downloadBlob,
   downloadDemoJson,
-  downloadInHouseRepairCsv,
   fetchClaimInvoices,
   fetchClaimWorkspace,
   finaliseClaim,
@@ -836,16 +835,6 @@ export function App() {
       )
   }
 
-  function handleInHouseCsvDownload() {
-    void downloadInHouseRepairCsv()
-      .then(() => toast.success("In-house source CSV downloaded"))
-      .catch((error) =>
-        toast.error("The in-house source CSV could not be downloaded", {
-          description: getApiErrorMessage(error),
-        })
-      )
-  }
-
   let screen
   switch (activeScreen) {
     case "claim-liability":
@@ -963,7 +952,6 @@ export function App() {
             mappingSavingLineId={mappingSavingLineId}
             onProposeNewItem={handleResearch}
             researchSaving={researchSaving}
-            onDownloadInHouseCsv={handleInHouseCsvDownload}
           />
         </div>
       ) : (
@@ -992,7 +980,6 @@ export function App() {
           mappingSavingLineId={mappingSavingLineId}
           onProposeNewItem={handleResearch}
           researchSaving={researchSaving}
-          onDownloadInHouseCsv={handleInHouseCsvDownload}
         />
       )
       break

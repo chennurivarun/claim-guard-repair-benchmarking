@@ -145,10 +145,10 @@ def test_native_invoice_comparison_persists_reviewable_results(
             {
                 "invoice_id": result["invoice_summaries"][0]["invoice_id"],
                 "invoice_price_net": "643.26",
-                "challenge_price_net": "610.59",
-                "challenge_amount_net": "32.67",
-                "vat_impact": "6.53",
-                "gross_effect": "39.20",
+                "challenge_price_net": "631.86",
+                "challenge_amount_net": "11.40",
+                "vat_impact": "2.28",
+                "gross_effect": "13.68",
                 "challenged_lines": 1,
             }
         ]
@@ -282,7 +282,7 @@ def test_native_invoice_comparison_persists_reviewable_results(
             if row.price_comparison_id is not None
         }
         oil_filter = comparison_by_description["Oil Filter"]
-        assert oil_filter.benchmark_formula_json["difference_from_history"] == "-107.35"
+        assert oil_filter.benchmark_formula_json["difference_from_history"] == "0.60"
         assert Decimal(challenge_by_comparison[oil_filter.id].challenge_net) == Decimal("0.00")
 
         mot_result = session.scalar(

@@ -141,6 +141,7 @@ The handover includes these fixtures in `sample-data/`, so bootstrap and demo se
 | `1646540_doc_16465407.pdf`     | Image pages are detected, pages 9–12 are rotation-corrected, and ambiguous historical rows are flagged.                                          |
 | `ontology_seed.xlsx`           | 72 ontology items imported; 63 have price observations and all seed observations remain provisional pending approval.                            |
 | `historical_claims_seed.xlsx`  | 191 runtime observations imported; 34 gold-set rows are kept out of live benchmark evidence.                                                     |
+| `claim-guard-in-house-repair-data.csv` | Snapshot of the active synthetic in-house repair observations used to calculate the in-house P90 evidence shown in Review findings.       |
 
 ### Bootstrapped comparison snapshot
 

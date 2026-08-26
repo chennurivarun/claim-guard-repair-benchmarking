@@ -374,6 +374,7 @@ export function BenchmarkDashboardScreen({
 
   useEffect(() => {
     if (apiMode === "demo") return
+    let cancelled = false
     void fetchBenchmarkDashboard({
       caseReference: workspace.claim.id,
       vehicleClass: vehicleClass === "all" ? undefined : vehicleClass,
@@ -383,15 +384,20 @@ export function BenchmarkDashboardScreen({
       sourceGroup,
     })
       .then((result) => {
+        if (cancelled) return
         setDashboard(result)
         setLoadError(null)
       })
       .catch(() => {
+        if (cancelled) return
         setDashboard(emptyDashboard)
         setLoadError(
           "Live benchmark data could not be loaded. No pilot or static prices are being shown."
         )
       })
+    return () => {
+      cancelled = true
+    }
   }, [
     apiMode,
     challengeThreshold,
@@ -547,7 +553,7 @@ export function BenchmarkDashboardScreen({
         }
         description={
           sourceGroup === "in_house"
-            ? "Review the synthetic in-house repair dataset generated from extracted invoice parts. Each repair-item record has six independently priced, dated examples across a mixed set of vehicle makes and models, with an auditable offline fallback when the configured LLM is unavailable."
+            ? "Review the synthetic in-house repair dataset generated from extracted invoice parts. Each repair item has six varied, dated examples anchored to matching uploaded invoice prices when available, with an auditable offline fallback when the configured LLM is unavailable."
             : "Review prices extracted from uploaded repair invoices, kept separate from in-house and external evidence."
         }
         action={

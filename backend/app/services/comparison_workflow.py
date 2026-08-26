@@ -369,7 +369,10 @@ def run_case_comparison(
     # It covers every current repair item and exact uploaded vehicle make/model.
     from app.config import get_settings
     from app.llm.factory import build_synthetic_price_client
-    from app.services.in_house_repair_data import ensure_synthetic_in_house_data
+    from app.services.in_house_repair_data import (
+        ensure_synthetic_in_house_data,
+        is_plausible_repair_label,
+    )
 
     ensure_synthetic_in_house_data(
         session,
@@ -406,10 +409,15 @@ def run_case_comparison(
             if line.id not in eligible_line_ids:
                 continue
             line_count += 1
-            retrieved_candidates = retrieve_candidates(
-                description=line.raw_description,
-                ontology_items=domain_items,
-                part_number=line.part_number,
+            plausible_description = is_plausible_repair_label(line.raw_description)
+            retrieved_candidates = (
+                retrieve_candidates(
+                    description=line.raw_description,
+                    ontology_items=domain_items,
+                    part_number=line.part_number,
+                )
+                if plausible_description or overrides.get(line.id) is not None
+                else ()
             )
             candidates = tuple(
                 candidate
@@ -485,7 +493,7 @@ def run_case_comparison(
                 )
             if selected_item is not None:
                 mapped_count += 1
-            elif override is None and line.raw_description.strip():
+            elif override is None and plausible_description and line.raw_description.strip():
                 # Task B2: a priced line with no accepted mapping (closed ontology,
                 # or the B1 floor rejected the best candidate) auto-stages a
                 # provisional research proposal so a handler can approve a new
@@ -656,6 +664,8 @@ def run_case_comparison(
             review_flags = list(comparison.review_flags)
             if not approved_mapping:
                 review_flags.append("MAPPING_REVIEW_REQUIRED")
+            if not plausible_description:
+                review_flags.append("LOW_QUALITY_DESCRIPTION")
             if below_match_floor:
                 review_flags.append("BELOW_MATCH_FLOOR")
             line_comparisons.append(comparison)

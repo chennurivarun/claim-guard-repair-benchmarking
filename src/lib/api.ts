@@ -761,9 +761,13 @@ export function downloadBlob(blob: Blob, filename: string) {
   URL.revokeObjectURL(url)
 }
 
+export function inHouseRepairCsvUrl() {
+  return apiPath("/api/v1/admin/in-house-repair-data.csv")
+}
+
 export async function downloadInHouseRepairCsv() {
   const response = await fetchWithTimeout(
-    apiPath("/api/v1/admin/in-house-repair-data.csv"),
+    inHouseRepairCsvUrl(),
     undefined,
     30_000
   )
