@@ -29,9 +29,17 @@ from app.models import (
 )
 
 PROVIDER_NAME = "ClaimGuard synthetic in-house repair data"
-DATASET_SCHEMA_VERSION = "v3"
+DATASET_SCHEMA_VERSION = "v4"
 SAMPLES_PER_COMBINATION = 6
 LLM_BATCH_SIZE = 40
+SYNTHETIC_VEHICLE_MIX = (
+    ("Audi", "A4"),
+    ("BMW", "3 Series"),
+    ("Ford", "Focus"),
+    ("Honda", "Civic"),
+    ("Toyota", "Corolla"),
+    ("Volkswagen", "Golf"),
+)
 FALLBACK_SAMPLE_FACTORS = (
     Decimal("0.82"),
     Decimal("0.91"),
@@ -47,6 +55,14 @@ CSV_COLUMNS = (
     "vehicle_model",
     "repair_invoice_date",
 )
+
+
+def _eligible_for_in_house_pricing(item: OntologyItem) -> bool:
+    """Keep governed seed coverage usable while excluding new proposals."""
+
+    return item.approval_status == ApprovalStatus.APPROVED or item.created_by.startswith(
+        ("seed-import:", "system-bootstrap")
+    )
 
 
 def _provider(session: Session) -> SourceProvider:
@@ -90,6 +106,30 @@ def _source_record_id(item: OntologyItem, make: str, model: str, sample: int) ->
         return raw_value
     digest = hashlib.sha256(raw_value.encode()).hexdigest()[:20]
     return f"{raw_value[:178]}:{digest}"
+
+
+def _vehicle_mix(invoices: list[Invoice]) -> tuple[tuple[str, str], ...]:
+    """Return six distinct synthetic vehicle examples, preferring uploaded vehicles."""
+
+    candidates = [
+        *(
+            (invoice.vehicle.make.strip(), invoice.vehicle.model.strip())
+            for invoice in invoices
+            if invoice.vehicle and invoice.vehicle.make and invoice.vehicle.model
+        ),
+        *SYNTHETIC_VEHICLE_MIX,
+    ]
+    unique: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for make, model in candidates:
+        key = (make.casefold(), model.casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append((make, model))
+        if len(unique) == SAMPLES_PER_COMBINATION:
+            break
+    return tuple(unique)
 
 
 def _llm_seed_prices(
@@ -220,22 +260,17 @@ def ensure_synthetic_in_house_data(
 ) -> int:
     """Create traceable LLM-seeded synthetic rows for current repair-item coverage."""
 
-    vehicles = sorted(
-        {
-            (invoice.vehicle.make.strip(), invoice.vehicle.model.strip())
-            for invoice in invoices
-            if invoice.vehicle and invoice.vehicle.make and invoice.vehicle.model
-        }
-    )
-    if not vehicles or not ontology_items:
+    vehicles = _vehicle_mix(invoices)
+    if not ontology_items:
         return 0
+    eligible_item_ids = {item.id for item in ontology_items if _eligible_for_in_house_pricing(item)}
     generator_key = (
         f"{getattr(llm_client, 'provider', 'fallback')}:"
         f"{getattr(llm_client, 'model_id', 'deterministic')}"
     )
     signature = "|".join(
         [
-            *(item.id for item in ontology_items),
+            *(f"{item.id}:{item.approval_status.value}" for item in ontology_items),
             *(f"{make}:{model}" for make, model in vehicles),
             generator_key,
         ]
@@ -280,8 +315,8 @@ def ensure_synthetic_in_house_data(
             metadata = dict(row.comparability_metadata_json or {})
             if metadata.get("active_dataset") is not True:
                 metadata["active_dataset"] = True
-                metadata["eligible_for_price_decision"] = True
-                row.comparability_metadata_json = metadata
+            metadata["eligible_for_price_decision"] = row.ontology_item_id in eligible_item_ids
+            row.comparability_metadata_json = metadata
         session.flush()
         return 0
 
@@ -313,7 +348,7 @@ def ensure_synthetic_in_house_data(
         invoices=invoices,
         ontology_items=ontology_items,
     )
-    row_count = len(ontology_items) * len(vehicles) * SAMPLES_PER_COMBINATION
+    row_count = len(ontology_items) * SAMPLES_PER_COMBINATION
     source_import = SourceImport(
         provider_id=provider.id,
         dataset_version=dataset_version,
@@ -328,7 +363,7 @@ def ensure_synthetic_in_house_data(
             "source_group": "in_house",
             "ontology_items": len(ontology_items),
             "vehicle_make_models": len(vehicles),
-            "samples_per_combination": SAMPLES_PER_COMBINATION,
+            "samples_per_repair_item": SAMPLES_PER_COMBINATION,
             **generation_report,
         },
         status=ImportStatus.IMPORTED,
@@ -341,52 +376,52 @@ def ensure_synthetic_in_house_data(
         default=date.today(),
     )
     for item in ontology_items:
-        for make, model in vehicles:
+        for sample_index, sample_price in enumerate(base_prices[item.canonical_code], start=1):
+            make, model = vehicles[sample_index - 1]
             vehicle_digest = hashlib.sha256(f"{make}:{model}".casefold().encode()).hexdigest()
             vehicle_adjustment = Decimal(85 + int(vehicle_digest[:8], 16) % 31) / Decimal("100")
-            for sample_index, sample_price in enumerate(base_prices[item.canonical_code], start=1):
-                amount = (sample_price * vehicle_adjustment).quantize(
-                    Decimal("0.01"), rounding=ROUND_HALF_UP
+            amount = (sample_price * vehicle_adjustment).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+            observed_on = as_of - timedelta(days=sample_index * 90)
+            source_record_id = _source_record_id(item, make, model, sample_index)
+            session.add(
+                HistoricalObservation(
+                    source_import_id=source_import.id,
+                    source_record_id=source_record_id,
+                    observation_type=InvoiceDocumentRole.INVOICE,
+                    invoice_date=observed_on,
+                    ontology_item_id=item.id,
+                    part_number=item.manufacturer_part_number,
+                    raw_description=item.canonical_name,
+                    vehicle_make=make,
+                    vehicle_model=model,
+                    region=item.region or "UK",
+                    quantity="1",
+                    unit=item.unit,
+                    price_scope=PriceScope.LINE_TOTAL,
+                    unit_price_net=str(amount),
+                    line_total_net=str(amount),
+                    approved_amount_net=str(amount),
+                    settled_amount_net=str(amount),
+                    vat_basis=PriceVatBasis.NET,
+                    settlement_status=SettlementStatus.SETTLED,
+                    approval_status=ApprovalStatus.APPROVED,
+                    comparability_metadata_json={
+                        "source": PROVIDER_NAME,
+                        "source_group": "in_house",
+                        "dataset_role": "in_house_repair_book",
+                        "synthetic": True,
+                        "active_dataset": True,
+                        "eligible_for_price_decision": item.id in eligible_item_ids,
+                        "invoice_number": source_record_id,
+                        "garage_name": "Synthetic in-house garage",
+                        "classification_status": "mixed_vehicle_sample",
+                        "generation_method": generation_report["generation_method"],
+                        "llm_model": generation_report.get("llm_model"),
+                    },
                 )
-                observed_on = as_of - timedelta(days=sample_index * 90)
-                source_record_id = _source_record_id(item, make, model, sample_index)
-                session.add(
-                    HistoricalObservation(
-                        source_import_id=source_import.id,
-                        source_record_id=source_record_id,
-                        observation_type=InvoiceDocumentRole.INVOICE,
-                        invoice_date=observed_on,
-                        ontology_item_id=item.id,
-                        part_number=item.manufacturer_part_number,
-                        raw_description=item.canonical_name,
-                        vehicle_make=make,
-                        vehicle_model=model,
-                        region=item.region or "UK",
-                        quantity="1",
-                        unit=item.unit,
-                        price_scope=PriceScope.LINE_TOTAL,
-                        unit_price_net=str(amount),
-                        line_total_net=str(amount),
-                        approved_amount_net=str(amount),
-                        settled_amount_net=str(amount),
-                        vat_basis=PriceVatBasis.NET,
-                        settlement_status=SettlementStatus.SETTLED,
-                        approval_status=ApprovalStatus.APPROVED,
-                        comparability_metadata_json={
-                            "source": PROVIDER_NAME,
-                            "source_group": "in_house",
-                            "dataset_role": "in_house_repair_book",
-                            "synthetic": True,
-                            "active_dataset": True,
-                            "eligible_for_price_decision": True,
-                            "invoice_number": source_record_id,
-                            "garage_name": "Synthetic in-house garage",
-                            "classification_status": "exact_make_model",
-                            "generation_method": generation_report["generation_method"],
-                            "llm_model": generation_report.get("llm_model"),
-                        },
-                    )
-                )
+            )
     session.flush()
     return row_count
 

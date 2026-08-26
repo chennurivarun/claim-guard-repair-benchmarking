@@ -209,11 +209,13 @@ def test_historical_claims_can_support_a_decision_without_in_house_history() -> 
     assert "40% verified external" in decision.evidence_rationale
 
 
-def test_external_price_alone_never_creates_an_automatic_challenge() -> None:
+def test_external_price_alone_uses_its_available_twenty_percent_weight() -> None:
     decision = decide_line_price(_inputs(p90=None, historical=None, external_price=Decimal("80")))
 
-    assert decision.has_signal is False
-    assert decision.challenge_net == Decimal("0")
+    assert decision.has_signal is True
+    assert decision.supported_price == Decimal("80.00")
+    assert decision.challenge_net == Decimal("120.00")
+    assert "100% verified external" in decision.evidence_rationale
 
 
 # --- Breakdown completeness (C3) --------------------------------------------

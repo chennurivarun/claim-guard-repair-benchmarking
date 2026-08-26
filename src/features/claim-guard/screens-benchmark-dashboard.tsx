@@ -547,7 +547,7 @@ export function BenchmarkDashboardScreen({
         }
         description={
           sourceGroup === "in_house"
-            ? "Review the synthetic in-house repair dataset generated from extracted invoice parts. The configured LLM proposes multiple independent prices per repair item; each set is validated and stored as dated samples for every exact vehicle make/model, with an auditable offline fallback."
+            ? "Review the synthetic in-house repair dataset generated from extracted invoice parts. Each repair-item record has six independently priced, dated examples across a mixed set of vehicle makes and models, with an auditable offline fallback when the configured LLM is unavailable."
             : "Review prices extracted from uploaded repair invoices, kept separate from in-house and external evidence."
         }
         action={
@@ -673,7 +673,7 @@ export function BenchmarkDashboardScreen({
           ? [
               ["Synthetic repair records", dashboard.summary.observationCount],
               ["Benchmark groups", dashboard.benchmarks.length],
-              ["Exact vehicle groups", dashboard.vehicleCategories.length],
+              ["Configured samples per item", 6],
             ]
           : [
               ["Invoice observations", dashboard.summary.observationCount],
@@ -708,7 +708,7 @@ export function BenchmarkDashboardScreen({
         }
         description={
           sourceGroup === "in_house"
-            ? "Only the active synthetic in-house CSV is included. Each P90 is calculated from the validated prices stored for that repair item and exact vehicle make/model; the Samples column shows the exact count."
+            ? "Only the active synthetic in-house CSV is included. Each repair-item record contributes six validated prices across mixed vehicle examples. Equivalent records with the same display name are combined, so the Samples column can be a multiple of six."
             : `Only uploaded historical-claim invoice observations are included here. Red counts require both more than ${challengeThreshold}% above P90 and at least ${preciseMoney(MINIMUM_CHALLENGE_AMOUNT)} difference.`
         }
         action={<Badge variant="outline">P90 · interpolated</Badge>}

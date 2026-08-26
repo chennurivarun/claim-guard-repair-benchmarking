@@ -154,14 +154,14 @@ def _historical_p90_evidence(
     *,
     source_group: str,
 ) -> P90Evidence | None:
-    """Build a strict make/model P90 from already-eligible claim comparables."""
+    """Build an item P90, using strict vehicles only for real historical claims."""
 
     current_make = _normalised_vehicle_value(vehicle.make if vehicle else None)
     current_model = _normalised_vehicle_value(vehicle.model if vehicle else None)
     # A make/model-scoped benchmark must never broaden silently when the
     # current invoice is missing vehicle identity. That case belongs in manual
     # review until the handler supplies both values.
-    if not current_make or not current_model:
+    if source_group != "in_house" and (not current_make or not current_model):
         return None
     eligible: list[dict[str, Any]] = []
     for row in comparables:
@@ -179,7 +179,7 @@ def _historical_p90_evidence(
         if row_source_group != source_group:
             continue
         candidate_vehicle = row.get("vehicle") or {}
-        if (
+        if source_group != "in_house" and (
             _normalised_vehicle_value(candidate_vehicle.get("make")) != current_make
             or _normalised_vehicle_value(candidate_vehicle.get("model")) != current_model
         ):
@@ -197,13 +197,15 @@ def _historical_p90_evidence(
         value=statistics.percentile_90,
         historical_count=statistics.count,
         method=(
-            "In-house repair-book P90 (strict vehicle match)"
+            "In-house repair-book P90 (mixed synthetic vehicles)"
             if source_group == "in_house"
             else "Historical claims P90 (strict vehicle match)"
         ),
         explanation=(
-            "Eligible governed observations were matched to the repair item and, when "
-            "vehicle data was available, the exact make and model."
+            "Synthetic observations were matched to the repair item across the six "
+            "vehicle examples stored in the in-house CSV."
+            if source_group == "in_house"
+            else "Eligible previous claims were matched to the repair item and the exact make and model."
         ),
         contributing_invoices=tuple(
             str((row.get("provenance") or {}).get("claim_reference") or row.get("id"))

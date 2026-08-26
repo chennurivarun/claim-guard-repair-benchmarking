@@ -130,16 +130,18 @@ def test_synthetic_in_house_csv_has_six_independent_active_rows_per_exact_vehicl
         )
         assert len(csv_lines) == 7
         prices = {line.split(",")[1] for line in csv_lines[1:]}
+        vehicles = {tuple(line.split(",")[2:4]) for line in csv_lines[1:]}
         dates = {line.split(",")[4] for line in csv_lines[1:]}
         assert len(prices) == 6
+        assert len(vehicles) == 6
         assert len(dates) == 6
         assert original_external_price not in prices
 
         dashboard = build_benchmark_dashboard(session, source_group="in_house")
         assert dashboard["summary"]["observationCount"] == 6
-        assert dashboard["benchmarks"][0]["vehicleClass"] == "Audi A4"
-        assert dashboard["benchmarks"][0]["vehicleMake"] == "Audi"
-        assert dashboard["benchmarks"][0]["vehicleModel"] == "A4"
+        assert dashboard["benchmarks"][0]["vehicleClass"] == "Mixed synthetic vehicles"
+        assert dashboard["benchmarks"][0]["vehicleMake"] is None
+        assert dashboard["benchmarks"][0]["vehicleModel"] is None
 
 
 def test_governed_seed_import_persists_expected_rows_and_lineage(seed_engine) -> None:

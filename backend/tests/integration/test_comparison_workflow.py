@@ -145,10 +145,10 @@ def test_native_invoice_comparison_persists_reviewable_results(
             {
                 "invoice_id": result["invoice_summaries"][0]["invoice_id"],
                 "invoice_price_net": "643.26",
-                "challenge_price_net": "600.20",
-                "challenge_amount_net": "43.06",
-                "vat_impact": "8.61",
-                "gross_effect": "51.67",
+                "challenge_price_net": "610.59",
+                "challenge_amount_net": "32.67",
+                "vat_impact": "6.53",
+                "gross_effect": "39.20",
                 "challenged_lines": 1,
             }
         ]
@@ -240,11 +240,12 @@ def test_native_invoice_comparison_persists_reviewable_results(
             else:
                 assert comparison.selected_benchmark_source == "none"
 
-        # Strict vehicle make/model matching removes formerly broad candidates.
-        assert comparable_count == 108
+        # Historical claims remain strict to vehicle make/model while each
+        # mapped repair item also receives six mixed-vehicle in-house samples.
+        assert comparable_count == 194
         serialized = build_case_result(session, case.case_reference)
         serialized_comparisons = serialized["comparisons"]
-        assert sum(len(row["comparables"]) for row in serialized_comparisons) == 108
+        assert sum(len(row["comparables"]) for row in serialized_comparisons) == 194
         assert all("difference_from_ontology_net" in row for row in serialized_comparisons)
         assert all("difference_from_history_net" in row for row in serialized_comparisons)
         workspace = build_claim_workspace(session, case.case_reference)
@@ -261,7 +262,7 @@ def test_native_invoice_comparison_persists_reviewable_results(
         )
         assert air_filter_workspace["differenceFromOntology"] is not None
         assert air_filter_workspace["differenceFromHistory"] is not None
-        assert len(air_filter_workspace["comparables"]) == 6
+        assert len(air_filter_workspace["comparables"]) == 15
         assert {
             "priceNet",
             "observedDate",
@@ -281,7 +282,7 @@ def test_native_invoice_comparison_persists_reviewable_results(
             if row.price_comparison_id is not None
         }
         oil_filter = comparison_by_description["Oil Filter"]
-        assert oil_filter.benchmark_formula_json["difference_from_history"] == "-102.73"
+        assert oil_filter.benchmark_formula_json["difference_from_history"] == "-107.35"
         assert Decimal(challenge_by_comparison[oil_filter.id].challenge_net) == Decimal("0.00")
 
         mot_result = session.scalar(

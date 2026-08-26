@@ -132,14 +132,19 @@ def decide_line_price(
         _step(1, "Billed net", str(billed), f"Line billed net amount is £{billed:.2f}."),
     ]
 
-    if inputs.p90 is None and inputs.historical is None:
+    external_price = (
+        money(inputs.external_price)
+        if inputs.external_price is not None and inputs.external_price > ZERO
+        else None
+    )
+
+    if inputs.p90 is None and inputs.historical is None and external_price is None:
         calculation.append(
             _step(
                 2,
                 "P90 benchmark",
                 None,
-                "No verified in-house or historical benchmark is available; "
-                "external evidence alone cannot create an automatic challenge.",
+                "No verified in-house, historical-claims or external-reference price is available.",
             )
         )
         return PriceDecision(
@@ -159,9 +164,6 @@ def decide_line_price(
 
     in_house_value = money(inputs.p90.value) if inputs.p90 else None
     in_house_count = inputs.p90.historical_count if inputs.p90 else 0
-    in_house_refs = (
-        ", ".join(inputs.p90.contributing_invoices) or "none recorded" if inputs.p90 else ""
-    )
     calculation.append(
         _step(
             2,
@@ -169,8 +171,7 @@ def decide_line_price(
             str(in_house_value) if in_house_value is not None else None,
             (
                 f"{inputs.p90.method}: £{in_house_value:.2f} from {in_house_count} validated "
-                f"synthetic in-house price{'' if in_house_count == 1 else 's'} "
-                f"({in_house_refs})."
+                f"synthetic in-house price{'' if in_house_count == 1 else 's'}."
                 if inputs.p90 and in_house_value is not None
                 else "No eligible synthetic in-house benchmark price is available."
             ),
@@ -194,11 +195,6 @@ def decide_line_price(
         )
     )
 
-    external_price = (
-        money(inputs.external_price)
-        if inputs.external_price is not None and inputs.external_price > ZERO
-        else None
-    )
     if external_price is not None:
         approval_label = inputs.external_approval_status or "approved"
         calculation.append(

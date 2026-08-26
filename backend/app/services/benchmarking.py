@@ -217,12 +217,10 @@ def _vehicle_label(session: Session, observation: HistoricalObservation) -> str:
 def _vehicle_dimension(
     session: Session, observation: HistoricalObservation, source_group: str | None
 ) -> str:
-    """Use exact make/model for the in-house book; classifications elsewhere."""
+    """Aggregate the six mixed in-house examples; classify real claims separately."""
 
     if source_group == "in_house":
-        make = (observation.vehicle_make or "Unknown make").strip()
-        model = (observation.vehicle_model or "Unknown model").strip()
-        return f"{make} {model}".strip()
+        return "Mixed synthetic vehicles"
     return _vehicle_label(session, observation)
 
 
@@ -482,8 +480,10 @@ def build_benchmark_dashboard(
                 "ontologyItemId": item_id,
                 "item": item_name,
                 "vehicleClass": vehicle_class,
-                "vehicleMake": observations[0].vehicle_make,
-                "vehicleModel": observations[0].vehicle_model,
+                "vehicleMake": None if source_group == "in_house" else observations[0].vehicle_make,
+                "vehicleModel": None
+                if source_group == "in_house"
+                else observations[0].vehicle_model,
                 "statistics": stats.payload(),
                 "labourStatistics": calculate_benchmark_statistics(labour).payload(),
                 "sourceCount": len(observations),

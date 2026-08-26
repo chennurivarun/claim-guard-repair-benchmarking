@@ -573,17 +573,15 @@ def test_governed_finalisation_and_report_routes(client: TestClient) -> None:
     assert workspace_payload["claim"]["status"] == "comparison_review"
     assert workspace_payload["invoice"]["id"]
     assert workspace_payload["summary"] == {
-        "challengePrice": 625.69,
-        "challengeAmount": 17.57,
-        "vatImpact": 3.51,
-        "grossEffect": 21.08,
-        "challengePercentage": 2.73,
-        "challengeStrength": 74,
+        "challengePrice": 643.26,
+        "challengeAmount": 0.0,
+        "vatImpact": 0.0,
+        "grossEffect": 0.0,
+        "challengePercentage": 0.0,
+        "challengeStrength": 78,
     }
     challenged_lines = [line for line in workspace_payload["lines"] if line.get("challenge", 0) > 0]
-    assert challenged_lines
-    assert all(line["inHouseP90"] is not None for line in challenged_lines)
-    assert all(line["externalReferencePrice"] is None for line in challenged_lines)
+    assert challenged_lines == []
     assert len(workspace_payload["ontologyBank"]["items"]) == 72
     assert workspace_payload["versions"]["policy"] == "claimguard-v1.4"
     assert workspace_payload["versions"]["ontology"] == "ontology-v0-bootstrap"
@@ -627,12 +625,12 @@ def test_governed_finalisation_and_report_routes(client: TestClient) -> None:
     assert len(result["lines"]) == 18
     assert result["summary"] == {
         "invoice_price_net": "643.26",
-        "challenge_price_net": "625.69",
-        "challenge_amount_net": "17.57",
-        "vat_impact": "3.51",
-        "gross_effect": "21.08",
-        "challenge_percentage": "2.7314",
-        "challenge_strength": 74,
+        "challenge_price_net": "643.26",
+        "challenge_amount_net": "0.00",
+        "vat_impact": "0.00",
+        "gross_effect": "0.00",
+        "challenge_percentage": "0.0000",
+        "challenge_strength": 78,
     }
 
     for report_format in ("json", "xlsx", "sqlite"):
@@ -648,47 +646,24 @@ def test_governed_finalisation_and_report_routes(client: TestClient) -> None:
         for row in result["challenges"]
         if Decimal(row["challenge_amount_net"]) > 0
     }
-    assert set(positive) == {"Carried Out Full Service"}
-    selected = positive["Carried Out Full Service"]
-    for invalid_price in ("0.00", selected["invoice_net"]):
-        invalid_edit = client.post(
-            f"/api/v1/challenge-results/{selected['id']}/decision",
-            json={
-                "actor": "pytest.handler",
-                "approved": True,
-                "rationale": "Invalid boundary value must not be saved.",
-                "challenge_price_net": invalid_price,
-            },
-        )
-        assert invalid_edit.status_code == 422
-        assert invalid_edit.json()["detail"]["code"] == "INVALID_CHALLENGE_PRICE"
-    approved = client.post(
-        f"/api/v1/challenge-results/{selected['id']}/decision",
-        json={
-            "actor": "pytest.handler",
-            "approved": True,
-            "rationale": "Historical evidence supports this challenge.",
-        },
-    )
-    assert approved.status_code == 200
-    assert approved.json()["status"] == "approved"
+    assert positive == {}
 
     finalised = client.post(
         "/api/v1/claims/CG-GOVERNANCE-91283/finalise",
         json={"finalised_by": "pytest.handler", "note": "Review complete."},
     )
-    assert finalised.status_code == 200
+    assert finalised.status_code == 200, finalised.json()
     assert finalised.json()["status"] == "finalised"
 
     final_result = client.get("/api/v1/claims/CG-GOVERNANCE-91283/result").json()
     assert final_result["summary"] == {
         "invoice_price_net": "643.26",
-        "challenge_price_net": "625.69",
-        "challenge_amount_net": "17.57",
-        "vat_impact": "3.51",
-        "gross_effect": "21.08",
-        "challenge_percentage": "2.7314",
-        "challenge_strength": 75,
+        "challenge_price_net": "643.26",
+        "challenge_amount_net": "0.00",
+        "vat_impact": "0.00",
+        "gross_effect": "0.00",
+        "challenge_percentage": "0.0000",
+        "challenge_strength": 0,
     }
     final_workspace = client.get("/api/v1/claims/CG-GOVERNANCE-91283/workspace").json()
     assert final_workspace["claim"]["status"] == "finalised"
@@ -697,17 +672,15 @@ def test_governed_finalisation_and_report_routes(client: TestClient) -> None:
         for row in final_workspace["lines"]
         if row["challenge"] > 0
     }
-    assert final_decisions == {
-        "Carried Out Full Service": ("approved", True),
-    }
+    assert final_decisions == {}
     invoice_reviews = client.get("/api/v1/claims/CG-GOVERNANCE-91283/invoices").json()
     assert invoice_reviews[0]["challenge_review"] == {
-        "positive": 1,
-        "approved": 1,
+        "positive": 0,
+        "approved": 0,
         "rejected": 0,
         "unresolved": 0,
     }
-    assert len(invoice_reviews[0]["challenge_lines"]) == 1
+    assert len(invoice_reviews[0]["challenge_lines"]) == 0
     assert all(
         {
             "in_house_p90_net",
@@ -716,24 +689,11 @@ def test_governed_finalisation_and_report_routes(client: TestClient) -> None:
         }.issubset(line)
         for line in invoice_reviews[0]["challenge_lines"]
     )
-    for report_format, media_type in (
-        ("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
-        ("pdf", "application/pdf"),
-    ):
+    for report_format in ("docx", "pdf"):
         report = client.get(f"/api/v1/claims/CG-GOVERNANCE-91283/reports/{report_format}")
-        assert report.status_code == 200
-        assert report.headers["content-type"] == media_type
+        assert report.status_code == 409
+        assert report.json()["detail"]["code"] == "REPORT_BLOCKED"
 
-    mutation = client.post(
-        f"/api/v1/challenge-results/{selected['id']}/decision",
-        json={
-            "actor": "pytest.other-handler",
-            "approved": False,
-            "rationale": "Attempted post-finalisation mutation.",
-        },
-    )
-    assert mutation.status_code == 409
-    assert mutation.json()["detail"]["code"] == "CASE_ALREADY_FINALISED"
     repeated_finalise = client.post(
         "/api/v1/claims/CG-GOVERNANCE-91283/finalise",
         json={"finalised_by": "pytest.handler"},

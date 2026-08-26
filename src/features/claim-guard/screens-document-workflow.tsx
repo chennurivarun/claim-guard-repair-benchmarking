@@ -4,7 +4,6 @@ import {
   AlertCircleIcon,
   ArrowRightIcon,
   FileCheck2Icon,
-  FileSpreadsheetIcon,
   FileTextIcon,
   LoaderCircleIcon,
   LockKeyholeIcon,
@@ -14,7 +13,6 @@ import {
   UploadCloudIcon,
 } from "lucide-react"
 import { toast } from "sonner"
-import { fetchDataReadiness, type DataReadinessPayload } from "@/lib/api"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
@@ -107,54 +105,6 @@ const directoryInputProps = {
   webkitdirectory: "",
   directory: "",
 } as InputHTMLAttributes<HTMLInputElement>
-
-function ReusableBankCard({
-  title,
-  description,
-  status,
-  detail,
-  icon: Icon,
-  actionLabel,
-  onAction,
-}: {
-  title: string
-  description: string
-  status: string
-  detail: string
-  icon: typeof FileSpreadsheetIcon
-  actionLabel?: string
-  onAction?: () => void
-}) {
-  return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex min-w-0 items-start gap-3">
-            <span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-muted">
-              <Icon className="size-5" aria-hidden />
-            </span>
-            <div className="min-w-0">
-              <CardTitle>{title}</CardTitle>
-              <CardDescription>{description}</CardDescription>
-            </div>
-          </div>
-          <StatusBadge status={status} />
-        </div>
-      </CardHeader>
-      <CardContent>
-        <p className="break-words text-sm font-medium">{detail}</p>
-      </CardContent>
-      <CardFooter className="justify-between gap-3">
-        <Badge variant="outline">Active bank reused</Badge>
-        {actionLabel && onAction ? (
-          <Button type="button" size="sm" variant="outline" onClick={onAction}>
-            {actionLabel}
-          </Button>
-        ) : null}
-      </CardFooter>
-    </Card>
-  )
-}
 
 function CurrentInvoiceCard({
   currentDocument,
@@ -305,14 +255,12 @@ export function UploadProcessingWorkflow({
   finalised,
   onProcessed,
   onContinue,
-  onOpenOntologyLibrary,
   onOpenManualReview,
 }: {
   caseReference: string
   finalised: boolean
   onProcessed: (preferredDocumentId?: string) => Promise<void>
   onContinue: () => void
-  onOpenOntologyLibrary: () => void
   onOpenManualReview?: (documentId: string) => void
 }) {
   const [pages, setPages] = useState<DocumentPageRecord[]>([])
@@ -325,7 +273,6 @@ export function UploadProcessingWorkflow({
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [processingResult, setProcessingResult] =
     useState<DocumentProcessingResult | null>(null)
-  const [readiness, setReadiness] = useState<DataReadinessPayload | null>(null)
   const [batchRows, setBatchRows] = useState<
     Array<{
       id: string
@@ -341,13 +288,11 @@ export function UploadProcessingWorkflow({
     void Promise.all([
       fetchDocumentPages(caseReference),
       fetchCaseDocuments(caseReference),
-      fetchDataReadiness(),
     ])
-      .then(([records, documentRecords, ready]) => {
+      .then(([records, documentRecords]) => {
         if (!active) return
         setPages(records)
         setDocuments(documentRecords)
-        setReadiness(ready)
         setPageLoadError(null)
       })
       .catch((error: unknown) => {
@@ -583,16 +528,6 @@ export function UploadProcessingWorkflow({
         }
       />
 
-      <Alert>
-        <LockKeyholeIcon />
-        <AlertTitle>Draft analysis is available</AlertTitle>
-        <AlertDescription>
-          PDF extraction and price analysis may continue regardless of
-          liability. A challenge can only be issued later when liability is
-          handler-confirmed ADMITTED or SPLIT LIABILITY.
-        </AlertDescription>
-      </Alert>
-
       {finalised ? (
         <Alert>
           <LockKeyholeIcon />
@@ -612,7 +547,7 @@ export function UploadProcessingWorkflow({
         </Alert>
       ) : null}
 
-      <div className="grid gap-6 lg:grid-cols-3">
+      <div className="max-w-xl">
         <CurrentInvoiceCard
           currentDocument={currentDocument}
           pageCount={currentDocumentPages.length}
@@ -632,31 +567,7 @@ export function UploadProcessingWorkflow({
           error={uploadError}
           finalised={finalised}
         />
-        <ReusableBankCard
-          title="Ontology / reference bank"
-          description="Optional pilot or admin import"
-          status={readiness?.ontology_items ? "ACTIVE" : "MISSING"}
-          detail={`${readiness?.ontology_items ?? 0} ontology items · active bank reused`}
-          icon={FileSpreadsheetIcon}
-          actionLabel="Open library"
-          onAction={onOpenOntologyLibrary}
-        />
-        <ReusableBankCard
-          title="Previous invoice bank"
-          description="Optional supporting evidence"
-          status={readiness?.historical_claims ? "READY" : "MISSING"}
-          detail={`${readiness?.historical_claims ?? 0} previous repair & service lines`}
-          icon={UploadCloudIcon}
-        />
       </div>
-
-      {readiness && !readiness.ready ? (
-        <Alert variant="destructive">
-          <AlertCircleIcon />
-          <AlertTitle>Reference data is not ready</AlertTitle>
-          <AlertDescription>{readiness.issues.join(" ")}</AlertDescription>
-        </Alert>
-      ) : null}
 
       {batchRows.length ? (
         <DataCard

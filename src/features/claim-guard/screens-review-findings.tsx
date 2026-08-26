@@ -3,6 +3,7 @@ import {
   ArrowLeftIcon,
   ArrowRightIcon,
   CheckIcon,
+  DownloadIcon,
   EyeIcon,
   ExternalLinkIcon,
   InfoIcon,
@@ -14,13 +15,6 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
 import {
   Card,
   CardContent,
@@ -77,14 +71,6 @@ export function ChallengedInvoicesSummary({
   const [lineFilter, setLineFilter] = useState("all")
   const [dateFrom, setDateFrom] = useState("")
   const [dateTo, setDateTo] = useState("")
-  const [externalEvidence, setExternalEvidence] = useState<{
-    method: string
-    sources: NonNullable<
-      NonNullable<
-        ClaimInvoiceSummary["challenge_lines"]
-      >[number]["external_price_sources"]
-    >
-  } | null>(null)
   const needle = query.trim().toLocaleLowerCase()
   const invoiceChoices = invoices.map((invoice) => ({
     id: invoice.id,
@@ -266,32 +252,9 @@ export function ChallengedInvoicesSummary({
                       : formatMoney(line.historical_claims_p90_net)}
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
-                    <div className="flex items-center justify-end gap-1">
-                      <span>
-                        {line.external_price_net == null
-                          ? "—"
-                          : formatMoney(line.external_price_net)}
-                      </span>
-                      {(line.external_price_sources ?? []).length ? (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon-sm"
-                          aria-label={`View external price sources for ${line.description || "invoice line"}`}
-                          onClick={(event) => {
-                            event.stopPropagation()
-                            setExternalEvidence({
-                              method:
-                                line.external_price_method ??
-                                "The lowest approved exact-vehicle external reference price is used.",
-                              sources: line.external_price_sources ?? [],
-                            })
-                          }}
-                        >
-                          <InfoIcon />
-                        </Button>
-                      ) : null}
-                    </div>
+                    {line.external_price_net == null
+                      ? "—"
+                      : formatMoney(line.external_price_net)}
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
                     {formatMoney(line.supported_net)}
@@ -340,42 +303,6 @@ export function ChallengedInvoicesSummary({
           </Table>
         </div>
       </CardContent>
-      <Dialog
-        open={externalEvidence !== null}
-        onOpenChange={(open) => {
-          if (!open) setExternalEvidence(null)
-        }}
-      >
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>External reference price sources</DialogTitle>
-            <DialogDescription>{externalEvidence?.method}</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2">
-            {externalEvidence?.sources.map((source) => (
-              <a
-                key={`${source.source_reference}:${source.price_net}`}
-                href={source.source_reference}
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-start justify-between gap-3 rounded-lg border p-3 hover:bg-muted/50"
-              >
-                <span>
-                  <span className="block font-medium">
-                    {source.source_title || source.source_reference}
-                  </span>
-                  <span className="text-xs text-muted-foreground">
-                    {source.vehicle_make} {source.vehicle_model}
-                  </span>
-                </span>
-                <span className="font-medium whitespace-nowrap tabular-nums">
-                  {formatMoney(source.price_net)}
-                </span>
-              </a>
-            ))}
-          </div>
-        </DialogContent>
-      </Dialog>
     </Card>
   )
 }
@@ -690,6 +617,7 @@ export function ReviewFindingsScreen({
   mappingSavingLineId,
   onProposeNewItem,
   researchSaving,
+  onDownloadInHouseCsv,
 }: {
   workspace: ClaimWorkspace
   mode?: "challenged" | "all"
@@ -717,6 +645,7 @@ export function ReviewFindingsScreen({
     values: ResearchFormValues
   ) => Promise<void>
   researchSaving?: boolean
+  onDownloadInHouseCsv?: () => void
 }) {
   const ontologyOptions = workspace.ontologyBank?.items ?? []
   const challenged = workspace.lines
@@ -950,17 +879,30 @@ export function ReviewFindingsScreen({
               <p className="mt-2 text-xs leading-5 text-muted-foreground">
                 The full policy uses 50% in-house benchmark P90, 30% historical
                 claims P90 and 20% external reference price. Missing governed
-                sources are reweighted proportionally; external evidence alone
-                never creates an automatic challenge.
+                sources contribute zero and the result is divided by the sum of
+                the source weights that are available.
               </p>
             </div>
 
             <Alert>
               <InfoIcon />
               <AlertTitle>How the price was calculated</AlertTitle>
-              <AlertDescription>
-                {line.evidenceRationale ??
-                  "Supported price is the weighted average of the available sources: 50% in-house benchmark P90, 30% historical claims P90 and 20% external reference price. Missing sources contribute zero and their weights are excluded from the denominator. External reference evidence alone never creates an automatic challenge."}
+              <AlertDescription className="space-y-3">
+                <p>
+                  {line.evidenceRationale ??
+                    "Supported price is the weighted average of the available sources: 50% in-house benchmark P90, 30% historical claims P90 and 20% external reference price. Missing sources contribute zero and their weights are excluded from the denominator."}
+                </p>
+                {onDownloadInHouseCsv ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={onDownloadInHouseCsv}
+                  >
+                    <DownloadIcon data-icon="inline-start" />
+                    Download in-house source CSV
+                  </Button>
+                ) : null}
               </AlertDescription>
             </Alert>
             <CalculationBreakdown steps={line.calculation} />

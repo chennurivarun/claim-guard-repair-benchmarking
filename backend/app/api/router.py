@@ -1760,16 +1760,17 @@ def decide_challenge(
             challenge.challenge_gross = f"{live_amount + live_vat:.2f}"
             challenge.challenge_percentage = f"{live_percentage:.2f}"
             challenge.narrative = request.rationale
-    live_decision_has_governed_benchmark = bool(
+    live_decision_has_verified_price_source = bool(
         request.approved
         and live_challenge
         and (
             live_challenge.get("in_house_p90_net") is not None
             or live_challenge.get("historical_claims_p90_net") is not None
+            or live_challenge.get("external_price_net") is not None
         )
     )
     evidence_is_approved = bool(
-        live_decision_has_governed_benchmark
+        live_decision_has_verified_price_source
         or (
             comparison
             and (
@@ -1788,8 +1789,8 @@ def decide_challenge(
             detail={
                 "code": "PROVISIONAL_EVIDENCE",
                 "message": (
-                    "A challenge requires an in-house benchmark P90 or historical claims P90. "
-                    "External reference evidence alone remains available for manual review."
+                    "A challenge requires at least one verified in-house benchmark P90, "
+                    "historical claims P90 or external reference price."
                 ),
             },
         )
@@ -1941,10 +1942,19 @@ def finalise_claim(
             },
         )
     resolved_statuses = {ChallengeStatus.APPROVED, ChallengeStatus.REJECTED}
+    # The review UI and invoice selectors use the unified read-time decision.
+    # Apply that same source of truth here so a stale persisted amount cannot
+    # block finalisation after the current three-source calculation reaches 0.
+    live_result = build_case_result(db, case_reference)
+    live_positive_ids = {
+        row.get("id")
+        for row in live_result.get("challenges", [])
+        if row.get("id") and _decimal_value(row.get("challenge_amount_net")) > 0
+    }
     pending = [
         row.id
         for row in line_challenges
-        if _decimal_value(row.challenge_net) > 0 and row.status not in resolved_statuses
+        if row.id in live_positive_ids and row.status not in resolved_statuses
     ]
     if pending:
         raise HTTPException(
@@ -1970,8 +1980,7 @@ def finalise_claim(
         approved_lines = [
             challenge
             for challenge, _ in invoice_decisions
-            if challenge.status == ChallengeStatus.APPROVED
-            and _decimal_value(challenge.challenge_net) > 0
+            if challenge.status == ChallengeStatus.APPROVED and challenge.id in live_positive_ids
         ]
         challenge_net = sum(
             (_decimal_value(challenge.challenge_net) for challenge in approved_lines),

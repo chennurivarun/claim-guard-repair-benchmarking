@@ -37,7 +37,7 @@ def test_benchmark_statistics_include_requested_values_and_no_fake_mode() -> Non
     assert stats.count == 5
 
 
-def test_strict_p90_requires_current_make_and_model() -> None:
+def test_in_house_p90_aggregates_mixed_synthetic_vehicle_samples() -> None:
     comparable = {
         "id": "history-1",
         "source_type": "historical",
@@ -47,20 +47,13 @@ def test_strict_p90_requires_current_make_and_model() -> None:
         "provenance": {"claim_reference": "INV-1"},
     }
 
-    assert (
-        _historical_p90_evidence(
-            [comparable], SimpleNamespace(make="BMW", model=None), source_group="in_house"
-        )
-        is None
+    evidence = _historical_p90_evidence(
+        [comparable], SimpleNamespace(make="BMW", model=None), source_group="in_house"
     )
-    assert (
-        _historical_p90_evidence(
-            [comparable],
-            SimpleNamespace(make="BMW", model="3 Series"),
-            source_group="in_house",
-        ).value
-        == Decimal("100.00")
-    )
+
+    assert evidence is not None
+    assert evidence.value == Decimal("100.00")
+    assert evidence.method == "In-house repair-book P90 (mixed synthetic vehicles)"
 
 
 def test_external_price_uses_lowest_traceable_exact_vehicle_source() -> None:

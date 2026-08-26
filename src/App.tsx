@@ -8,9 +8,7 @@ import { AppShell } from "@/features/claim-guard/app-shell"
 import { demoWorkspace } from "@/features/claim-guard/demo-data"
 import {
   LineCorrectionSheet,
-  SettlementDialog,
   type LineCorrectionValues,
-  type SettlementValues,
 } from "@/features/claim-guard/review-overlays"
 import {
   AuditReportsScreen,
@@ -19,6 +17,7 @@ import {
 } from "@/features/claim-guard/screens-challenge-admin"
 import { ApprovalScreen } from "@/features/claim-guard/screens-approval"
 import {
+  ClaimLiabilityScreen,
   DocumentPagesScreen,
   ExtractedInvoiceScreen,
   UploadProcessingScreen,
@@ -52,13 +51,13 @@ import {
   decideLineMapping,
   downloadBlob,
   downloadDemoJson,
+  downloadInHouseRepairCsv,
   fetchClaimInvoices,
   fetchClaimWorkspace,
   finaliseClaim,
   getApiErrorMessage,
   loadClaimWorkspace,
   approveResearchItem,
-  recordSettlement,
   requestReport,
   friendlyAiUnavailableMessage,
   runClaimComparison,
@@ -150,13 +149,11 @@ export function App() {
   )
   const [selectedLine, setSelectedLine] = useState<InvoiceLine | null>(null)
   const [correctionOpen, setCorrectionOpen] = useState(false)
-  const [settlementOpen, setSettlementOpen] = useState(false)
   const [liabilitySaving, setLiabilitySaving] = useState(false)
   const [correctionSaving, setCorrectionSaving] = useState(false)
   const [extractionSavingLineId, setExtractionSavingLineId] = useState<
     string | null
   >(null)
-  const [settlementSaving, setSettlementSaving] = useState(false)
   const [challengeSaving, setChallengeSaving] = useState(false)
   const [researchSaving, setResearchSaving] = useState(false)
   const [mappingSavingLineId, setMappingSavingLineId] = useState<string | null>(
@@ -260,11 +257,6 @@ export function App() {
   const caseStatus = workspace.claim.status.toLowerCase()
   const caseFinalised = caseStatus === "finalised"
   const comparisonReady = caseStatus === "comparison_review"
-  const pendingReviewInvoice = invoices.find(
-    (invoice) =>
-      invoice.id !== workspace.invoice.id &&
-      (invoice.challenge_review?.unresolved ?? 0) > 0
-  )
   const caseUnresolvedChallenges = invoices.reduce(
     (total, invoice) => total + (invoice.challenge_review?.unresolved ?? 0),
     0
@@ -569,37 +561,6 @@ export function App() {
     }
   }
 
-  async function handleSettlement(values: SettlementValues) {
-    if (apiMode === "demo") {
-      setSettlementOpen(false)
-      toast.success("Demo settlement captured locally", {
-        description: `Invoice-level net settlement £${values.agreedAmountNet.toFixed(2)}`,
-      })
-      return
-    }
-
-    setSettlementSaving(true)
-    try {
-      await recordSettlement(workspace.invoice.id, {
-        agreedAmountNet: values.agreedAmountNet,
-        agreedAt: new Date().toISOString(),
-        recordedBy: HANDLER_ID,
-        note: "Invoice-level settlement recorded in ClaimGuard.",
-        lines: values.lines,
-      })
-      setSettlementOpen(false)
-      toast.success("Settlement captured", {
-        description: `Invoice-level net settlement £${values.agreedAmountNet.toFixed(2)}`,
-      })
-    } catch (error) {
-      toast.error("Settlement was not saved", {
-        description: getApiErrorMessage(error),
-      })
-    } finally {
-      setSettlementSaving(false)
-    }
-  }
-
   async function handleMappingDecision(
     line: InvoiceLine,
     input: Omit<MappingDecisionInput, "actor">
@@ -728,7 +689,7 @@ export function App() {
         )
       )
       toast.success("Challenge approved and case finalised", {
-        description: "DOCX and PDF negotiation outputs are now available.",
+        description: "The accepted-items CSV and final PDF are now available.",
       })
     } catch (error) {
       setWorkspace((current) => ({
@@ -875,8 +836,31 @@ export function App() {
       )
   }
 
+  function handleInHouseCsvDownload() {
+    void downloadInHouseRepairCsv()
+      .then(() => toast.success("In-house source CSV downloaded"))
+      .catch((error) =>
+        toast.error("The in-house source CSV could not be downloaded", {
+          description: getApiErrorMessage(error),
+        })
+      )
+  }
+
   let screen
   switch (activeScreen) {
+    case "claim-liability":
+      screen = (
+        <ClaimLiabilityScreen
+          workspace={workspace}
+          status={liabilityStatus}
+          confirmed={liabilityConfirmed}
+          onStatusChange={changeLiabilityStatus}
+          onConfirm={(decision) => void handleLiabilityConfirmation(decision)}
+          onContinue={() => navigate("upload-processing")}
+          confirming={liabilitySaving}
+        />
+      )
+      break
     case "upload-processing":
       screen = (
         <UploadProcessingScreen
@@ -911,7 +895,6 @@ export function App() {
             }
           }}
           onContinue={() => navigate("benchmark-dashboard")}
-          onOpenOntologyLibrary={() => navigate("ontology-bank")}
           onOpenManualReview={openManualReview}
         />
       )
@@ -980,6 +963,7 @@ export function App() {
             mappingSavingLineId={mappingSavingLineId}
             onProposeNewItem={handleResearch}
             researchSaving={researchSaving}
+            onDownloadInHouseCsv={handleInHouseCsvDownload}
           />
         </div>
       ) : (
@@ -987,9 +971,8 @@ export function App() {
           invoices={challengedInvoices}
           onOpenInvoice={(invoiceId, lineId) => {
             setSelectedChallengeLineId(lineId)
-            void handleInvoiceSelection(invoiceId).then(() =>
-              setChallengedInvoiceDetailOpen(true)
-            )
+            setChallengedInvoiceDetailOpen(true)
+            void handleInvoiceSelection(invoiceId)
           }}
         />
       )
@@ -1009,6 +992,7 @@ export function App() {
           mappingSavingLineId={mappingSavingLineId}
           onProposeNewItem={handleResearch}
           researchSaving={researchSaving}
+          onDownloadInHouseCsv={handleInHouseCsvDownload}
         />
       )
       break
@@ -1028,43 +1012,16 @@ export function App() {
       screen = (
         <ApprovalScreen
           workspace={workspace}
-          p90ThresholdPct={p90ThresholdPct}
+          invoices={invoices}
           canIssue={issuanceAllowed}
           comparisonReady={comparisonReady}
           finalised={caseFinalised}
           processing={challengeSaving}
           enabled={apiMode === "api"}
           caseUnresolvedChallenges={caseUnresolvedChallenges}
-          pendingInvoiceLabel={
-            pendingReviewInvoice
-              ? pendingReviewInvoice.invoice_number || "another invoice"
-              : null
-          }
-          liabilityStatus={liabilityStatus}
-          liabilityConfirmed={liabilityConfirmed}
-          liabilityConfirming={liabilitySaving}
-          onLiabilityStatusChange={changeLiabilityStatus}
-          onConfirmLiability={(decision) =>
-            void handleLiabilityConfirmation(decision)
-          }
-          onDecision={handleChallengeDecision}
-          onMappingDecision={handleMappingDecision}
-          mappingSavingLineId={mappingSavingLineId}
-          onProposeNewItem={handleResearch}
-          researchSaving={researchSaving}
           onFinalise={() => void handleChallengeFinalise()}
-          onSettlement={() => setSettlementOpen(true)}
           onDownload={handleReport}
           onBackToFindings={() => navigate("price-comparison")}
-          onReviewPendingInvoice={
-            pendingReviewInvoice
-              ? () => {
-                  void handleInvoiceSelection(pendingReviewInvoice.id).then(
-                    () => navigate("price-comparison")
-                  )
-                }
-              : undefined
-          }
         />
       )
       break
@@ -1262,14 +1219,6 @@ export function App() {
         onOpenChange={setCorrectionOpen}
         onSave={(values) => void handleLineCorrection(values)}
         saving={correctionSaving}
-      />
-      <SettlementDialog
-        key={settlementOpen ? "settlement-open" : "settlement-closed"}
-        open={settlementOpen}
-        onOpenChange={setSettlementOpen}
-        onSave={(values) => void handleSettlement(values)}
-        lines={workspace.lines.filter((line) => line.challenge > 0)}
-        saving={settlementSaving}
       />
       <Toaster richColors position="bottom-right" />
     </>
