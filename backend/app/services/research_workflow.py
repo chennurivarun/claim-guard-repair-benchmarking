@@ -593,7 +593,9 @@ def _workflow_result(
     }
 
 
-def _auto_stage_identity_marker(raw_suggestion_json: dict[str, Any] | None) -> dict[str, Any] | None:
+def _auto_stage_identity_marker(
+    raw_suggestion_json: dict[str, Any] | None,
+) -> dict[str, Any] | None:
     if not raw_suggestion_json:
         return None
     workflow = raw_suggestion_json.get("workflow")
@@ -698,9 +700,7 @@ def stage_unmatched_line_proposal(
     if line.unit_price_net is not None:
         unit_price = Decimal(str(line.unit_price_net))
     elif quantity and quantity > 0:
-        unit_price = (line_total_net / quantity).quantize(
-            Decimal("0.01"), rounding=ROUND_HALF_UP
-        )
+        unit_price = (line_total_net / quantity).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     else:
         unit_price = line_total_net
     price_net = _money(unit_price, "line.unit_price_net")
@@ -747,8 +747,7 @@ def stage_unmatched_line_proposal(
         requested_by=actor_id,
         initiated_automatically=True,
         query_text=(
-            f"Auto-staged ontology proposal for an unmatched priced invoice line: "
-            f"{canonical_name}"
+            f"Auto-staged ontology proposal for an unmatched priced invoice line: {canonical_name}"
         ),
         source_allow_list_version=AUTO_STAGE_ALLOW_LIST_VERSION,
         status=ResearchStatus.PROVISIONAL,
@@ -1291,7 +1290,7 @@ def refresh_comparison_after_research(
 
     Existing extraction, mapping, comparison, and challenge rows remain attached
     to the previous processing run. The case is advanced to a new reprocess run,
-    so the approved ontology version and recomputed price evidence are auditable.
+    so the governed repair-item version and recomputed price evidence are auditable.
     """
 
     task = item.research_task

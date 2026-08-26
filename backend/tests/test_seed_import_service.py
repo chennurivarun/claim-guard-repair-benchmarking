@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, event, func, select
@@ -24,11 +26,35 @@ from app.models import (
     VehicleApplicability,
 )
 from app.services.benchmarking import benchmark_observations, build_benchmark_dashboard
+from app.services.in_house_repair_data import (
+    ensure_synthetic_in_house_data,
+    synthetic_in_house_csv,
+)
 from app.services.seed_import_service import import_seed_workbooks
 
 SAMPLE_DATA = Path(__file__).resolve().parents[2] / "sample-data"
 ONTOLOGY_PATH = SAMPLE_DATA / "ontology_seed.xlsx"
 HISTORY_PATH = SAMPLE_DATA / "historical_claims_seed.xlsx"
+
+
+class StubSyntheticPriceClient:
+    provider = "test_llm"
+    model_id = "synthetic-price-model"
+
+    def __init__(self) -> None:
+        self.payloads: list[dict[str, object]] = []
+
+    def complete_json(self, *, payload, **kwargs):
+        self.payloads.append(payload)
+        return {
+            "prices": [
+                {
+                    "repair_item_code": row["repair_item_code"],
+                    "sample_net_prices": [100, 110, 120, 130, 140, 150],
+                }
+                for row in payload["repair_items"]
+            ]
+        }
 
 
 @pytest.fixture()
@@ -51,6 +77,69 @@ def seed_engine(tmp_path: Path):
 
 def _count(session: Session, model: type[object]) -> int:
     return session.scalar(select(func.count()).select_from(model)) or 0
+
+
+def test_synthetic_in_house_csv_has_six_independent_active_rows_per_exact_vehicle(
+    seed_engine,
+) -> None:
+    with Session(seed_engine, expire_on_commit=False) as session:
+        import_seed_workbooks(session, ONTOLOGY_PATH, HISTORY_PATH)
+        item = session.scalars(select(OntologyItem).order_by(OntologyItem.canonical_code)).first()
+        assert item is not None
+        original_external_price = item.reference_price_net
+        invoice = SimpleNamespace(
+            invoice_date=date(2026, 8, 26),
+            vehicle=SimpleNamespace(make="Audi", model="A4"),
+            line_items=[SimpleNamespace(raw_description="Front bumper")],
+        )
+        llm_client = StubSyntheticPriceClient()
+
+        assert (
+            ensure_synthetic_in_house_data(
+                session,
+                invoices=[invoice],
+                ontology_items=[item],
+                llm_client=llm_client,
+            )
+            == 6
+        )
+        assert (
+            ensure_synthetic_in_house_data(
+                session,
+                invoices=[invoice],
+                ontology_items=[item],
+                llm_client=llm_client,
+            )
+            == 0
+        )
+        session.commit()
+
+        assert len(llm_client.payloads) == 1
+        assert llm_client.payloads[0]["observed_invoice_parts"] == ["Front bumper"]
+        source_import = session.scalars(
+            select(SourceImport).order_by(SourceImport.created_at.desc())
+        ).first()
+        assert source_import is not None
+        assert source_import.validation_report_json["generation_method"] == "llm_generated"
+        assert source_import.validation_report_json["llm_generated_items"] == 1
+        assert source_import.validation_report_json["fallback_items"] == 0
+
+        csv_lines = synthetic_in_house_csv(session).strip().splitlines()
+        assert csv_lines[0] == (
+            "repair_part,billed_amount,vehicle_make,vehicle_model,repair_invoice_date"
+        )
+        assert len(csv_lines) == 7
+        prices = {line.split(",")[1] for line in csv_lines[1:]}
+        dates = {line.split(",")[4] for line in csv_lines[1:]}
+        assert len(prices) == 6
+        assert len(dates) == 6
+        assert original_external_price not in prices
+
+        dashboard = build_benchmark_dashboard(session, source_group="in_house")
+        assert dashboard["summary"]["observationCount"] == 6
+        assert dashboard["benchmarks"][0]["vehicleClass"] == "Audi A4"
+        assert dashboard["benchmarks"][0]["vehicleMake"] == "Audi"
+        assert dashboard["benchmarks"][0]["vehicleModel"] == "A4"
 
 
 def test_governed_seed_import_persists_expected_rows_and_lineage(seed_engine) -> None:
@@ -191,8 +280,7 @@ def test_seed_history_populates_the_invoice_only_benchmark_dashboard(seed_engine
         assert all(row["statistics"]["count"] > 0 for row in dashboard["benchmarks"])
         assert all(row["invoiceCount"] > 0 for row in dashboard["benchmarks"])
         assert all(
-            row["exceptionCount"] == len(row["exceptions"])
-            for row in dashboard["benchmarks"]
+            row["exceptionCount"] == len(row["exceptions"]) for row in dashboard["benchmarks"]
         )
         assert all(
             row["exceptionInvoiceCount"]

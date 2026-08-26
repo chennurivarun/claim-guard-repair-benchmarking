@@ -326,7 +326,7 @@ def test_bumper_line_calculation_breakdown_is_complete(p90_session) -> None:
     amount_step = next(step for step in calculation if step["label"] == "Absolute gate")
     assert "passed" in pct_step and "passed" in amount_step
     supported_step = next(step for step in calculation if step["label"] == "Supported price")
-    assert "min(" in supported_step["detail"]
+    assert "weighted evidence price" in supported_step["detail"]
 
 
 def test_mot_line_suppresses_vat_in_workspace(p90_session) -> None:

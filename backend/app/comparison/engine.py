@@ -119,7 +119,7 @@ def _validate_policy(policy: ComparisonPolicy) -> None:
 
 
 def _requires_review(flags: tuple[str, ...]) -> bool:
-    """Weak history is informational when approved ontology safely takes over."""
+    """Weak history is informational when a governed external source safely takes over."""
 
     return any(flag != "HISTORY_SAMPLE_WEAK" for flag in flags)
 
@@ -211,7 +211,7 @@ def compare_line(
     elif ontology_reliable:
         benchmark = ontology_expected
         benchmark_source = BenchmarkSource.ONTOLOGY
-        benchmark_formula = "100% approved ontology (history weak or ineligible)"
+        benchmark_formula = "100% external reference price (history weak or ineligible)"
     elif history_reliable and policy.allow_history_without_ontology:
         benchmark = history_expected
         benchmark_source = BenchmarkSource.HISTORY

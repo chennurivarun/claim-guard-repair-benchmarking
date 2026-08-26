@@ -506,7 +506,8 @@ export function LineEvidenceSheet({
                         Operational price decision
                       </p>
                       <p className="mt-1 font-semibold">
-                        50% in-house + 30% previous claims + 20% verified external
+                        50% in-house benchmark P90 + 30% historical claims P90 +
+                        20% external reference price
                       </p>
                     </div>
                     <Badge
@@ -541,8 +542,8 @@ export function LineEvidenceSheet({
                   </div>
                   <p className="mt-3 text-xs leading-5 text-muted-foreground">
                     {line.evidenceRationale ?? line.rationale} The mapping model
-                    may select a bounded ontology candidate; it never invents a
-                    repair price.
+                    may select a bounded repair item candidate; it never invents
+                    a repair price.
                   </p>
                 </div>
               ) : null}
@@ -553,7 +554,7 @@ export function LineEvidenceSheet({
                     <div className="flex items-start justify-between gap-4">
                       <div>
                         <p className="text-xs font-medium text-muted-foreground">
-                          Uploaded-invoice P90 signal
+                          Historical claims P90 signal
                         </p>
                         <p className="mt-1 font-semibold">{p90.category}</p>
                       </div>
@@ -601,9 +602,10 @@ export function LineEvidenceSheet({
                     </p>
                     <p className="mt-2 text-xs text-muted-foreground">
                       {p90.method}. Current invoice excluded: yes. When an
-                      available governed sources are weighted against the full
-                      50% in-house, 30% previous-claim and 20% verified-external
-                      policy. Missing sources are reweighted proportionally.
+                      available governed source exists, it is weighted against
+                      the full 50% in-house benchmark P90, 30% historical claims
+                      P90 and 20% external reference price policy. Missing
+                      sources are reweighted proportionally.
                     </p>
                   </div>
 
@@ -762,7 +764,7 @@ export function LineEvidenceSheet({
                                       invoiceNumber ||
                                       (comparable.sourceType === "historical"
                                         ? "Historical claim"
-                                        : "Approved price bank")}
+                                        : "External reference source")}
                                     {" · "}
                                     {[invoiceNumber, garageName]
                                       .filter(Boolean)
@@ -889,7 +891,7 @@ export function PriceComparisonScreen({
     <>
       <ScreenHeading
         title={`St Albans Car Clinic · Invoice ${workspace.invoice.number}`}
-        description="Current, ontology and previous-invoice prices remain visible as separate evidence sources."
+        description="Billed price, in-house benchmark P90, historical claims P90 and external reference price remain separate and traceable."
         action={
           <Button onClick={onContinue}>
             Review challenge
@@ -902,10 +904,13 @@ export function PriceComparisonScreen({
 
       <Alert>
         <InfoIcon />
-        <AlertTitle>Policy v1.4 · 60% ontology / 40% historic</AlertTitle>
+        <AlertTitle>Supported price policy · 50% / 30% / 20%</AlertTitle>
         <AlertDescription>
-          A line is challenged only when the positive variance is at least £5
-          and 5%. Unapproved prices never enter the recommendation.
+          The available in-house benchmark P90, historical claims P90 and
+          external reference price are weighted 50%, 30% and 20%. Missing
+          sources are proportionally reweighted. A line is challenged only when
+          the positive variance passes the selected percentage threshold and the
+          £5 minimum.
         </AlertDescription>
       </Alert>
 

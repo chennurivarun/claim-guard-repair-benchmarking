@@ -867,13 +867,10 @@ def build_case_result(
                 }
             )
 
-        # Unified operational price decision (C2/C3): when a line carries a
-        # P90 benchmark signal, it becomes THE operational price/challenge —
-        # overriding the serialized comparison/challenge figures above so
-        # every export agrees with the workspace.  The persisted
-        # PriceComparison/ChallengeResult rows themselves are never mutated;
-        # this only changes what this read-time result graph reports.
-        # Lines without a P90 signal keep their engine-derived values as-is.
+        # Unified operational price decision: this is THE operational
+        # price/challenge for every line. Persisted legacy comparison rows stay
+        # available as audit evidence, but must never leak an obsolete
+        # supported price into the reviewer-facing result.
         benchmark = None if rejected else uploaded_p90_benchmarks.get(line.id)
         invoice = invoices_by_id.get(line.invoice_id)
         vehicle = vehicles.get(invoice.vehicle_id or "") if invoice else None
@@ -927,6 +924,42 @@ def build_case_result(
             is_mot=is_mot,
             p90_threshold_pct=threshold_decimal,
         )
+        if not decision.has_signal:
+            line_record["price_decision"] = {
+                "in_house_p90_net": None,
+                "historical_claims_p90_net": None,
+                "external_price_net": None,
+                "external_price_sources": external_sources,
+                "external_price_method": None,
+                "supported_price_net": None,
+                "challenge_amount_net": Decimal("0"),
+                "challenge_vat": Decimal("0"),
+                "comparison_status": "EXCLUDED" if rejected else None,
+                "rationale": None,
+                "evidence_rationale": (
+                    "This extracted line was rejected and is excluded from price decisions."
+                    if rejected
+                    else (
+                        "No in-house or historical P90 is available. External reference "
+                        "evidence remains visible for manual review but cannot independently "
+                        "create an automatic challenge."
+                    )
+                ),
+                "historical_count": None,
+                "calculation": decision.calculation,
+                "threshold_pct": float(threshold_decimal),
+            }
+            challenge_records[:] = [
+                row for row in challenge_records if row.get("line_id") != line.id
+            ]
+            if comparison is not None and not rejected:
+                comparison_records[-1].update(
+                    {
+                        "challenge_price_net": None,
+                        "decision_comparison_status": "EXCLUDED" if rejected else None,
+                        "decision_calculation": decision.calculation,
+                    }
+                )
         if decision.has_signal:
             human_approved = bool(
                 challenge
@@ -939,14 +972,10 @@ def build_case_result(
                 else decision.supported_price
             )
             challenge_amount = (
-                _decimal(challenge.challenge_net)
-                if human_approved
-                else decision.challenge_net
+                _decimal(challenge.challenge_net) if human_approved else decision.challenge_net
             )
             challenge_vat = (
-                _decimal(challenge.challenge_vat)
-                if human_approved
-                else decision.challenge_vat
+                _decimal(challenge.challenge_vat) if human_approved else decision.challenge_vat
             )
             decision_payload = {
                 "in_house_p90_net": decision.in_house_price,
@@ -1782,12 +1811,12 @@ def build_claim_workspace(
             evidence_parts = []
             if comparison.get("ontology_price_net") is not None:
                 evidence_parts.append(
-                    f"approved ontology £{_decimal(comparison['ontology_price_net']):.2f}"
+                    f"external reference price £{_decimal(comparison['ontology_price_net']):.2f}"
                 )
             if comparison.get("historical_median_net") is not None:
                 count = int(comparison.get("historical_count", 0))
                 evidence_parts.append(
-                    f"historical median £{_decimal(comparison['historical_median_net']):.2f} "
+                    f"historical claims evidence £{_decimal(comparison['historical_median_net']):.2f} "
                     f"from {count} comparable claim{'' if count == 1 else 's'}"
                 )
             rationale = (
@@ -1922,7 +1951,7 @@ def build_claim_workspace(
                     ],
                     "evidenceRationale": eligibility.get("lineage_note")
                     or formula.get("formula")
-                    or "Persisted ontology and historic evidence.",
+                    or "Traceable external reference and historical claims evidence.",
                 }
             )
             if (
@@ -1953,9 +1982,7 @@ def build_claim_workspace(
             workspace_line.update(
                 {
                     "historicalCount": line_decision["historical_count"],
-                    "inHouseP90": _optional_money_float(
-                        line_decision["in_house_p90_net"]
-                    ),
+                    "inHouseP90": _optional_money_float(line_decision["in_house_p90_net"]),
                     "historicalClaimsP90": _optional_money_float(
                         line_decision["historical_claims_p90_net"]
                     ),

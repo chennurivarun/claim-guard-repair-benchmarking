@@ -1673,6 +1673,7 @@ def decide_challenge(
         "challenge_vat": challenge.challenge_vat,
         "recommended_payable_net": challenge.recommended_payable_net,
     }
+    live_challenge: dict[str, Any] | None = None
     if request.challenge_price_net is not None and not request.approved:
         raise HTTPException(
             status_code=422,
@@ -1759,11 +1760,22 @@ def decide_challenge(
             challenge.challenge_gross = f"{live_amount + live_vat:.2f}"
             challenge.challenge_percentage = f"{live_percentage:.2f}"
             challenge.narrative = request.rationale
-    evidence_is_approved = bool(
-        comparison
+    live_decision_has_governed_benchmark = bool(
+        request.approved
+        and live_challenge
         and (
-            comparison.n_comparables >= 3
-            or (ontology_item and ontology_item.approval_status == ApprovalStatus.APPROVED)
+            live_challenge.get("in_house_p90_net") is not None
+            or live_challenge.get("historical_claims_p90_net") is not None
+        )
+    )
+    evidence_is_approved = bool(
+        live_decision_has_governed_benchmark
+        or (
+            comparison
+            and (
+                comparison.n_comparables >= 3
+                or (ontology_item and ontology_item.approval_status == ApprovalStatus.APPROVED)
+            )
         )
     )
     if (
@@ -1775,7 +1787,10 @@ def decide_challenge(
             status_code=409,
             detail={
                 "code": "PROVISIONAL_EVIDENCE",
-                "message": "Approve the ontology evidence or obtain three eligible historic comparables first.",
+                "message": (
+                    "A challenge requires an in-house benchmark P90 or historical claims P90. "
+                    "External reference evidence alone remains available for manual review."
+                ),
             },
         )
     challenge.reviewer_approved = request.approved

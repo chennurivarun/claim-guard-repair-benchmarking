@@ -35,6 +35,8 @@ from app.models import (
     MappingRun,
     OntologyItem,
     OntologyMapping,
+    SourceImport,
+    SourceProvider,
 )
 from app.services.vehicle_category_lookup import lookup_vehicle_category
 from app.services.vehicle_classification import (
@@ -107,6 +109,24 @@ def _observation_source_group(observation: HistoricalObservation) -> str:
     return "historical_claim"
 
 
+def _active_in_house_import_id(session: Session) -> str | None:
+    imports = session.scalars(
+        select(SourceImport)
+        .join(SourceProvider, SourceProvider.id == SourceImport.provider_id)
+        .where(SourceProvider.name == "ClaimGuard synthetic in-house repair data")
+        .order_by(SourceImport.created_at.desc())
+    ).all()
+    active = next(
+        (
+            source_import
+            for source_import in imports
+            if (source_import.validation_report_json or {}).get("active_dataset") is True
+        ),
+        imports[0] if imports else None,
+    )
+    return active.id if active else None
+
+
 def _percentile(values: list[Decimal], percentile: Decimal) -> Decimal:
     """Return an interpolated percentile for an already sorted population."""
 
@@ -122,7 +142,7 @@ def _percentile(values: list[Decimal], percentile: Decimal) -> Decimal:
 def canonical_benchmark_category(description: str, normalised: str | None = None) -> str:
     """Return a stable category for uploaded-line benchmarking.
 
-    Approved ontology mappings remain the primary identity in the comparison
+    Governed repair-item mappings remain the primary identity in the comparison
     workflow.  This narrow fallback keeps common oil-disposal wording together
     before a handler has approved a mapping, which makes the first P90 pilot
     useful immediately after batch extraction.
@@ -192,6 +212,18 @@ def _vehicle_label(session: Session, observation: HistoricalObservation) -> str:
     if match is None:
         return "Unclassified"
     return match.body_type or f"Insurance group {match.group_range} — {match.group_category}"
+
+
+def _vehicle_dimension(
+    session: Session, observation: HistoricalObservation, source_group: str | None
+) -> str:
+    """Use exact make/model for the in-house book; classifications elsewhere."""
+
+    if source_group == "in_house":
+        make = (observation.vehicle_make or "Unknown make").strip()
+        model = (observation.vehicle_model or "Unknown model").strip()
+        return f"{make} {model}".strip()
+    return _vehicle_label(session, observation)
 
 
 def _observation_invoice_reference(observation: HistoricalObservation) -> str:
@@ -371,7 +403,16 @@ def build_benchmark_dashboard(
     )
     if source_group:
         all_rows = [row for row in all_rows if _observation_source_group(row[0]) == source_group]
-    available_vehicle_classes = sorted({_vehicle_label(session, row) for row, _ in all_rows})
+    if source_group == "in_house":
+        active_import_id = _active_in_house_import_id(session)
+        # Fresh installations use the versioned synthetic-data import. Older
+        # databases predate that provider record, so retain their existing
+        # in-house observations until the next comparison creates v2 data.
+        if active_import_id is not None:
+            all_rows = [row for row in all_rows if row[0].source_import_id == active_import_id]
+    available_vehicle_classes = sorted(
+        {_vehicle_dimension(session, row, source_group) for row, _ in all_rows}
+    )
     available_items = sorted(
         ({"id": item.id, "name": item.canonical_name} for _, item in all_rows),
         key=lambda item: str(item["name"]),
@@ -380,7 +421,10 @@ def build_benchmark_dashboard(
     rows = [
         (observation, item)
         for observation, item in all_rows
-        if (vehicle_class is None or _vehicle_label(session, observation) == vehicle_class)
+        if (
+            vehicle_class is None
+            or _vehicle_dimension(session, observation, source_group) == vehicle_class
+        )
         and (ontology_item_id is None or item.id == ontology_item_id)
         and (
             date_from is None
@@ -397,7 +441,7 @@ def build_benchmark_dashboard(
         cost = _observed_cost(observation)
         if cost is None or cost <= 0:
             continue
-        category_label = _vehicle_label(session, observation)
+        category_label = _vehicle_dimension(session, observation, source_group)
         item_groups[(item.id, item.canonical_name, category_label)].append(observation)
         category_values[category_label].append(cost)
         all_costs.append(cost)
@@ -438,6 +482,8 @@ def build_benchmark_dashboard(
                 "ontologyItemId": item_id,
                 "item": item_name,
                 "vehicleClass": vehicle_class,
+                "vehicleMake": observations[0].vehicle_make,
+                "vehicleModel": observations[0].vehicle_model,
                 "statistics": stats.payload(),
                 "labourStatistics": calculate_benchmark_statistics(labour).payload(),
                 "sourceCount": len(observations),
@@ -579,17 +625,23 @@ def benchmark_observations(
             .order_by(HistoricalObservation.invoice_date.desc())
         ).all()
     )
-    if vehicle_class:
-        rows = [row for row in rows if _vehicle_label(session, row) == vehicle_class]
     if source_group:
         rows = [row for row in rows if _observation_source_group(row) == source_group]
+    if source_group == "in_house":
+        active_import_id = _active_in_house_import_id(session)
+        if active_import_id is not None:
+            rows = [row for row in rows if row.source_import_id == active_import_id]
+    if vehicle_class:
+        rows = [
+            row for row in rows if _vehicle_dimension(session, row, source_group) == vehicle_class
+        ]
     rows = rows[: min(max(limit, 1), 250)]
     return [
         {
             "id": row.id,
             "invoiceDate": row.invoice_date,
             "amount": _number(_observed_cost(row)),
-            "vehicleClass": _vehicle_label(session, row),
+            "vehicleClass": _vehicle_dimension(session, row, source_group),
             "vehicleMake": row.vehicle_make,
             "vehicleModel": row.vehicle_model,
             "rawDescription": row.raw_description,

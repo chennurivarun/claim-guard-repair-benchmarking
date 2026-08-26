@@ -269,7 +269,10 @@ export function ApprovalScreen({
     input: Omit<MappingDecisionInput, "actor">
   ) => Promise<void>
   mappingSavingLineId?: string | null
-  onProposeNewItem?: (line: InvoiceLine, values: ResearchFormValues) => Promise<void>
+  onProposeNewItem?: (
+    line: InvoiceLine,
+    values: ResearchFormValues
+  ) => Promise<void>
   researchSaving?: boolean
 }) {
   const [evidenceLine, setEvidenceLine] = useState<InvoiceLine | null>(null)
@@ -282,9 +285,7 @@ export function ApprovalScreen({
     (line) =>
       !["approved", "rejected"].includes(line.challengeStatus ?? "review")
   )
-  const pendingMappings = challenged.filter(
-    (line) => !isMappingApproved(line)
-  )
+  const pendingMappings = challenged.filter((line) => !isMappingApproved(line))
   const reviewed = challenged.length - unresolved.length
   const canFinalise =
     enabled &&
@@ -440,7 +441,8 @@ export function ApprovalScreen({
             Policy {workspace.versions?.policy ?? "v1.4"}
           </p>
           <p className="text-xs text-muted-foreground">
-            50% in-house P90 · 30% previous claims · 20% verified external
+            50% in-house benchmark P90 · 30% historical claims P90 · 20%
+            external reference price
           </p>
         </div>
       </div>

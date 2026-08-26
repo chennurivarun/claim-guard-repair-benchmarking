@@ -7,11 +7,8 @@ that policy exactly, but in ``Decimal`` arithmetic, and additionally emits an
 ordered, machine-readable ``calculation`` breakdown so the workspace, the
 result graph, and every export can show (and agree on) the same steps.
 
-The legacy 60/40 comparison-engine results (``PriceComparison`` /
-``ChallengeResult`` rows) are untouched by this module — they remain
-persisted audit/evidence detail.  This module only decides, at read time,
-what the *operational* supported price and challenge are for lines that carry
-a P90 benchmark signal.
+Persisted comparison-engine rows remain audit detail. This module decides, at
+read time, the operational supported price and challenge for every line.
 """
 
 from __future__ import annotations
@@ -207,18 +204,18 @@ def decide_line_price(
         calculation.append(
             _step(
                 4,
-                "Verified external price",
+                "External reference price",
                 str(external_price),
-                f"Governed ontology price £{external_price:.2f} ({approval_label}).",
+                f"Verified external reference price £{external_price:.2f} ({approval_label}).",
             )
         )
     else:
         calculation.append(
             _step(
                 4,
-                "Verified external price",
+                "External reference price",
                 None,
-                "No approved, traceable external price is available.",
+                "No verified, traceable external reference price is available.",
             )
         )
 
@@ -254,16 +251,13 @@ def decide_line_price(
         )
     )
 
-    supported_price = money(min(billed, evidence_price)) or ZERO
+    supported_price = evidence_price
     calculation.append(
         _step(
             7,
             "Supported price",
             str(supported_price),
-            (
-                f"min(billed £{billed:.2f}, evidence £{evidence_price:.2f}) = "
-                f"£{supported_price:.2f}."
-            ),
+            (f"The proportionally weighted evidence price is £{supported_price:.2f}."),
         )
     )
 

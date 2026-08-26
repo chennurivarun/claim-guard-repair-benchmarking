@@ -19,7 +19,10 @@ def llm_configuration_status(
         return "configuration_required"
     if not settings.llm_model.strip() or not settings.llm_base_url.strip():
         return "configuration_required"
-    if settings.llm_provider != "gemini" and "generativelanguage.googleapis.com" in settings.llm_base_url:
+    if (
+        settings.llm_provider != "gemini"
+        and "generativelanguage.googleapis.com" in settings.llm_base_url
+    ):
         return "configuration_required"
     return "configured"
 
@@ -54,6 +57,14 @@ def build_mapping_adjudicator(settings: Settings) -> ConstrainedMappingAdjudicat
     )
 
 
+def build_synthetic_price_client(settings: Settings) -> StructuredLLMClient | None:
+    """Reuse the configured structured model for synthetic in-house price seeding."""
+
+    if llm_configuration_status(settings) != "configured":
+        return None
+    return _build_client(settings, model_id=settings.llm_model)
+
+
 def build_invoice_vision_extractor(settings: Settings) -> MultimodalInvoiceExtractor | None:
     """Build the opt-in fallback without changing deterministic-only deployments."""
 
@@ -76,7 +87,10 @@ def build_invoice_text_extractor(settings: Settings) -> MultimodalInvoiceExtract
     page images, so it can recover documents even when llm_vision_enabled stays False.
     """
 
-    if not settings.llm_text_extraction_enabled or llm_configuration_status(settings) != "configured":
+    if (
+        not settings.llm_text_extraction_enabled
+        or llm_configuration_status(settings) != "configured"
+    ):
         return None
     model_id = settings.llm_model.strip()
     if not model_id:

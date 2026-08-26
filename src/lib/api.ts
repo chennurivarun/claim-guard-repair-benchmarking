@@ -68,6 +68,8 @@ export interface BenchmarkDashboardPayload {
     ontologyItemId: string
     item: string
     vehicleClass: string
+    vehicleMake?: string | null
+    vehicleModel?: string | null
     statistics: BenchmarkStatisticsPayload
     labourStatistics: BenchmarkStatisticsPayload
     sourceCount: number
@@ -162,6 +164,13 @@ export interface ClaimInvoiceSummary {
   document_id?: string
   document_filename: string
   supplier_name: string | null
+  vehicle?: {
+    registration: string | null
+    vin: string | null
+    make: string | null
+    model: string | null
+    mileage: number | null
+  } | null
   totals: {
     gross: number | null
   }
@@ -750,6 +759,16 @@ export function downloadBlob(blob: Blob, filename: string) {
   anchor.click()
   anchor.remove()
   URL.revokeObjectURL(url)
+}
+
+export async function downloadInHouseRepairCsv() {
+  const response = await fetchWithTimeout(
+    apiPath("/api/v1/admin/in-house-repair-data.csv"),
+    undefined,
+    30_000
+  )
+  if (!response.ok) throw await apiError(response)
+  downloadBlob(await response.blob(), "claimguard-in-house-repair-data.csv")
 }
 
 export function downloadDemoJson() {

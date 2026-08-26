@@ -266,13 +266,13 @@ def _challenge_explanation(*, line: CurrentInvoiceLine, comparison: Any) -> str:
     if comparison.ontology_expected_net is not None:
         difference = comparison.difference_from_ontology_net or Decimal("0")
         evidence.append(
-            f"approved ontology £{comparison.ontology_expected_net:.2f} "
+            f"external reference price £{comparison.ontology_expected_net:.2f} "
             f"(billed £{difference:.2f} higher)"
         )
     if comparison.historical_expected_net is not None:
         difference = comparison.difference_from_history_net or Decimal("0")
         evidence.append(
-            f"historical median £{comparison.historical_expected_net:.2f} "
+            f"historical claims evidence £{comparison.historical_expected_net:.2f} "
             f"from {comparison.history.eligible_count} comparable claim"
             f"{'' if comparison.history.eligible_count == 1 else 's'} "
             f"(billed £{difference:.2f} higher)"
@@ -364,15 +364,18 @@ def run_case_comparison(
         .unique()
         .all()
     )
-    # The demo in-house repair book is deterministic and stored through the
-    # existing governed historical-observation model. It covers every current
-    # ontology item and exact uploaded vehicle make/model before comparisons run.
+    # The demo in-house repair book uses the configured structured model for
+    # independent synthetic seed prices and a deterministic offline fallback.
+    # It covers every current repair item and exact uploaded vehicle make/model.
+    from app.config import get_settings
+    from app.llm.factory import build_synthetic_price_client
     from app.services.in_house_repair_data import ensure_synthetic_in_house_data
 
     ensure_synthetic_in_house_data(
         session,
         invoices=list(invoices),
         ontology_items=list(ontology_items),
+        llm_client=build_synthetic_price_client(get_settings()),
     )
     domain_items = _domain_items(list(ontology_items))
     item_by_id = {item.id: item for item in ontology_items}

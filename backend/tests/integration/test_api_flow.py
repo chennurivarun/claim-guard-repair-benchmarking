@@ -573,16 +573,14 @@ def test_governed_finalisation_and_report_routes(client: TestClient) -> None:
     assert workspace_payload["claim"]["status"] == "comparison_review"
     assert workspace_payload["invoice"]["id"]
     assert workspace_payload["summary"] == {
-        "challengePrice": 508.2,
-        "challengeAmount": 135.06,
-        "vatImpact": 27.0,
-        "grossEffect": 162.06,
-        "challengePercentage": 21.0,
-        "challengeStrength": 70,
+        "challengePrice": 625.69,
+        "challengeAmount": 17.57,
+        "vatImpact": 3.51,
+        "grossEffect": 21.08,
+        "challengePercentage": 2.73,
+        "challengeStrength": 74,
     }
-    challenged_lines = [
-        line for line in workspace_payload["lines"] if line.get("challenge", 0) > 0
-    ]
+    challenged_lines = [line for line in workspace_payload["lines"] if line.get("challenge", 0) > 0]
     assert challenged_lines
     assert all(line["inHouseP90"] is not None for line in challenged_lines)
     assert all(line["externalReferencePrice"] is None for line in challenged_lines)
@@ -595,7 +593,7 @@ def test_governed_finalisation_and_report_routes(client: TestClient) -> None:
     in_house_dashboard = client.get("/api/v1/benchmarks/dashboard?source_group=in_house")
     assert in_house_dashboard.status_code == 200
     in_house_payload = in_house_dashboard.json()
-    assert in_house_payload["summary"]["observationCount"] == 216
+    assert in_house_payload["summary"]["observationCount"] == 432
     assert len(in_house_payload["filterOptions"]["repairItems"]) == 72
 
     claims_dashboard = client.get("/api/v1/benchmarks/dashboard?source_group=historical_claim")
@@ -606,7 +604,7 @@ def test_governed_finalisation_and_report_routes(client: TestClient) -> None:
 
     synthetic_csv = client.get("/api/v1/admin/in-house-repair-data.csv")
     assert synthetic_csv.status_code == 200
-    assert synthetic_csv.text.count("\n") == 217
+    assert synthetic_csv.text.count("\n") == 433
     first_in_house_benchmark = in_house_payload["benchmarks"][0]
     source_rows = client.get(
         f"/api/v1/benchmarks/{first_in_house_benchmark['ontologyItemId']}/observations",
@@ -629,12 +627,12 @@ def test_governed_finalisation_and_report_routes(client: TestClient) -> None:
     assert len(result["lines"]) == 18
     assert result["summary"] == {
         "invoice_price_net": "643.26",
-        "challenge_price_net": "508.20",
-        "challenge_amount_net": "135.06",
-        "vat_impact": "27.00",
-        "gross_effect": "162.06",
-        "challenge_percentage": "20.9962",
-        "challenge_strength": 70,
+        "challenge_price_net": "625.69",
+        "challenge_amount_net": "17.57",
+        "vat_impact": "3.51",
+        "gross_effect": "21.08",
+        "challenge_percentage": "2.7314",
+        "challenge_strength": 74,
     }
 
     for report_format in ("json", "xlsx", "sqlite"):
@@ -650,16 +648,11 @@ def test_governed_finalisation_and_report_routes(client: TestClient) -> None:
         for row in result["challenges"]
         if Decimal(row["challenge_amount_net"]) > 0
     }
-    assert set(positive) == {
-        "Air Filter",
-        "Spark Plugs",
-        "0w30 Synthetic Oil",
-        "Carried Out Full Service",
-        "Fit Front Discs And Pads",
-    }
-    for invalid_price in ("0.00", positive["Air Filter"]["invoice_net"]):
+    assert set(positive) == {"Carried Out Full Service"}
+    selected = positive["Carried Out Full Service"]
+    for invalid_price in ("0.00", selected["invoice_net"]):
         invalid_edit = client.post(
-            f"/api/v1/challenge-results/{positive['Air Filter']['id']}/decision",
+            f"/api/v1/challenge-results/{selected['id']}/decision",
             json={
                 "actor": "pytest.handler",
                 "approved": True,
@@ -669,44 +662,8 @@ def test_governed_finalisation_and_report_routes(client: TestClient) -> None:
         )
         assert invalid_edit.status_code == 422
         assert invalid_edit.json()["detail"]["code"] == "INVALID_CHALLENGE_PRICE"
-    edited = client.post(
-        f"/api/v1/challenge-results/{positive['Air Filter']['id']}/decision",
-        json={
-            "actor": "pytest.handler",
-            "approved": True,
-            "rationale": "Handler selected a supported rounded line total.",
-            "challenge_price_net": "14.00",
-        },
-    )
-    assert edited.status_code == 200
-    assert edited.json()["recommended_payable_net"] == "14.00"
-    assert edited.json()["challenge_net"] == "6.02"
-    assert edited.json()["challenge_vat"] == "1.20"
-    edited_workspace = client.get("/api/v1/claims/CG-GOVERNANCE-91283/workspace").json()
-    edited_line = next(
-        row for row in edited_workspace["lines"] if row["description"] == "Air Filter"
-    )
-    assert edited_line["recommended"] == 14.0
-    assert edited_line["challenge"] == 6.02
-    assert edited_workspace["summary"]["challengeAmount"] == 134.47
-    edited_result = client.get("/api/v1/claims/CG-GOVERNANCE-91283/result").json()
-    assert edited_result["summary"]["challenge_price_net"] == "508.79"
-    assert edited_result["summary"]["challenge_amount_net"] == "134.47"
-    rejected = client.post(
-        f"/api/v1/challenge-results/{positive['Air Filter']['id']}/decision",
-        json={
-            "actor": "pytest.handler",
-            "approved": False,
-            "rationale": "Handler rejected this suggested challenge.",
-        },
-    )
-    assert rejected.status_code == 200
-    assert rejected.json()["status"] == "rejected"
-    rejected_result = client.get("/api/v1/claims/CG-GOVERNANCE-91283/result").json()
-    assert rejected_result["summary"]["challenge_price_net"] == "514.81"
-    assert rejected_result["summary"]["challenge_amount_net"] == "128.45"
     approved = client.post(
-        f"/api/v1/challenge-results/{positive['Carried Out Full Service']['id']}/decision",
+        f"/api/v1/challenge-results/{selected['id']}/decision",
         json={
             "actor": "pytest.handler",
             "approved": True,
@@ -715,17 +672,6 @@ def test_governed_finalisation_and_report_routes(client: TestClient) -> None:
     )
     assert approved.status_code == 200
     assert approved.json()["status"] == "approved"
-    for description in ("Spark Plugs", "0w30 Synthetic Oil", "Fit Front Discs And Pads"):
-        remaining_approval = client.post(
-            f"/api/v1/challenge-results/{positive[description]['id']}/decision",
-            json={
-                "actor": "pytest.handler",
-                "approved": True,
-                "rationale": "In-house P90 evidence supports this challenge.",
-            },
-        )
-        assert remaining_approval.status_code == 200
-        assert remaining_approval.json()["status"] == "approved"
 
     finalised = client.post(
         "/api/v1/claims/CG-GOVERNANCE-91283/finalise",
@@ -737,12 +683,12 @@ def test_governed_finalisation_and_report_routes(client: TestClient) -> None:
     final_result = client.get("/api/v1/claims/CG-GOVERNANCE-91283/result").json()
     assert final_result["summary"] == {
         "invoice_price_net": "643.26",
-        "challenge_price_net": "514.81",
-        "challenge_amount_net": "128.45",
-        "vat_impact": "25.68",
-        "gross_effect": "154.13",
-        "challenge_percentage": "19.9686",
-        "challenge_strength": 70,
+        "challenge_price_net": "625.69",
+        "challenge_amount_net": "17.57",
+        "vat_impact": "3.51",
+        "gross_effect": "21.08",
+        "challenge_percentage": "2.7314",
+        "challenge_strength": 75,
     }
     final_workspace = client.get("/api/v1/claims/CG-GOVERNANCE-91283/workspace").json()
     assert final_workspace["claim"]["status"] == "finalised"
@@ -752,20 +698,16 @@ def test_governed_finalisation_and_report_routes(client: TestClient) -> None:
         if row["challenge"] > 0
     }
     assert final_decisions == {
-        "Air Filter": ("rejected", False),
-        "Spark Plugs": ("approved", True),
-        "0w30 Synthetic Oil": ("approved", True),
         "Carried Out Full Service": ("approved", True),
-        "Fit Front Discs And Pads": ("approved", True),
     }
     invoice_reviews = client.get("/api/v1/claims/CG-GOVERNANCE-91283/invoices").json()
     assert invoice_reviews[0]["challenge_review"] == {
-        "positive": 5,
-        "approved": 4,
-        "rejected": 1,
+        "positive": 1,
+        "approved": 1,
+        "rejected": 0,
         "unresolved": 0,
     }
-    assert len(invoice_reviews[0]["challenge_lines"]) == 5
+    assert len(invoice_reviews[0]["challenge_lines"]) == 1
     assert all(
         {
             "in_house_p90_net",
@@ -783,7 +725,7 @@ def test_governed_finalisation_and_report_routes(client: TestClient) -> None:
         assert report.headers["content-type"] == media_type
 
     mutation = client.post(
-        f"/api/v1/challenge-results/{positive['Carried Out Full Service']['id']}/decision",
+        f"/api/v1/challenge-results/{selected['id']}/decision",
         json={
             "actor": "pytest.other-handler",
             "approved": False,

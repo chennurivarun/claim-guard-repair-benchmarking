@@ -47,7 +47,6 @@ import {
 import { CalculationBreakdown } from "./calculation-breakdown"
 import {
   ChallengeDecisionDialog,
-  InlineMappingApproval,
   LineEvidenceSheet,
   type ResearchFormValues,
 } from "./screens-challenge-admin"
@@ -55,7 +54,7 @@ import { formatMoney } from "./format"
 import { documentImageUrl } from "./document-api"
 import { isMappingApproved } from "./mapping-rules"
 import { StatusBadge } from "./shared"
-import type { ClaimWorkspace, InvoiceLine, ResearchQueueItem } from "./types"
+import type { ClaimWorkspace, InvoiceLine } from "./types"
 import {
   fetchEngineerAssessments,
   type EngineerAssessmentPayload,
@@ -70,7 +69,7 @@ export function ChallengedInvoicesSummary({
   onOpenInvoice,
 }: {
   invoices: ClaimInvoiceSummary[]
-  onOpenInvoice: (invoiceId: string) => void
+  onOpenInvoice: (invoiceId: string, lineId: string | null) => void
 }) {
   const [query, setQuery] = useState("")
   const [status, setStatus] = useState("all")
@@ -81,7 +80,9 @@ export function ChallengedInvoicesSummary({
   const [externalEvidence, setExternalEvidence] = useState<{
     method: string
     sources: NonNullable<
-      NonNullable<ClaimInvoiceSummary["challenge_lines"]>[number]["external_price_sources"]
+      NonNullable<
+        ClaimInvoiceSummary["challenge_lines"]
+      >[number]["external_price_sources"]
     >
   } | null>(null)
   const needle = query.trim().toLocaleLowerCase()
@@ -104,7 +105,7 @@ export function ChallengedInvoicesSummary({
     )
     .filter(({ invoice, line }) => {
       const lineStatus = line.status.toLocaleLowerCase()
-      const uploadDate = (invoice.uploaded_at ?? "").slice(0, 10)
+      const invoiceDate = (invoice.invoice_date ?? "").slice(0, 10)
       const matchesStatus =
         status === "all" ||
         lineStatus === status ||
@@ -122,8 +123,8 @@ export function ChallengedInvoicesSummary({
         matchesStatus &&
         (invoiceFilter === "all" || invoice.id === invoiceFilter) &&
         (lineFilter === "all" || line.description === lineFilter) &&
-        (!dateFrom || uploadDate >= dateFrom) &&
-        (!dateTo || uploadDate <= dateTo) &&
+        (!dateFrom || invoiceDate >= dateFrom) &&
+        (!dateTo || invoiceDate <= dateTo) &&
         (!needle || searchable.includes(needle))
       )
     })
@@ -139,8 +140,8 @@ export function ChallengedInvoicesSummary({
       <CardHeader>
         <CardTitle>Challenged invoices</CardTitle>
         <CardDescription>
-          Only invoice lines with a positive price challenge are shown. Select
-          a row to open the existing evidence and decision flow.
+          Only invoice lines with a positive price challenge are shown. Select a
+          row to open the existing evidence and decision flow.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -187,14 +188,14 @@ export function ChallengedInvoicesSummary({
             className="h-9 rounded-md border bg-background px-3 text-sm"
             value={dateFrom}
             onChange={(event) => setDateFrom(event.target.value)}
-            aria-label="Upload date from"
+            aria-label="Invoice date from"
           />
           <input
             type="date"
             className="h-9 rounded-md border bg-background px-3 text-sm"
             value={dateTo}
             onChange={(event) => setDateTo(event.target.value)}
-            aria-label="Upload date to"
+            aria-label="Invoice date to"
           />
           <select
             className="h-9 rounded-md border bg-background px-3 text-sm"
@@ -212,16 +213,22 @@ export function ChallengedInvoicesSummary({
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Uploaded</TableHead>
+                <TableHead className="text-right">Challenge amount</TableHead>
+                <TableHead>Repair item</TableHead>
+                <TableHead className="text-right">Billed price</TableHead>
+                <TableHead className="text-right">
+                  In-house benchmark P90
+                </TableHead>
+                <TableHead className="text-right">
+                  Historical claims P90
+                </TableHead>
+                <TableHead className="text-right">
+                  External reference price
+                </TableHead>
+                <TableHead className="text-right">Supported price</TableHead>
                 <TableHead>Invoice</TableHead>
                 <TableHead>Repairer</TableHead>
-                <TableHead>Challenged item</TableHead>
-                <TableHead className="text-right">Billed</TableHead>
-                <TableHead className="text-right">In-house repair P90</TableHead>
-                <TableHead className="text-right">Historical claims P90</TableHead>
-                <TableHead className="text-right">External reference price</TableHead>
-                <TableHead className="text-right">Supported</TableHead>
-                <TableHead className="text-right">Challenge</TableHead>
+                <TableHead>Invoice date</TableHead>
                 <TableHead>Status</TableHead>
               </TableRow>
             </TableHeader>
@@ -231,23 +238,19 @@ export function ChallengedInvoicesSummary({
                   key={`${invoice.id}:${line.line_id ?? line.id}`}
                   className="cursor-pointer"
                   tabIndex={0}
-                  onClick={() => onOpenInvoice(invoice.id)}
+                  onClick={() =>
+                    onOpenInvoice(invoice.id, line.line_id ?? line.id)
+                  }
                   onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === " ") {
                       event.preventDefault()
-                      onOpenInvoice(invoice.id)
+                      onOpenInvoice(invoice.id, line.line_id ?? line.id)
                     }
                   }}
                 >
-                  <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
-                    {invoice.uploaded_at
-                      ? new Date(invoice.uploaded_at).toLocaleString()
-                      : "—"}
+                  <TableCell className="text-right font-semibold text-destructive tabular-nums">
+                    {formatMoney(line.challenge_net)}
                   </TableCell>
-                  <TableCell className="font-medium">
-                    {invoice.invoice_number || invoice.document_filename}
-                  </TableCell>
-                  <TableCell>{invoice.supplier_name || "—"}</TableCell>
                   <TableCell>{line.description || "Unlabelled line"}</TableCell>
                   <TableCell className="text-right tabular-nums">
                     {formatMoney(line.billed_net)}
@@ -293,8 +296,28 @@ export function ChallengedInvoicesSummary({
                   <TableCell className="text-right tabular-nums">
                     {formatMoney(line.supported_net)}
                   </TableCell>
-                  <TableCell className="text-right tabular-nums text-destructive">
-                    {formatMoney(line.challenge_net)}
+                  <TableCell>
+                    <span className="block font-medium">
+                      {invoice.invoice_number || invoice.document_filename}
+                    </span>
+                    {invoice.vehicle?.make || invoice.vehicle?.model ? (
+                      <span className="block text-xs text-muted-foreground">
+                        {[invoice.vehicle.make, invoice.vehicle.model]
+                          .filter(Boolean)
+                          .join(" ")}
+                        {invoice.vehicle.registration
+                          ? ` · ${invoice.vehicle.registration}`
+                          : ""}
+                      </span>
+                    ) : null}
+                  </TableCell>
+                  <TableCell>{invoice.supplier_name || "—"}</TableCell>
+                  <TableCell className="text-xs whitespace-nowrap text-muted-foreground">
+                    {invoice.invoice_date
+                      ? new Date(
+                          `${invoice.invoice_date}T00:00:00`
+                        ).toLocaleDateString()
+                      : "—"}
                   </TableCell>
                   <TableCell>
                     <Badge variant="outline">
@@ -305,7 +328,10 @@ export function ChallengedInvoicesSummary({
               ))}
               {!rows.length ? (
                 <TableRow>
-                  <TableCell colSpan={11} className="py-8 text-center text-muted-foreground">
+                  <TableCell
+                    colSpan={11}
+                    className="py-8 text-center text-muted-foreground"
+                  >
                     No challenged invoice lines match these filters.
                   </TableCell>
                 </TableRow>
@@ -342,7 +368,7 @@ export function ChallengedInvoicesSummary({
                     {source.vehicle_make} {source.vehicle_model}
                   </span>
                 </span>
-                <span className="whitespace-nowrap font-medium tabular-nums">
+                <span className="font-medium whitespace-nowrap tabular-nums">
                   {formatMoney(source.price_net)}
                 </span>
               </a>
@@ -653,6 +679,7 @@ function AllExtractedLinesTable({ lines }: { lines: InvoiceLine[] }) {
 export function ReviewFindingsScreen({
   workspace,
   mode = "challenged",
+  initialLineId = null,
   p90ThresholdPct,
   enabled,
   processing,
@@ -663,10 +690,10 @@ export function ReviewFindingsScreen({
   mappingSavingLineId,
   onProposeNewItem,
   researchSaving,
-  onApproveResearch,
 }: {
   workspace: ClaimWorkspace
   mode?: "challenged" | "all"
+  initialLineId?: string | null
   p90ThresholdPct: number
   enabled: boolean
   processing: boolean
@@ -690,13 +717,17 @@ export function ReviewFindingsScreen({
     values: ResearchFormValues
   ) => Promise<void>
   researchSaving?: boolean
-  onApproveResearch?: (item: ResearchQueueItem) => Promise<void>
 }) {
   const ontologyOptions = workspace.ontologyBank?.items ?? []
   const challenged = workspace.lines
     .filter((line) => line.challenge > 0)
     .sort((a, b) => b.challenge - a.challenge)
-  const [activeIndex, setActiveIndex] = useState(0)
+  const requestedInitialIndex = initialLineId
+    ? challenged.findIndex((item) => item.id === initialLineId)
+    : -1
+  const [activeIndex, setActiveIndex] = useState(() =>
+    requestedInitialIndex >= 0 ? requestedInitialIndex : 0
+  )
   const [query, setQuery] = useState("")
   const [evidenceLine, setEvidenceLine] = useState<InvoiceLine | null>(null)
   const [decisionLine, setDecisionLine] = useState<InvoiceLine | null>(null)
@@ -807,9 +838,6 @@ export function ReviewFindingsScreen({
 
   const approved = line.challengeStatus === "approved"
   const rejected = line.challengeStatus === "rejected"
-  const mappingApproved = isMappingApproved(line)
-  const benchmark = line.p90Benchmark
-  const benchmarkChallenged = Boolean(benchmark && line.challenge > 0)
 
   return (
     <>
@@ -826,48 +854,11 @@ export function ReviewFindingsScreen({
           <Badge variant="outline">
             {activeIndex + 1} of {challenged.length}
           </Badge>
-          {!mappingApproved ? (
-            <Badge variant="warning">Provisional mapping</Badge>
-          ) : null}
           <StatusBadge status={line.challengeStatus ?? "review"} />
         </div>
       </div>
 
       <EngineerAssessmentCard assessment={engineerAssessment} />
-
-      {!mappingApproved ? (
-        <div className="flex flex-col gap-3">
-          <Alert>
-            <InfoIcon />
-            <AlertTitle>
-              Provisional finding: repair item match needs approval
-            </AlertTitle>
-            <AlertDescription>
-              Approve, change, or propose a new repair item match below before
-              making a challenge decision. The price evidence remains visible
-              for review, but it is not yet actionable.
-            </AlertDescription>
-          </Alert>
-          {onMappingDecision ? (
-            <InlineMappingApproval
-              line={line}
-              ontologyOptions={ontologyOptions}
-              researchProposal={
-                workspace.researchItems?.find(
-                  (item) =>
-                    item.lineId === line.id &&
-                    item.status.toLowerCase() === "provisional"
-                ) ?? null
-              }
-              mappingSaving={mappingSavingLineId === line.id}
-              onMappingDecision={onMappingDecision}
-              researchSaving={researchSaving}
-              onApproveResearch={onApproveResearch}
-              onProposeNewItem={onProposeNewItem}
-            />
-          ) : null}
-        </div>
-      ) : null}
 
       <div className="grid min-w-0 gap-6 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.65fr)]">
         <Card>
@@ -881,6 +872,10 @@ export function ReviewFindingsScreen({
                 <p className="mt-2 text-sm text-muted-foreground">
                   {line.quantity} {line.unit} · {line.kind}
                 </p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {workspace.invoice.vehicle || "Vehicle not recorded"}
+                  {workspace.invoice.vrm ? ` · ${workspace.invoice.vrm}` : ""}
+                </p>
               </div>
               <Badge variant="destructive">
                 {formatMoney(line.challenge)} high
@@ -889,25 +884,31 @@ export function ReviewFindingsScreen({
           </CardHeader>
           <CardContent className="flex flex-col gap-6">
             <div className="grid overflow-hidden rounded-lg border md:grid-cols-3 xl:grid-cols-6">
-              <div className="p-5">
+              <div className="bg-primary/5 p-5">
                 <p className="text-xs font-medium text-muted-foreground">
-                  Repairer billed
+                  Challenge amount
+                </p>
+                <p className="mt-2 text-2xl font-semibold tabular-nums">
+                  {formatMoney(line.challenge)}
+                </p>
+              </div>
+              <div className="border-y p-5 md:border-x md:border-y-0">
+                <p className="text-xs font-medium text-muted-foreground">
+                  Billed price
                 </p>
                 <p className="mt-2 text-2xl font-semibold tabular-nums">
                   {formatMoney(line.currentTotal)}
                 </p>
               </div>
-              <div className="border-y p-5 md:border-x md:border-y-0">
+              <div className="border-b p-5 md:border-b-0 xl:border-r">
                 <p className="text-xs font-medium text-muted-foreground">
-                  In-house repair P90
+                  In-house benchmark P90
                 </p>
                 <p className="mt-2 text-2xl font-semibold tabular-nums">
-                  {line.inHouseP90 == null
-                    ? "—"
-                    : formatMoney(line.inHouseP90)}
+                  {line.inHouseP90 == null ? "—" : formatMoney(line.inHouseP90)}
                 </p>
               </div>
-              <div className="border-b p-5 md:border-b-0 xl:border-r">
+              <div className="border-b p-5 md:border-r xl:border-b-0">
                 <p className="text-xs font-medium text-muted-foreground">
                   Historical claims P90
                 </p>
@@ -917,7 +918,7 @@ export function ReviewFindingsScreen({
                     : formatMoney(line.historicalClaimsP90)}
                 </p>
               </div>
-              <div className="border-b p-5 md:border-r xl:border-b-0">
+              <div className="border-b p-5 md:border-b-0 xl:border-r">
                 <p className="text-xs font-medium text-muted-foreground">
                   External reference price
                 </p>
@@ -927,7 +928,7 @@ export function ReviewFindingsScreen({
                     : formatMoney(line.externalReferencePrice)}
                 </p>
               </div>
-              <div className="border-b p-5 md:border-b-0 xl:border-r">
+              <div className="p-5">
                 <p className="text-xs font-medium text-muted-foreground">
                   Supported price
                 </p>
@@ -937,88 +938,7 @@ export function ReviewFindingsScreen({
                     : formatMoney(line.recommended)}
                 </p>
               </div>
-              <div className="bg-primary/5 p-5">
-                <p className="text-xs font-medium text-muted-foreground">
-                  Challenge amount
-                </p>
-                <p className="mt-2 text-2xl font-semibold tabular-nums">
-                  {formatMoney(line.challenge)}
-                </p>
-              </div>
             </div>
-
-            {benchmark ? (
-              <div className="rounded-lg border bg-muted/25 p-4">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                  <div>
-                    <p className="font-semibold">Historical claims P90 benchmark</p>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {benchmark.category} · {benchmark.historicalCount} earlier
-                      invoice{benchmark.historicalCount === 1 ? "" : "s"} ·
-                      based only on earlier invoices
-                    </p>
-                  </div>
-                  <Badge
-                    variant={benchmarkChallenged ? "destructive" : "outline"}
-                  >
-                    {benchmarkChallenged
-                      ? "Above P90 threshold"
-                      : "Within P90 threshold"}
-                  </Badge>
-                </div>
-                <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                  <div>
-                    <p className="text-xs text-muted-foreground">
-                      Current charge
-                    </p>
-                    <p className="mt-1 font-semibold tabular-nums">
-                      {formatMoney(benchmark.currentPrice)}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">
-                      P90 benchmark
-                    </p>
-                    <p className="mt-1 font-semibold tabular-nums">
-                      {formatMoney(benchmark.p90)}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">Difference</p>
-                    <p
-                      className={`mt-1 font-semibold tabular-nums ${
-                        benchmarkChallenged ? "text-destructive" : ""
-                      }`}
-                    >
-                      {benchmark.difference > 0 ? "+" : ""}
-                      {formatMoney(benchmark.difference)} ·{" "}
-                      {benchmark.percentageDifference > 0 ? "+" : ""}
-                      {benchmark.percentageDifference.toFixed(1)}%
-                    </p>
-                  </div>
-                </div>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="mt-3"
-                  onClick={() => setEvidenceLine(line)}
-                >
-                  <EyeIcon data-icon="inline-start" />
-                  View {benchmark.historicalCount} prices used
-                </Button>
-              </div>
-            ) : (
-              <Alert>
-                <InfoIcon />
-                <AlertTitle>P90 benchmark not available yet</AlertTitle>
-                <AlertDescription>
-                  No eligible in-house or previous-claim observation matches
-                  this repair item and vehicle. The governed evidence available
-                  for manual review is shown below.
-                </AlertDescription>
-              </Alert>
-            )}
 
             <div>
               <h2 className="text-sm font-semibold">
@@ -1028,70 +948,11 @@ export function ReviewFindingsScreen({
                 {line.rationale}
               </p>
               <p className="mt-2 text-xs leading-5 text-muted-foreground">
-                The full policy uses 50% in-house P90, 30% previous-claim P90
-                and 20% verified external price. Missing governed sources are
-                reweighted proportionally; external evidence alone never
-                creates an automatic challenge.
+                The full policy uses 50% in-house benchmark P90, 30% historical
+                claims P90 and 20% external reference price. Missing governed
+                sources are reweighted proportionally; external evidence alone
+                never creates an automatic challenge.
               </p>
-            </div>
-
-            <div>
-              <div className="mb-3 flex items-center justify-between gap-3">
-                <h2 className="text-sm font-semibold">Evidence used</h2>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setEvidenceLine(line)}
-                >
-                  <EyeIcon data-icon="inline-start" />
-                  View details
-                </Button>
-              </div>
-              <div className="grid gap-3 sm:grid-cols-3">
-                {(line.ontologyTotal ?? 0) > 0 ? (
-                  <div className="rounded-lg border p-4">
-                    <p className="text-xs font-medium text-muted-foreground">
-                      Approved price bank
-                    </p>
-                    <p className="mt-2 text-lg font-semibold tabular-nums">
-                      {formatMoney(line.ontologyTotal)}
-                    </p>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {line.ontologyName ??
-                        line.ontologyId ??
-                        "Approved ontology item"}
-                    </p>
-                  </div>
-                ) : null}
-                <div className="rounded-lg border p-4">
-                  <p className="text-xs font-medium text-muted-foreground">
-                    Historical claims median
-                  </p>
-                  <p className="mt-2 text-lg font-semibold tabular-nums">
-                    {formatMoney(line.historicalMedian)}
-                  </p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Median of {line.historicalCount} governed comparable records
-                  </p>
-                  <p className="mt-1 text-xs font-medium text-muted-foreground">
-                    Context only — not part of the supported price
-                  </p>
-                </div>
-                {benchmark ? (
-                  <div className="rounded-lg border p-4">
-                    <p className="text-xs font-medium text-muted-foreground">
-                      Uploaded-invoice P90
-                    </p>
-                    <p className="mt-2 text-lg font-semibold tabular-nums">
-                      {formatMoney(benchmark.p90)}
-                    </p>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {benchmark.historicalCount} earlier uploaded invoices; the
-                      current invoice is not counted
-                    </p>
-                  </div>
-                ) : null}
-              </div>
             </div>
 
             <Alert>
@@ -1099,7 +960,7 @@ export function ReviewFindingsScreen({
               <AlertTitle>How the price was calculated</AlertTitle>
               <AlertDescription>
                 {line.evidenceRationale ??
-                  "The supported net price uses the persisted ontology and historical claim evidence. VAT is handled separately."}
+                  "Supported price is the weighted average of the available sources: 50% in-house benchmark P90, 30% historical claims P90 and 20% external reference price. Missing sources contribute zero and their weights are excluded from the denominator. External reference evidence alone never creates an automatic challenge."}
               </AlertDescription>
             </Alert>
             <CalculationBreakdown steps={line.calculation} />
@@ -1107,27 +968,25 @@ export function ReviewFindingsScreen({
           <CardFooter className="flex-col items-stretch gap-3 border-t pt-6">
             <Button
               size="lg"
-              disabled={!enabled || processing || approved || !mappingApproved}
+              disabled={!enabled || processing || approved}
               onClick={() =>
                 void onDecision(line, {
                   approved: true,
                   challengePriceNet: line.recommended,
                   rationale:
-                    "Accepted after reviewing the historical P90 benchmark and its earlier invoice evidence.",
+                    "Accepted after reviewing the supported price and its in-house, historical-claims, and external-reference evidence.",
                 })
               }
             >
               <CheckIcon data-icon="inline-start" />
               {approved
                 ? "Challenge accepted"
-                : !mappingApproved
-                  ? "Approve repair item match first"
-                  : `Accept supported price · ${formatMoney(line.recommended)}`}
+                : `Accept supported price · ${formatMoney(line.recommended)}`}
             </Button>
             <div className="grid gap-2 sm:grid-cols-2">
               <Button
                 variant="outline"
-                disabled={!enabled || processing || !mappingApproved}
+                disabled={!enabled || processing}
                 onClick={() => {
                   setDecisionLine(line)
                   setDecisionMode("edit")
@@ -1138,9 +997,7 @@ export function ReviewFindingsScreen({
               </Button>
               <Button
                 variant="ghost"
-                disabled={
-                  !enabled || processing || rejected || !mappingApproved
-                }
+                disabled={!enabled || processing || rejected}
                 onClick={() => {
                   setDecisionLine(line)
                   setDecisionMode("reject")

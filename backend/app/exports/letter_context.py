@@ -129,7 +129,7 @@ def deterministic_line_sentence(line: ChallengeLine) -> str:
     ]
     if line.ontology_price_net is not None:
         clauses.append(
-            f"The approved ontology observation is {money_label(line.ontology_price_net)} net."
+            f"The external reference price is {money_label(line.ontology_price_net)} net."
         )
     if line.historical_median_net is not None and line.historical_count:
         clauses.append(

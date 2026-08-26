@@ -42,7 +42,7 @@ ClaimGuard also includes a small, governed research import for source-backed UK 
 | Current line price is more than the selected percentage above P90 and at least £5 higher | **Challenge** — difference and percentage are explained |
 | Information button | Shows every earlier invoice number, original description, date and price used |
 
-The default P90 percentage gate is 10%; the handler can switch it to 5% on the Benchmarks screen. The existing governed 60/40 ontology-and-historical comparison, handler mapping approval and final challenge controls remain unchanged.
+The default P90 percentage gate is 10%; the handler can switch it to 5% on the Benchmarks screen. Supported price uses the available in-house benchmark P90, historical claims P90 and external reference price with governed 50/30/20 weights and proportional reweighting when a source is missing.
 
 Specialist tools—including page classification, extraction review, calculation checks, ontology mapping, missing-item research and ontology management—remain available under **Advanced tools**. No capability is removed from the simplified handler workflow.
 
@@ -58,8 +58,8 @@ Before deploying or upgrading any environment, complete the [Deployment handoff 
 | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | Liability         | The invoice never decides fault. A handler must confirm exactly `ADMITTED`, `DENIED`, `SPLIT LIABILITY`, `PENDING`, or `HUMAN REVIEW REQUIRED`. |
 | Issue gate        | Analysis may continue in draft; a challenge can be issued only for human-confirmed `ADMITTED` or `SPLIT LIABILITY`.                             |
-| Benchmark         | 60% approved ontology + 40% eligible historical weighted median; policy fallbacks are versioned.                                                |
-| Challenge gate    | Positive difference must be at least **£5 and 5%** of the quantity-adjusted net line total.                                                     |
+| Benchmark         | 50% in-house benchmark P90 + 30% historical claims P90 + 20% external reference price; missing sources are proportionally reweighted.          |
+| Challenge gate    | Positive difference must be at least **£5** and above the selected **5% or 10%** threshold.                                                     |
 | Terminology       | **Challenge Price** is the headline; “proposed payable” is supporting text only.                                                                |
 | VAT and MOT       | Evidence and challenge figures are net; VAT impact is separate; MOT remains outside VAT.                                                        |
 | Research          | Handler-initiated by default (`auto_research=false`); handler approval is sufficient in the pilot (`two_step_approval=false`).                  |
@@ -196,7 +196,7 @@ The bootstrapped case deliberately remains unfinalised: its mappings/evidence re
 | Historical sufficiency | A positive line using provisional ontology evidence needs at least three eligible historical comparables before challenge approval.                            |
 | Line review            | Every positive Challenge Amount must be reviewed before case finalisation.                                                                                     |
 | Research approval      | One handler approval writes the pilot item, observation, mapping, audit event, and new ontology version; maker-checker can be enabled without a schema change. |
-| Arithmetic             | Quantities, VAT, benchmarks, thresholds, and totals are deterministic `Decimal` calculations; an LLM is never the source of authoritative arithmetic or price. |
+| Arithmetic             | Quantities, VAT, percentiles, thresholds, and totals are deterministic `Decimal` calculations. For the explicitly synthetic in-house demonstration dataset only, a schema-constrained LLM proposes validated seed prices; production evidence is never invented by the model. |
 | Extraction review      | Items below the configurable 90% threshold require Accept, Edit or Reject; rejected lines stay audited but leave calculations and mapping.                     |
 | Reproducibility        | Outputs retain processing, ontology, policy, import, extraction, model, and prompt versions; reprocessing preserves prior runs.                                |
 

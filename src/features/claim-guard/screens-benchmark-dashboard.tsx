@@ -4,6 +4,7 @@ import {
   ArrowUpDownIcon,
   ArrowUpIcon,
   DatabaseIcon,
+  DownloadIcon,
   EyeIcon,
   Share2Icon,
 } from "lucide-react"
@@ -25,7 +26,11 @@ import type {
   BenchmarkExceptionPayload,
   BenchmarkObservationPayload,
 } from "@/lib/api"
-import { fetchBenchmarkDashboard, fetchBenchmarkObservations } from "@/lib/api"
+import {
+  downloadInHouseRepairCsv,
+  fetchBenchmarkDashboard,
+  fetchBenchmarkObservations,
+} from "@/lib/api"
 
 import { DataCard, MINIMUM_CHALLENGE_AMOUNT, ScreenHeading } from "./shared"
 import type { ClaimWorkspace } from "./types"
@@ -542,32 +547,50 @@ export function BenchmarkDashboardScreen({
         }
         description={
           sourceGroup === "in_house"
-            ? "Review synthetic in-house repair-book prices generated for every ontology item and the current vehicle make/model."
+            ? "Review the synthetic in-house repair dataset generated from extracted invoice parts. The configured LLM proposes six independent prices per repair item. Each set is validated and stored as dated samples for every exact vehicle make/model, with an auditable offline fallback."
             : "Review approved prices from previously finalised claims, kept separate from in-house and external evidence."
         }
         action={
-          <Button
-            type="button"
-            variant="outline"
-            onClick={onOpenKnowledgeGraph}
-          >
-            <Share2Icon aria-hidden />
-            Open knowledge graph
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            {sourceGroup === "in_house" && apiMode === "api" ? (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void downloadInHouseRepairCsv()}
+              >
+                <DownloadIcon aria-hidden />
+                Download in-house CSV
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              variant="outline"
+              onClick={onOpenKnowledgeGraph}
+            >
+              <Share2Icon aria-hidden />
+              Open knowledge graph
+            </Button>
+          </div>
         }
       />
 
       <Card>
         <CardContent className="grid gap-4 p-5 md:grid-cols-2 xl:grid-cols-4">
           <label className="grid gap-2 text-sm font-medium">
-            Vehicle category
+            {sourceGroup === "in_house"
+              ? "Vehicle make & model"
+              : "Vehicle category"}
             <Select value={vehicleClass} onValueChange={setVehicleClass}>
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
                 <SelectGroup>
-                  <SelectItem value="all">All vehicle categories</SelectItem>
+                  <SelectItem value="all">
+                    {sourceGroup === "in_house"
+                      ? "All makes and models"
+                      : "All vehicle categories"}
+                  </SelectItem>
                   {dashboard.filterOptions.vehicleClasses.map((item) => (
                     <SelectItem key={item} value={item}>
                       {item}
@@ -603,9 +626,16 @@ export function BenchmarkDashboardScreen({
               </SelectTrigger>
               <SelectContent>
                 <SelectGroup>
-                  <SelectItem value="1">1+ observations</SelectItem>
-                  <SelectItem value="3">3+ observations</SelectItem>
-                  <SelectItem value="10">10+ observations</SelectItem>
+                  <SelectItem value="1">
+                    1+ {sourceGroup === "in_house" ? "samples" : "observations"}
+                  </SelectItem>
+                  <SelectItem value="3">
+                    3+ {sourceGroup === "in_house" ? "samples" : "observations"}
+                  </SelectItem>
+                  <SelectItem value="10">
+                    10+{" "}
+                    {sourceGroup === "in_house" ? "samples" : "observations"}
+                  </SelectItem>
                 </SelectGroup>
               </SelectContent>
             </Select>
@@ -639,11 +669,18 @@ export function BenchmarkDashboardScreen({
       </Card>
 
       <div className="grid gap-4 sm:grid-cols-3" aria-label="Benchmark totals">
-        {[
-          ["Invoice observations", dashboard.summary.observationCount],
-          ["Benchmark groups", dashboard.benchmarks.length],
-          ["Challenged lines", challengedLineCount],
-        ].map(([label, value]) => (
+        {(sourceGroup === "in_house"
+          ? [
+              ["Synthetic repair records", dashboard.summary.observationCount],
+              ["Benchmark groups", dashboard.benchmarks.length],
+              ["Exact vehicle groups", dashboard.vehicleCategories.length],
+            ]
+          : [
+              ["Invoice observations", dashboard.summary.observationCount],
+              ["Benchmark groups", dashboard.benchmarks.length],
+              ["Challenged lines", challengedLineCount],
+            ]
+        ).map(([label, value]) => (
           <Card key={label}>
             <CardContent className="p-5">
               <p className="text-sm text-muted-foreground">{label}</p>
@@ -669,11 +706,11 @@ export function BenchmarkDashboardScreen({
             ? "In-house repair benchmark summary"
             : "Historical claims benchmark summary"
         }
-        description={`Only ${
+        description={
           sourceGroup === "in_house"
-            ? "in-house repair-book"
-            : "previously finalised claim"
-        } observations are included here. Red counts require both more than ${challengeThreshold}% above P90 and at least ${preciseMoney(MINIMUM_CHALLENGE_AMOUNT)} difference.`}
+            ? "Only the active synthetic in-house CSV is included. Each P90 is calculated from the six validated prices for that repair item and exact vehicle make/model."
+            : `Only previously finalised claim observations are included here. Red counts require both more than ${challengeThreshold}% above P90 and at least ${preciseMoney(MINIMUM_CHALLENGE_AMOUNT)} difference.`
+        }
         action={<Badge variant="outline">P90 · interpolated</Badge>}
       >
         <div className="overflow-x-auto">
@@ -684,10 +721,19 @@ export function BenchmarkDashboardScreen({
                   {sortHeader("Repair item", "item", "left")}
                 </th>
                 <th className="px-3 py-3">
-                  {sortHeader("Vehicle category", "vehicleClass", "left")}
+                  {sortHeader(
+                    sourceGroup === "in_house"
+                      ? "Vehicle make & model"
+                      : "Vehicle category",
+                    "vehicleClass",
+                    "left"
+                  )}
                 </th>
                 <th className="px-3 py-3 text-right">
-                  {sortHeader("Invoices", "invoiceCount")}
+                  {sortHeader(
+                    sourceGroup === "in_house" ? "Samples" : "Invoices",
+                    "invoiceCount"
+                  )}
                 </th>
                 <th className="px-3 py-3 text-right">
                   {sortHeader("Min", "min")}
@@ -701,14 +747,21 @@ export function BenchmarkDashboardScreen({
                 <th className="bg-primary/5 px-3 py-3 text-right font-semibold text-foreground">
                   {sortHeader("P90", "p90")}
                 </th>
-                <th className="bg-primary/5 px-3 py-3 text-right font-semibold text-foreground">
-                  {sortHeader("Challenged invoices", "exceptionInvoiceCount")}
-                </th>
-                <th className="bg-destructive/5 px-3 py-3 text-right font-semibold text-foreground">
-                  {sortHeader("Total challenge", "totalChallenge")}
-                </th>
+                {sourceGroup !== "in_house" ? (
+                  <>
+                    <th className="bg-primary/5 px-3 py-3 text-right font-semibold text-foreground">
+                      {sortHeader(
+                        "Challenged invoices",
+                        "exceptionInvoiceCount"
+                      )}
+                    </th>
+                    <th className="bg-destructive/5 px-3 py-3 text-right font-semibold text-foreground">
+                      {sortHeader("Total challenge", "totalChallenge")}
+                    </th>
+                  </>
+                ) : null}
                 <th className="px-3 py-3 text-right font-medium">
-                  Invoices used
+                  {sourceGroup === "in_house" ? "CSV rows" : "Invoices used"}
                 </th>
               </tr>
             </thead>
@@ -771,34 +824,38 @@ export function BenchmarkDashboardScreen({
                     <td className="bg-primary/5 px-3 py-3 text-right font-semibold tabular-nums">
                       {money(item.statistics.p90 ?? null)}
                     </td>
-                    <td className="bg-primary/5 px-3 py-3 text-right">
-                      {item.exceptionInvoiceCount > 0 ? (
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          className="h-auto border-destructive/40 py-1 text-destructive hover:text-destructive"
-                          onClick={() => showExceptions(item)}
-                        >
-                          <EyeIcon aria-hidden />
-                          {item.exceptionInvoiceCount} invoice
-                          {item.exceptionInvoiceCount === 1 ? "" : "s"} ·{" "}
-                          {item.exceptionCount} line
-                          {item.exceptionCount === 1 ? "" : "s"}
-                        </Button>
-                      ) : (
-                        <Badge variant="outline">0</Badge>
-                      )}
-                    </td>
-                    <td
-                      className={`bg-destructive/5 px-3 py-3 text-right font-semibold tabular-nums ${
-                        item.exceptionCount > 0
-                          ? "text-destructive"
-                          : "text-muted-foreground"
-                      }`}
-                    >
-                      {preciseMoney(totalChallengeAmount(item))}
-                    </td>
+                    {sourceGroup !== "in_house" ? (
+                      <td className="bg-primary/5 px-3 py-3 text-right">
+                        {item.exceptionInvoiceCount > 0 ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-auto border-destructive/40 py-1 text-destructive hover:text-destructive"
+                            onClick={() => showExceptions(item)}
+                          >
+                            <EyeIcon aria-hidden />
+                            {item.exceptionInvoiceCount} invoice
+                            {item.exceptionInvoiceCount === 1 ? "" : "s"} ·{" "}
+                            {item.exceptionCount} line
+                            {item.exceptionCount === 1 ? "" : "s"}
+                          </Button>
+                        ) : (
+                          <Badge variant="outline">0</Badge>
+                        )}
+                      </td>
+                    ) : null}
+                    {sourceGroup !== "in_house" ? (
+                      <td
+                        className={`bg-destructive/5 px-3 py-3 text-right font-semibold tabular-nums ${
+                          item.exceptionCount > 0
+                            ? "text-destructive"
+                            : "text-muted-foreground"
+                        }`}
+                      >
+                        {preciseMoney(totalChallengeAmount(item))}
+                      </td>
+                    ) : null}
                     <td className="px-3 py-3 text-right">
                       <Button
                         type="button"
@@ -807,7 +864,8 @@ export function BenchmarkDashboardScreen({
                         onClick={() => showSources(item)}
                       >
                         <EyeIcon aria-hidden />
-                        View {item.invoiceCount}
+                        View {item.invoiceCount}{" "}
+                        {sourceGroup === "in_house" ? "rows" : ""}
                       </Button>
                     </td>
                   </tr>
@@ -815,7 +873,7 @@ export function BenchmarkDashboardScreen({
               ) : (
                 <tr>
                   <td
-                    colSpan={10}
+                    colSpan={sourceGroup === "in_house" ? 8 : 10}
                     className="px-3 py-8 text-center text-muted-foreground"
                   >
                     No benchmark observations yet. Values remain at zero until

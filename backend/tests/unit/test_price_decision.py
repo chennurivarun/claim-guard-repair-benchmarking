@@ -66,6 +66,42 @@ def test_weights_in_house_historical_and_external_at_50_30_20() -> None:
     assert "20% verified external" in decision.evidence_rationale
 
 
+@pytest.mark.parametrize(
+    ("in_house", "historical", "external", "expected"),
+    [
+        ("100", None, None, "100.00"),
+        (None, "120", None, "120.00"),
+        ("100", None, "300", "157.14"),
+        (None, "120", "150", "132.00"),
+        ("100", "120", "150", "116.00"),
+    ],
+)
+def test_reweights_only_the_available_three_source_values(
+    in_house: str | None,
+    historical: str | None,
+    external: str | None,
+    expected: str,
+) -> None:
+    decision = decide_line_price(
+        _inputs(
+            billed_net=Decimal("500"),
+            p90=_p90(in_house) if in_house else None,
+            historical=_p90(historical) if historical else None,
+            external_price=Decimal(external) if external else None,
+        )
+    )
+
+    assert decision.supported_price == Decimal(expected)
+
+
+def test_supported_price_is_the_weighted_evidence_even_when_above_billed() -> None:
+    decision = decide_line_price(_inputs(billed_net=Decimal("80"), p90=_p90("100")))
+
+    assert decision.supported_price == Decimal("100.00")
+    assert decision.challenge_net == Decimal("0.00")
+    assert decision.comparison_status == "WITHIN"
+
+
 def test_uses_p90_alone_when_external_evidence_is_unavailable() -> None:
     decision = decide_line_price(_inputs(billed_net=Decimal("200"), external_price=None))
 
@@ -183,7 +219,7 @@ def test_external_price_alone_never_creates_an_automatic_challenge() -> None:
 # --- Breakdown completeness (C3) --------------------------------------------
 
 
-def test_calculation_breakdown_includes_both_gates_and_the_min_step() -> None:
+def test_calculation_breakdown_includes_both_gates_and_supported_price() -> None:
     decision = decide_line_price(
         _inputs(
             billed_net=Decimal("200"),
@@ -196,7 +232,7 @@ def test_calculation_breakdown_includes_both_gates_and_the_min_step() -> None:
     assert "Billed net" in labels
     assert "In-house P90 benchmark" in labels
     assert "Historical claims P90" in labels
-    assert "Verified external price" in labels
+    assert "External reference price" in labels
     assert "Weighting applied" in labels
     assert "Evidence price" in labels
     assert "Supported price" in labels
@@ -208,7 +244,7 @@ def test_calculation_breakdown_includes_both_gates_and_the_min_step() -> None:
     supported_step = next(
         step for step in decision.calculation if step["label"] == "Supported price"
     )
-    assert "min(" in supported_step["detail"]
+    assert "weighted evidence price" in supported_step["detail"]
 
     pct_step = next(step for step in decision.calculation if step["label"] == "Percentage gate")
     amount_step = next(step for step in decision.calculation if step["label"] == "Absolute gate")

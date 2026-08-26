@@ -171,6 +171,9 @@ export function App() {
   const [apiConnecting, setApiConnecting] = useState(true)
   const [challengedInvoiceDetailOpen, setChallengedInvoiceDetailOpen] =
     useState(false)
+  const [selectedChallengeLineId, setSelectedChallengeLineId] = useState<
+    string | null
+  >(null)
 
   async function finishApiConnection(
     result: Awaited<ReturnType<typeof loadClaimWorkspace>>
@@ -292,7 +295,10 @@ export function App() {
   }
 
   function navigate(screen: ScreenId) {
-    if (screen === "price-comparison") setChallengedInvoiceDetailOpen(false)
+    if (screen === "price-comparison") {
+      setChallengedInvoiceDetailOpen(false)
+      setSelectedChallengeLineId(null)
+    }
     setActiveScreen(screen)
     const preferredInvoiceId = preferredInvoiceIdForScreen(
       invoices,
@@ -949,29 +955,34 @@ export function App() {
             type="button"
             variant="outline"
             size="sm"
-            onClick={() => setChallengedInvoiceDetailOpen(false)}
+            onClick={() => {
+              setChallengedInvoiceDetailOpen(false)
+              setSelectedChallengeLineId(null)
+            }}
           >
             Back to challenged invoices
           </Button>
-        <ReviewFindingsScreen
-          workspace={workspace}
-          p90ThresholdPct={p90ThresholdPct}
-          enabled={apiMode === "api" && !caseFinalised}
-          processing={challengeSaving}
-          onDecision={handleChallengeDecision}
-          onInspect={inspectLine}
-          onContinue={() => navigate("challenge-review")}
-          onMappingDecision={handleMappingDecision}
-          mappingSavingLineId={mappingSavingLineId}
-          onProposeNewItem={handleResearch}
-          researchSaving={researchSaving}
-          onApproveResearch={handleResearchApproval}
-        />
+          <ReviewFindingsScreen
+            key={`${workspace.invoice.id}:${selectedChallengeLineId ?? "first"}`}
+            workspace={workspace}
+            initialLineId={selectedChallengeLineId}
+            p90ThresholdPct={p90ThresholdPct}
+            enabled={apiMode === "api" && !caseFinalised}
+            processing={challengeSaving}
+            onDecision={handleChallengeDecision}
+            onInspect={inspectLine}
+            onContinue={() => navigate("challenge-review")}
+            onMappingDecision={handleMappingDecision}
+            mappingSavingLineId={mappingSavingLineId}
+            onProposeNewItem={handleResearch}
+            researchSaving={researchSaving}
+          />
         </div>
       ) : (
         <ChallengedInvoicesSummary
           invoices={challengedInvoices}
-          onOpenInvoice={(invoiceId) => {
+          onOpenInvoice={(invoiceId, lineId) => {
+            setSelectedChallengeLineId(lineId)
             void handleInvoiceSelection(invoiceId).then(() =>
               setChallengedInvoiceDetailOpen(true)
             )
@@ -994,7 +1005,6 @@ export function App() {
           mappingSavingLineId={mappingSavingLineId}
           onProposeNewItem={handleResearch}
           researchSaving={researchSaving}
-          onApproveResearch={handleResearchApproval}
         />
       )
       break
@@ -1195,7 +1205,15 @@ export function App() {
               </div>
             ) : activeScreen === "price-comparison" &&
               !challengedInvoiceDetailOpen ? null : invoiceSelectorOptions.length >=
-              1 ? (
+                1 &&
+              [
+                "document-pages",
+                "extracted-invoice",
+                "calculation-checks",
+                "ontology-mapping",
+                "review-findings-all",
+                "missing-items",
+              ].includes(activeScreen) ? (
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-card px-4 py-3">
                 <div>
                   <p className="text-sm font-medium">
