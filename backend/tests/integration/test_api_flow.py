@@ -573,15 +573,16 @@ def test_governed_finalisation_and_report_routes(client: TestClient) -> None:
     assert workspace_payload["claim"]["status"] == "comparison_review"
     assert workspace_payload["invoice"]["id"]
     assert workspace_payload["summary"] == {
-        "challengePrice": 643.26,
-        "challengeAmount": 0.0,
-        "vatImpact": 0.0,
-        "grossEffect": 0.0,
-        "challengePercentage": 0.0,
+        "challengePrice": 623.07,
+        "challengeAmount": 20.19,
+        "vatImpact": 4.04,
+        "grossEffect": 24.23,
+        "challengePercentage": 3.14,
         "challengeStrength": 78,
     }
     challenged_lines = [line for line in workspace_payload["lines"] if line.get("challenge", 0) > 0]
-    assert challenged_lines == []
+    assert len(challenged_lines) == 2
+    assert sum(Decimal(str(row["challenge"])) for row in challenged_lines) == Decimal("20.19")
     assert len(workspace_payload["ontologyBank"]["items"]) == 72
     assert workspace_payload["versions"]["policy"] == "claimguard-v1.4"
     assert workspace_payload["versions"]["ontology"] == "ontology-v0-bootstrap"
@@ -625,11 +626,11 @@ def test_governed_finalisation_and_report_routes(client: TestClient) -> None:
     assert len(result["lines"]) == 18
     assert result["summary"] == {
         "invoice_price_net": "643.26",
-        "challenge_price_net": "643.26",
-        "challenge_amount_net": "0.00",
-        "vat_impact": "0.00",
-        "gross_effect": "0.00",
-        "challenge_percentage": "0.0000",
+        "challenge_price_net": "623.07",
+        "challenge_amount_net": "20.19",
+        "vat_impact": "4.04",
+        "gross_effect": "24.23",
+        "challenge_percentage": "3.1387",
         "challenge_strength": 78,
     }
 
@@ -646,7 +647,21 @@ def test_governed_finalisation_and_report_routes(client: TestClient) -> None:
         for row in result["challenges"]
         if Decimal(row["challenge_amount_net"]) > 0
     }
-    assert positive == {}
+    assert len(positive) == 2
+    assert sum(Decimal(row["challenge_amount_net"]) for row in positive.values()) == Decimal(
+        "20.19"
+    )
+
+    for row in workspace_challenges:
+        rejected = client.post(
+            f"/api/v1/challenge-results/{row['challengeResultId']}/decision",
+            json={
+                "actor": "pytest.handler",
+                "approved": False,
+                "rationale": "Governance test closes each proposed challenge before finalisation.",
+            },
+        )
+        assert rejected.status_code == 200
 
     finalised = client.post(
         "/api/v1/claims/CG-GOVERNANCE-91283/finalise",
@@ -672,15 +687,16 @@ def test_governed_finalisation_and_report_routes(client: TestClient) -> None:
         for row in final_workspace["lines"]
         if row["challenge"] > 0
     }
-    assert final_decisions == {}
+    assert set(final_decisions.values()) == {("rejected", False)}
+    assert len(final_decisions) == 2
     invoice_reviews = client.get("/api/v1/claims/CG-GOVERNANCE-91283/invoices").json()
     assert invoice_reviews[0]["challenge_review"] == {
-        "positive": 0,
+        "positive": 2,
         "approved": 0,
-        "rejected": 0,
+        "rejected": 2,
         "unresolved": 0,
     }
-    assert len(invoice_reviews[0]["challenge_lines"]) == 0
+    assert len(invoice_reviews[0]["challenge_lines"]) == 2
     assert all(
         {
             "in_house_p90_net",

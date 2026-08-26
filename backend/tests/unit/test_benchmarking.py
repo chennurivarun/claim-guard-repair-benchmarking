@@ -13,6 +13,7 @@ from app.services.benchmarking import (
 )
 from app.services.case_result import (
     _historical_p90_evidence,
+    _mapped_external_reference,
     _uploaded_batch_benchmark_dashboard,
     _uploaded_line_p90_benchmarks,
     _verified_external_observations,
@@ -54,6 +55,53 @@ def test_in_house_p90_aggregates_mixed_synthetic_vehicle_samples() -> None:
     assert evidence is not None
     assert evidence.value == Decimal("100.00")
     assert evidence.method == "In-house repair-book P90 (mixed synthetic vehicles)"
+
+
+def test_historical_p90_falls_back_to_same_item_when_vehicle_is_missing() -> None:
+    comparables = [
+        {
+            "id": f"history-{index}",
+            "source_type": "historical",
+            "price_net": price,
+            "vehicle": {"make": make, "model": model},
+            "comparability_metadata": {"source_group": "historical_claim"},
+            "provenance": {"claim_reference": f"INV-{index}"},
+        }
+        for index, (price, make, model) in enumerate(
+            [
+                ("100.00", "BMW", "3 Series"),
+                ("120.00", "Audi", "A4"),
+                ("140.00", "Ford", "Focus"),
+            ],
+            start=1,
+        )
+    ]
+
+    evidence = _historical_p90_evidence(
+        comparables,
+        SimpleNamespace(make=None, model=None),
+        source_group="historical_claim",
+    )
+
+    assert evidence is not None
+    assert evidence.value == Decimal("136.00")
+    assert evidence.historical_count == 3
+    assert evidence.method == "Historical claims P90 (all vehicle categories fallback)"
+
+
+def test_mapped_item_reference_is_available_as_external_price_evidence() -> None:
+    evidence = _mapped_external_reference(
+        SimpleNamespace(
+            reference_price_net=Decimal("138.00"),
+            source_url_or_ref="ontology_seed.xlsx#full-service",
+            price_source="Reference price bank",
+        )
+    )
+
+    assert evidence is not None
+    assert evidence["price_net"] == Decimal("138.00")
+    assert evidence["source_reference"] == "ontology_seed.xlsx#full-service"
+    assert evidence["source_title"] == "Reference price bank"
 
 
 def test_external_price_uses_lowest_traceable_exact_vehicle_source() -> None:
@@ -304,6 +352,55 @@ def test_uploaded_line_p90_excludes_the_current_invoice_and_explains_challenge()
     assert result["currentInvoiceExcluded"] is True
     assert len(result["observations"]) == 8
     assert all(row["invoiceNumber"] != "INV-009" for row in result["observations"])
+
+
+def test_uploaded_line_p90_uses_same_item_history_when_current_vehicle_is_missing() -> None:
+    invoices = []
+    lines = []
+    for index, price in enumerate(["100.00", "120.00", "140.00"], start=1):
+        invoice = SimpleNamespace(
+            id=f"invoice-{index}",
+            invoice_number=f"INV-{index:03}",
+            invoice_date=date(2026, 1, index),
+            vehicle=SimpleNamespace(make="BMW", model="3 Series"),
+        )
+        invoices.append(invoice)
+        lines.append(
+            SimpleNamespace(
+                id=f"line-{index}",
+                invoice_id=invoice.id,
+                status=ReviewStatus.PENDING,
+                line_total_net=price,
+                raw_description="Carried Out Full Service",
+                normalised_description="carried out full service",
+            )
+        )
+    current_invoice = SimpleNamespace(
+        id="invoice-current",
+        invoice_number="INV-004",
+        invoice_date=date(2026, 1, 4),
+        vehicle=SimpleNamespace(make=None, model=None),
+    )
+    invoices.append(current_invoice)
+    lines.append(
+        SimpleNamespace(
+            id="line-current",
+            invoice_id=current_invoice.id,
+            status=ReviewStatus.PENDING,
+            line_total_net="475.00",
+            raw_description="Carried Out Full Service",
+            normalised_description="carried out full service",
+        )
+    )
+
+    result = _uploaded_line_p90_benchmarks(
+        {"invoices": invoices, "lines": lines, "mappings": [], "ontology": {}},
+        current_invoice=current_invoice,
+    )["line-current"]
+
+    assert result["p90"] == 136.0
+    assert result["historicalCount"] == 3
+    assert result["vehicleScope"] == "all vehicle categories fallback"
 
 
 def test_uploaded_dashboard_and_graph_share_the_same_rolling_p90_exceptions() -> None:

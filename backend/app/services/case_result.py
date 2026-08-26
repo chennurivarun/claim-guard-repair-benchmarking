@@ -154,16 +154,11 @@ def _historical_p90_evidence(
     *,
     source_group: str,
 ) -> P90Evidence | None:
-    """Build an item P90, using strict vehicles only for real historical claims."""
+    """Build an item P90, preferring exact vehicles for real historical claims."""
 
     current_make = _normalised_vehicle_value(vehicle.make if vehicle else None)
     current_model = _normalised_vehicle_value(vehicle.model if vehicle else None)
-    # A make/model-scoped benchmark must never broaden silently when the
-    # current invoice is missing vehicle identity. That case belongs in manual
-    # review until the handler supplies both values.
-    if source_group != "in_house" and (not current_make or not current_model):
-        return None
-    eligible: list[dict[str, Any]] = []
+    source_rows: list[dict[str, Any]] = []
     for row in comparables:
         if row.get("source_type") != "historical":
             continue
@@ -178,16 +173,28 @@ def _historical_p90_evidence(
             row_source_group = "historical_claim"
         if row_source_group != source_group:
             continue
-        candidate_vehicle = row.get("vehicle") or {}
-        if source_group != "in_house" and (
-            _normalised_vehicle_value(candidate_vehicle.get("make")) != current_make
-            or _normalised_vehicle_value(candidate_vehicle.get("model")) != current_model
-        ):
-            continue
         price = _decimal(row.get("price_net"))
         if price <= 0:
             continue
-        eligible.append(row)
+        source_rows.append(row)
+    vehicle_scope = "mixed synthetic vehicles"
+    eligible = source_rows
+    if source_group != "in_house":
+        exact_vehicle_rows = []
+        if current_make and current_model:
+            exact_vehicle_rows = [
+                row
+                for row in source_rows
+                if _normalised_vehicle_value((row.get("vehicle") or {}).get("make"))
+                == current_make
+                and _normalised_vehicle_value((row.get("vehicle") or {}).get("model"))
+                == current_model
+            ]
+        if exact_vehicle_rows:
+            eligible = exact_vehicle_rows
+            vehicle_scope = "strict vehicle match"
+        else:
+            vehicle_scope = "all vehicle categories fallback"
     if not eligible:
         return None
     statistics = calculate_benchmark_statistics(_decimal(row.get("price_net")) for row in eligible)
@@ -199,13 +206,17 @@ def _historical_p90_evidence(
         method=(
             "In-house repair-book P90 (mixed synthetic vehicles)"
             if source_group == "in_house"
-            else "Historical claims P90 (strict vehicle match)"
+            else f"Historical claims P90 ({vehicle_scope})"
         ),
         explanation=(
             "Synthetic observations were matched to the repair item across the six "
             "vehicle examples stored in the in-house CSV."
             if source_group == "in_house"
-            else "Eligible previous claims were matched to the repair item and the exact make and model."
+            else (
+                "Eligible previous claims were matched to the repair item and exact make and model."
+                if vehicle_scope == "strict vehicle match"
+                else "Vehicle identity was unavailable or had no exact matches, so eligible previous claims were matched to the same repair item across all vehicle categories."
+            )
         ),
         contributing_invoices=tuple(
             str((row.get("provenance") or {}).get("claim_reference") or row.get("id"))
@@ -247,6 +258,25 @@ def _verified_external_price(
 
     eligible = _verified_external_observations(comparables, vehicle)
     return _decimal(eligible[0].get("price_net")) if eligible else None
+
+
+def _mapped_external_reference(item: OntologyItem | Any | None) -> dict[str, Any] | None:
+    """Expose a mapped repair item's stored, source-linked reference price."""
+
+    if item is None:
+        return None
+    price = _decimal(getattr(item, "reference_price_net", None))
+    source_reference = str(getattr(item, "source_url_or_ref", None) or "").strip()
+    source_title = str(getattr(item, "price_source", None) or "").strip()
+    if price <= 0 or not (source_reference or source_title):
+        return None
+    return {
+        "price_net": price,
+        "source_reference": source_reference or None,
+        "source_title": source_title or "Mapped repair-item reference price",
+        "vehicle_make": None,
+        "vehicle_model": None,
+    }
 
 
 def _merge_p90_evidence(
@@ -894,10 +924,11 @@ def build_case_result(
         historical_evidence = _merge_p90_evidence(
             stored_historical_evidence,
             uploaded_historical_evidence,
-            method="Historical claims P90 (strict vehicle match)",
+            method="Historical claims P90",
             explanation=(
-                "Eligible previous-claim observations were matched to the repair item "
-                "and exact vehicle make and model; the current invoice was excluded."
+                "Eligible earlier uploaded invoices were matched to the same repair item. "
+                "Exact make and model are preferred; all vehicle categories are used when "
+                "vehicle data or exact matches are unavailable. The current invoice was excluded."
             ),
         )
         external_observations = (
@@ -914,6 +945,25 @@ def build_case_result(
             }
             for row in external_observations
         ]
+        external_price_method = None
+        if external_sources:
+            external_price_method = (
+                f"Lowest of {len(external_sources)} approved, source-linked external "
+                "prices for the exact vehicle make and model."
+            )
+        elif not rejected:
+            mapped_external = _mapped_external_reference(item)
+            if mapped_external is not None:
+                external_price = mapped_external["price_net"]
+                external_sources = [
+                    {
+                        **mapped_external,
+                        "price_net": _money_float(mapped_external["price_net"]),
+                    }
+                ]
+                external_price_method = (
+                    "Source-linked external reference price stored for the mapped repair item."
+                )
         decision = _decide_line_from_benchmark(
             billed_net=line.line_total_net,
             in_house=in_house_evidence,
@@ -984,12 +1034,7 @@ def build_case_result(
                 "historical_claims_p90_net": decision.historical_price,
                 "external_price_net": decision.external_price,
                 "external_price_sources": external_sources,
-                "external_price_method": (
-                    f"Lowest of {len(external_sources)} approved, source-linked external "
-                    "prices for the exact vehicle make and model."
-                    if external_sources
-                    else None
-                ),
+                "external_price_method": external_price_method,
                 "supported_price_net": supported_price,
                 "challenge_amount_net": challenge_amount,
                 "challenge_vat": challenge_vat,
@@ -1282,9 +1327,7 @@ def _uploaded_line_p90_benchmarks(
     current_vehicle = getattr(current_invoice, "vehicle", None)
     current_make = _normalised_vehicle_value(getattr(current_vehicle, "make", None))
     current_model = _normalised_vehicle_value(getattr(current_vehicle, "model", None))
-    if not current_make or not current_model:
-        return {}
-    prior_invoices = [
+    exact_vehicle_invoices = [
         invoice
         for invoice in prior_invoices
         if getattr(invoice, "vehicle", None)
@@ -1322,6 +1365,7 @@ def _uploaded_line_p90_benchmarks(
             "description": line.raw_description,
             "category": category,
             "price": _money_float(price),
+            "exactVehicleMatch": invoice in exact_vehicle_invoices,
         }
         for key in keys:
             observations_by_key.setdefault(key, []).append(observation)
@@ -1341,10 +1385,17 @@ def _uploaded_line_p90_benchmarks(
         observations = {
             row["lineId"]: row for key in keys for row in observations_by_key.get(key, [])
         }
-        ordered_observations = sorted(
+        broad_observations = sorted(
             observations.values(),
             key=lambda row: (row["invoiceDate"] or "", row["invoiceNumber"], row["lineId"]),
         )
+        exact_observations = [row for row in broad_observations if row["exactVehicleMatch"]]
+        if len(exact_observations) >= minimum_count:
+            ordered_observations = exact_observations
+            vehicle_scope = "exact make and model"
+        else:
+            ordered_observations = broad_observations
+            vehicle_scope = "all vehicle categories fallback"
         if len(ordered_observations) < minimum_count:
             continue
         statistics = calculate_benchmark_statistics(
@@ -1380,6 +1431,7 @@ def _uploaded_line_p90_benchmarks(
             "explanation": explanation,
             "observations": ordered_observations,
             "method": "Interpolated percentile (PERCENTILE.INC)",
+            "vehicleScope": vehicle_scope,
             "currentInvoiceExcluded": True,
         }
     return results
