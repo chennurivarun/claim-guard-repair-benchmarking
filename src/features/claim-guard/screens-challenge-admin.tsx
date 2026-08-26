@@ -94,6 +94,7 @@ import {
   type UploadedDocument,
 } from "./document-api"
 import { formatMoney } from "./format"
+import { downloadManualReviewCsv } from "./manual-review-export"
 import { isMappingApproved } from "./mapping-rules"
 import {
   MappingDecisionDialog,
@@ -1798,6 +1799,25 @@ function ManualReviewDocumentsSection({
     <DataCard
       title="Documents needing manual review"
       description={`${reviewDocuments.length} document${reviewDocuments.length === 1 ? "" : "s"} could not be fully processed automatically`}
+      action={
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={loading || reviewDocuments.length === 0}
+          onClick={() =>
+            downloadManualReviewCsv(
+              caseReference,
+              documents,
+              pages,
+              invoices
+            )
+          }
+        >
+          <DownloadIcon data-icon="inline-start" />
+          Download staging CSV
+        </Button>
+      }
     >
       {loadError ? (
         <Alert variant="destructive">

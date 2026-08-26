@@ -78,6 +78,13 @@ class Settings(BaseSettings):
     # tiers are disabled for cost or policy reasons.
     llm_briefing_enabled: bool = True
 
+    # When configured, the challenged-invoice relationship view is mirrored to
+    # Neo4j. The API still returns the governed SQL result if Neo4j is offline.
+    neo4j_uri: str | None = None
+    neo4j_username: str | None = None
+    neo4j_password: SecretStr | None = None
+    neo4j_database: str = "neo4j"
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

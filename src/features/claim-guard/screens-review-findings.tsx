@@ -832,6 +832,9 @@ export function ReviewFindingsScreen({
                 <p className="text-xs font-medium text-muted-foreground">
                   In-house benchmark P90
                 </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Weightage 50%
+                </p>
                 <p className="mt-2 text-2xl font-semibold tabular-nums">
                   {line.inHouseP90 == null ? "—" : formatMoney(line.inHouseP90)}
                 </p>
@@ -839,6 +842,9 @@ export function ReviewFindingsScreen({
               <div className="border-b p-5 md:border-r 2xl:border-b-0">
                 <p className="text-xs font-medium text-muted-foreground">
                   Historical claims P90
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Weightage 30%
                 </p>
                 <p className="mt-2 text-2xl font-semibold tabular-nums">
                   {line.historicalClaimsP90 == null
@@ -849,6 +855,9 @@ export function ReviewFindingsScreen({
               <div className="border-b p-5 md:border-b-0 2xl:border-r">
                 <p className="text-xs font-medium text-muted-foreground">
                   External reference price
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Weightage 20%
                 </p>
                 <p className="mt-2 text-2xl font-semibold tabular-nums">
                   {line.externalReferencePrice == null

@@ -88,6 +88,16 @@ def _is_mot_description(description: Any) -> bool:
     return "mot" in str(description or "").lower()
 
 
+def _is_invoice_header_description(description: Any) -> bool:
+    """Identify OCR table headings that must never become priced repair lines."""
+
+    normalised = " ".join(str(description or "").casefold().split())
+    return all(
+        marker in normalised
+        for marker in ("invoice number", "date", "mileage", "job value")
+    )
+
+
 def _p90_evidence_from_benchmark(benchmark: dict[str, Any]) -> P90Evidence:
     observations = benchmark.get("observations") or []
     seen: list[str] = []
@@ -260,18 +270,31 @@ def _verified_external_price(
     return _decimal(eligible[0].get("price_net")) if eligible else None
 
 
-def _mapped_external_reference(item: OntologyItem | Any | None) -> dict[str, Any] | None:
-    """Expose a mapped repair item's stored, source-linked reference price."""
+def _mapped_external_reference(
+    item: OntologyItem | Any | None, quantity: Any = None
+) -> dict[str, Any] | None:
+    """Expose a mapped repair item's source-linked price at invoice-line quantity."""
 
     if item is None:
         return None
     price = _decimal(getattr(item, "reference_price_net", None))
     source_reference = str(getattr(item, "source_url_or_ref", None) or "").strip()
     source_title = str(getattr(item, "price_source", None) or "").strip()
+    normalised_title = source_title.casefold().replace("-", "_").replace(" ", "_")
+    normalised_reference = source_reference.casefold()
+    if normalised_title == "auto_unmatched_invoice_line" or normalised_reference.startswith(
+        "invoice_line:"
+    ) or normalised_reference.startswith("invoice-line:"):
+        return None
     if price <= 0 or not (source_reference or source_title):
         return None
+    line_quantity = _decimal(quantity)
+    if line_quantity <= 0:
+        line_quantity = Decimal("1")
     return {
-        "price_net": price,
+        "price_net": price * line_quantity,
+        "unit_price_net": price,
+        "quantity": line_quantity,
         "source_reference": source_reference or None,
         "source_title": source_title or "Mapped repair-item reference price",
         "vehicle_make": None,
@@ -779,6 +802,8 @@ def build_case_result(
     challenge_records: list[dict[str, Any]] = []
     for line in lines:
         rejected = line.status == ReviewStatus.REJECTED
+        header_line = _is_invoice_header_description(line.raw_description)
+        operationally_excluded = rejected or header_line
         mapping = mappings_by_line.get(line.id)
         comparison = comparisons_by_line.get(line.id)
         challenge = challenges_by_comparison.get(comparison.id) if comparison else None
@@ -868,7 +893,7 @@ def build_case_result(
                     "eligibility": comparison.eligibility_flags_json,
                 }
             )
-        if challenge and comparison and not rejected:
+        if challenge and comparison and not operationally_excluded:
             approved = bool(challenge.reviewer_approved)
             challenge_records.append(
                 {
@@ -903,7 +928,7 @@ def build_case_result(
         # price/challenge for every line. Persisted legacy comparison rows stay
         # available as audit evidence, but must never leak an obsolete
         # supported price into the reviewer-facing result.
-        benchmark = None if rejected else uploaded_p90_benchmarks.get(line.id)
+        benchmark = None if operationally_excluded else uploaded_p90_benchmarks.get(line.id)
         invoice = invoices_by_id.get(line.invoice_id)
         vehicle = vehicles.get(invoice.vehicle_id or "") if invoice else None
         uploaded_historical_evidence = (
@@ -911,12 +936,12 @@ def build_case_result(
         )
         in_house_evidence = (
             None
-            if rejected
+            if operationally_excluded
             else _historical_p90_evidence(comparable_records, vehicle, source_group="in_house")
         )
         stored_historical_evidence = (
             None
-            if rejected
+            if operationally_excluded
             else _historical_p90_evidence(
                 comparable_records, vehicle, source_group="historical_claim"
             )
@@ -932,9 +957,15 @@ def build_case_result(
             ),
         )
         external_observations = (
-            [] if rejected else _verified_external_observations(comparable_records, vehicle)
+            []
+            if operationally_excluded
+            else _verified_external_observations(comparable_records, vehicle)
         )
-        external_price = None if rejected else _verified_external_price(comparable_records, vehicle)
+        external_price = (
+            None
+            if operationally_excluded
+            else _verified_external_price(comparable_records, vehicle)
+        )
         external_sources = [
             {
                 "price_net": _money_float(_decimal(row.get("price_net"))),
@@ -951,8 +982,8 @@ def build_case_result(
                 f"Lowest of {len(external_sources)} approved, source-linked external "
                 "prices for the exact vehicle make and model."
             )
-        elif not rejected:
-            mapped_external = _mapped_external_reference(item)
+        elif not operationally_excluded:
+            mapped_external = _mapped_external_reference(item, line.quantity)
             if mapped_external is not None:
                 external_price = mapped_external["price_net"]
                 external_sources = [
@@ -962,7 +993,8 @@ def build_case_result(
                     }
                 ]
                 external_price_method = (
-                    "Source-linked external reference price stored for the mapped repair item."
+                    "Source-linked external reference unit price stored for the mapped repair "
+                    "item, scaled to the invoice-line quantity."
                 )
         decision = _decide_line_from_benchmark(
             billed_net=line.line_total_net,
@@ -986,10 +1018,12 @@ def build_case_result(
                 "supported_price_net": None,
                 "challenge_amount_net": Decimal("0"),
                 "challenge_vat": Decimal("0"),
-                "comparison_status": "EXCLUDED" if rejected else None,
+                "comparison_status": "EXCLUDED" if operationally_excluded else None,
                 "rationale": None,
                 "evidence_rationale": (
-                    "This extracted line was rejected and is excluded from price decisions."
+                    "This OCR table heading is retained for audit but excluded from price decisions."
+                    if header_line
+                    else "This extracted line was rejected and is excluded from price decisions."
                     if rejected
                     else (
                         "No in-house or historical P90 is available. External reference "
@@ -1004,11 +1038,13 @@ def build_case_result(
             challenge_records[:] = [
                 row for row in challenge_records if row.get("line_id") != line.id
             ]
-            if comparison is not None and not rejected:
+            if comparison is not None and not operationally_excluded:
                 comparison_records[-1].update(
                     {
                         "challenge_price_net": None,
-                        "decision_comparison_status": "EXCLUDED" if rejected else None,
+                        "decision_comparison_status": (
+                            "EXCLUDED" if operationally_excluded else None
+                        ),
                         "decision_calculation": decision.calculation,
                     }
                 )
@@ -1046,7 +1082,7 @@ def build_case_result(
                 "threshold_pct": float(threshold_decimal),
             }
             line_record["price_decision"] = decision_payload
-            if comparison is not None and not rejected:
+            if comparison is not None and not operationally_excluded:
                 comparison_records[-1].update(
                     {
                         "challenge_price_net": supported_price,
@@ -1054,7 +1090,11 @@ def build_case_result(
                         "decision_calculation": decision.calculation,
                     }
                 )
-            if challenge is not None and comparison is not None and not rejected:
+            if (
+                challenge is not None
+                and comparison is not None
+                and not operationally_excluded
+            ):
                 challenge_records[-1].update(
                     {
                         "invoice_net": line.line_total_net,

@@ -110,6 +110,7 @@ from app.services.extraction_review import (
     recalculate_invoice_findings,
     review_extraction_line,
 )
+from app.services.knowledge_graph import build_challenge_knowledge_graph, sync_to_neo4j
 from app.services.mapping_review import (
     BundleComponentDecision,
     MappingReviewCommand,
@@ -2161,6 +2162,22 @@ def get_case_result(
         return build_case_result(db, case_reference, p90_threshold_pct=threshold)
     except LookupError as exc:
         raise _not_found("Claim not found") from exc
+
+
+@router.get("/claims/{case_reference}/knowledge-graph", tags=["reports"])
+def get_challenge_knowledge_graph(
+    case_reference: str,
+    db: DatabaseSession,
+    p90_threshold_pct: int = Query(DEFAULT_P90_POLICY.default_threshold_pct),
+) -> dict[str, Any]:
+    threshold = _validated_p90_threshold_pct(p90_threshold_pct)
+    try:
+        result = build_case_result(db, case_reference, p90_threshold_pct=threshold)
+    except LookupError as exc:
+        raise _not_found("Claim not found") from exc
+    payload = build_challenge_knowledge_graph(result)
+    sync_to_neo4j(payload, get_settings())
+    return payload
 
 
 @router.get("/claims/{case_reference}/reports/{report_format}", tags=["reports"])

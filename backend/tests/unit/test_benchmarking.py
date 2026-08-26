@@ -13,12 +13,20 @@ from app.services.benchmarking import (
 )
 from app.services.case_result import (
     _historical_p90_evidence,
+    _is_invoice_header_description,
     _mapped_external_reference,
     _uploaded_batch_benchmark_dashboard,
     _uploaded_line_p90_benchmarks,
     _verified_external_observations,
     _verified_external_price,
 )
+
+
+def test_invoice_table_heading_is_not_a_repair_description() -> None:
+    assert _is_invoice_header_description(
+        'Invoice Number Date / / ) : Mileage : Job Value'
+    )
+    assert not _is_invoice_header_description("MOT Test class IV")
 
 
 def test_benchmark_statistics_include_requested_values_and_no_fake_mode() -> None:
@@ -102,6 +110,34 @@ def test_mapped_item_reference_is_available_as_external_price_evidence() -> None
     assert evidence["price_net"] == Decimal("138.00")
     assert evidence["source_reference"] == "ontology_seed.xlsx#full-service"
     assert evidence["source_title"] == "Reference price bank"
+
+
+def test_invoice_line_seed_is_not_reused_as_external_price_evidence() -> None:
+    evidence = _mapped_external_reference(
+        SimpleNamespace(
+            reference_price_net=Decimal("475.00"),
+            source_url_or_ref="invoice-line:line-123",
+            price_source="auto_unmatched_invoice_line",
+        )
+    )
+
+    assert evidence is None
+
+
+def test_mapped_external_reference_scales_unit_price_to_line_quantity() -> None:
+    evidence = _mapped_external_reference(
+        SimpleNamespace(
+            reference_price_net=Decimal("9.75"),
+            source_url_or_ref="ontology_seed.xlsx#engine-oil",
+            price_source="Reference price bank",
+        ),
+        Decimal("4"),
+    )
+
+    assert evidence is not None
+    assert evidence["unit_price_net"] == Decimal("9.75")
+    assert evidence["quantity"] == Decimal("4")
+    assert evidence["price_net"] == Decimal("39.00")
 
 
 def test_external_price_uses_lowest_traceable_exact_vehicle_source() -> None:

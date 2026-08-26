@@ -48,6 +48,7 @@ Before continuing, confirm:
 | Generated reports | `backend/data/exports` | Treat as claim data; apply the same access, retention and backup controls. |
 | OCR | Native PDF extraction plus optional Azure Document Intelligence | Azure is required for photographed/scanned documents on the company setup. |
 | LLM assistance | Gemini, Azure OpenAI or an approved OpenAI-compatible provider | Optional for app startup, but required for the intended unfamiliar-part matching flow. Use only an insurer-approved provider for real claims. |
+| Knowledge graph | Neo4j 5.x | Configure the four `CLAIM_GUARD_NEO4J_*` variables to persist challenge relationships in Neo4j. If unavailable, the UI continues with the governed relational projection and reports that fallback. |
 
 This repository does not currently include a Dockerfile, reverse-proxy configuration, infrastructure-as-code, or a CI/CD deployment workflow. The deployment owner must supply and review the host-specific service configuration; do not invent it during the release window.
 
@@ -73,6 +74,9 @@ Create the environment files from the checked-in examples. Never commit `.env` f
 | `CLAIM_GUARD_LLM_VISION_ENABLED` | Vision fallback approved and tested | Keep `false` until the configured deployment is confirmed to accept images and insurer policy permits sending page images. |
 | `CLAIM_GUARD_AUTO_RESEARCH` | Always in this release | Keep `false`. Real automatic research is not approved. |
 | `CLAIM_GUARD_RESEARCH_SOURCE_ALLOWLISTS` | Real research adapter enabled | Replace the placeholder domains with insurer-approved UK sources before use. |
+| `CLAIM_GUARD_NEO4J_URI` | Neo4j persistence enabled | Use the approved `neo4j://` or `neo4j+s://` endpoint. Leave blank only when relational fallback is intentionally accepted. |
+| `CLAIM_GUARD_NEO4J_USERNAME` / `CLAIM_GUARD_NEO4J_PASSWORD` | Neo4j persistence enabled | Store as backend secrets; never expose them to the frontend. |
+| `CLAIM_GUARD_NEO4J_DATABASE` | Neo4j persistence enabled | Database name, normally `neo4j`. |
 
 Secret/configuration sign-off:
 
@@ -180,6 +184,7 @@ Use non-sensitive test fixtures first. Do not begin with a live customer claim.
 | Scanned/Audatex upload | A representative Type 7/Audatex-style file extracts real item rows (for example bumper/wing/brake parts), not only roll-up totals such as “total parts” or “total paint work.” | ☐ Pass ☐ Fail ☐ Not in scope |
 | File selection | Changing the selected invoice changes the displayed extracted data; the dropdown is not static. | ☐ Pass ☐ Fail |
 | Manual review | A deliberately unreadable/unsupported file appears in Manual review with a reason. | ☐ Pass ☐ Fail |
+| Manual-review staging export | **Download staging CSV** downloads the documents, AI briefing, review reason, pages, invoice metadata and extracted lines. | ☐ Pass ☐ Fail |
 | Benchmarks | The table loads; a genuine empty state displays zero values/counts rather than blanks or stale figures. | ☐ Pass ☐ Fail |
 | Price comparison | Running document price comparison returns HTTP 200, not 500, and produces a stable result. | ☐ Pass ☐ Fail |
 | Challenged invoices | The challenged-invoice selector contains only invoices with a positive challenge amount; it does not offer invoices that only show “No price challenges found.” | ☐ Pass ☐ Fail |
@@ -188,6 +193,7 @@ Use non-sensitive test fixtures first. Do not begin with a live customer claim.
 | Match approval | Approving/changing a repair-item match updates the selected row, persists the ontology/mapping decision and reruns comparison. | ☐ Pass ☐ Fail |
 | Challenge approval | After the repair-item match prerequisite is approved, the challenge approval control works and the review counter/status updates. | ☐ Pass ☐ Fail |
 | Audit | The approval/mapping action appears in the audit trail with actor, rationale and before/after data. | ☐ Pass ☐ Fail |
+| Knowledge graph | KPI cards equal the challenged-invoice outcomes; selecting a repairer, item or connection reveals its invoice evidence. When Neo4j is configured, backend logs contain no graph-sync failure. | ☐ Pass ☐ Fail |
 | Refresh/restart | Refreshing the browser and restarting the API preserve documents, selections and decisions. | ☐ Pass ☐ Fail |
 
 If a mandatory check fails, stop the release. Capture the request URL, HTTP status, safe error code, affected document type and application commit. Do not copy claim content or secrets into a public ticket.

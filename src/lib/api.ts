@@ -461,6 +461,80 @@ export function fetchBenchmarkDashboard(filters?: {
   return requestJson(`/api/v1/benchmarks/dashboard${suffix}`)
 }
 
+export interface ChallengeKnowledgeGraphPayload {
+  caseReference: string
+  storage: "neo4j" | "relational-fallback"
+  summary: {
+    mostChallengedRepairer: {
+      id: string
+      name: string
+      invoiceCount: number
+      challengeCount: number
+      totalChallenge: number
+    } | null
+    mostChallengedItem: {
+      id: string
+      name: string
+      invoiceCount: number
+      challengeCount: number
+      totalChallenge: number
+    } | null
+    challengedInvoiceCount: number
+    potentialReduction: number
+  }
+  repairers: Array<{
+    id: string
+    name: string
+    invoiceCount: number
+    challengeCount: number
+    totalChallenge: number
+  }>
+  items: Array<{
+    id: string
+    name: string
+    invoiceCount: number
+    challengeCount: number
+    totalChallenge: number
+  }>
+  edges: Array<{
+    id: string
+    repairer: string
+    itemId: string
+    item: string
+    invoiceCount: number
+    challengeCount: number
+    totalChallenge: number
+    maximumChallenge: number
+    evidence: Array<{
+      lineId: string
+      invoiceId: string
+      invoiceNumber: string
+      repairer: string
+      description: string
+      billedPrice: number
+      supportedPrice: number
+      challengeAmount: number
+      inHouseP90: number | null
+      historicalClaimsP90: number | null
+      externalReferencePrice: number | null
+      status: string
+    }>
+  }>
+}
+
+export function fetchChallengeKnowledgeGraph(
+  caseReference: string,
+  p90ThresholdPct?: number
+): Promise<ChallengeKnowledgeGraphPayload> {
+  const query = new URLSearchParams()
+  if (p90ThresholdPct !== undefined)
+    query.set("p90_threshold_pct", String(p90ThresholdPct))
+  const suffix = query.size ? `?${query.toString()}` : ""
+  return requestJson(
+    `/api/v1/claims/${encodeURIComponent(caseReference)}/knowledge-graph${suffix}`
+  )
+}
+
 export function fetchBenchmarkObservations(
   ontologyItemId: string,
   vehicleClass?: string,

@@ -15,8 +15,9 @@ import { Button } from "@/components/ui/button"
 import type {
   BenchmarkDashboardPayload,
   BenchmarkExceptionPayload,
+  ChallengeKnowledgeGraphPayload,
 } from "@/lib/api"
-import { fetchBenchmarkDashboard } from "@/lib/api"
+import { fetchChallengeKnowledgeGraph } from "@/lib/api"
 
 import { DataCard, ScreenHeading } from "./shared"
 
@@ -67,6 +68,57 @@ const demoRepairerTrends: BenchmarkDashboardPayload["repairerTrends"] = [
     ],
   },
 ]
+
+function graphPayloadToRepairerTrends(
+  payload: ChallengeKnowledgeGraphPayload
+): BenchmarkDashboardPayload["repairerTrends"] {
+  return payload.repairers.map((repairer) => ({
+    repairer: repairer.name,
+    challengeCount: repairer.challengeCount,
+    invoiceCount: repairer.invoiceCount,
+    itemCount: payload.edges.filter((edge) => edge.repairer === repairer.name)
+      .length,
+    totalDifference: repairer.totalChallenge,
+    maximumDifference: Math.max(
+      0,
+      ...payload.edges
+        .filter((edge) => edge.repairer === repairer.name)
+        .map((edge) => edge.maximumChallenge)
+    ),
+    items: payload.edges
+      .filter((edge) => edge.repairer === repairer.name)
+      .map((edge) => ({
+        ontologyItemId: edge.itemId,
+        item: edge.item,
+        challengeCount: edge.challengeCount,
+        invoiceCount: edge.invoiceCount,
+        totalDifference: edge.totalChallenge,
+        maximumDifference: edge.maximumChallenge,
+        maximumPercentageAboveP90: Math.max(
+          0,
+          ...edge.evidence.map((row) =>
+            row.billedPrice > 0
+              ? (row.challengeAmount / row.billedPrice) * 100
+              : 0
+          )
+        ),
+        exceptions: edge.evidence.map((row) => ({
+          observationId: row.lineId,
+          invoiceNumber: row.invoiceNumber,
+          repairer: row.repairer,
+          description: row.description,
+          amount: row.billedPrice,
+          p90: row.supportedPrice,
+          difference: row.challengeAmount,
+          percentageAboveP90:
+            row.billedPrice > 0
+              ? (row.challengeAmount / row.billedPrice) * 100
+              : 0,
+          historicalCount: row.historicalClaimsP90 == null ? 0 : 1,
+        })),
+      })),
+  }))
+}
 
 type GraphSelection =
   | { kind: "repairer"; key: string }
@@ -124,13 +176,9 @@ export function KnowledgeGraphScreen({
 
   useEffect(() => {
     if (apiMode === "demo") return
-    void fetchBenchmarkDashboard({
-      caseReference,
-      challengeThresholdPct: challengeThreshold,
-      minimumCount: 1,
-    })
+    void fetchChallengeKnowledgeGraph(caseReference, challengeThreshold)
       .then((result) => {
-        setRepairerTrends(result.repairerTrends)
+        setRepairerTrends(graphPayloadToRepairerTrends(result))
         setLoadError(null)
       })
       .catch(() => {
@@ -171,6 +219,7 @@ export function KnowledgeGraphScreen({
         (left, right) =>
           right.invoiceNumbers.size - left.invoiceNumbers.size ||
           right.challengeCount - left.challengeCount ||
+          right.totalDifference - left.totalDifference ||
           left.label.localeCompare(right.label)
       )
       .slice(0, 10)
@@ -288,7 +337,7 @@ export function KnowledgeGraphScreen({
     <div className="flex flex-col gap-6">
       <ScreenHeading
         title="Repairer knowledge graph"
-        description={`Identify repairers and repair items that repeatedly exceed historical P90 at the ${challengeThreshold}% alert setting.`}
+        description="Explore the repairers, repair items and invoices connected by actual positive price-challenge outcomes."
         action={
           <Button type="button" variant="outline" onClick={onBack}>
             <ArrowLeftIcon aria-hidden />
@@ -328,13 +377,13 @@ export function KnowledgeGraphScreen({
             </div>
           </div>
         </DataCard>
-        <DataCard title="Challenged invoices" description="Unique invoices above both gates">
+        <DataCard title="Challenged invoices" description="Unique invoices with positive challenge outcomes">
           <div className="flex items-center gap-3">
             <ReceiptTextIcon className="size-5 text-primary" aria-hidden />
             <p className="text-2xl font-semibold tabular-nums">{challengedInvoiceCount}</p>
           </div>
         </DataCard>
-        <DataCard title="Potential reduction" description="Sum of qualifying P90 differences">
+        <DataCard title="Potential reduction" description="Sum of current positive challenge amounts">
           <div className="flex items-center gap-3">
             <CirclePoundSterlingIcon className="size-5 text-destructive" aria-hidden />
             <p className="text-2xl font-semibold tabular-nums">
@@ -347,14 +396,14 @@ export function KnowledgeGraphScreen({
       <DataCard
         title="Repairer → challenged repair item"
         description="Circle size shows challenged invoices, colour intensity shows total potential reduction, and connection thickness shows how many invoices contain that relationship. Select any element to inspect its evidence."
-        action={<Badge variant="outline">Earlier invoices only</Badge>}
+        action={<Badge variant="outline">Challenge outcomes</Badge>}
       >
         {loading && !graph.edges.length ? (
           <Alert>
             <NetworkIcon aria-hidden />
             <AlertTitle>Loading uploaded-invoice relationships</AlertTitle>
             <AlertDescription>
-              Building the graph from the same rolling P90 exceptions shown in the benchmark table.
+              Building the graph from the current challenged-invoice results.
             </AlertDescription>
           </Alert>
         ) : graph.edges.length ? (
@@ -489,7 +538,7 @@ export function KnowledgeGraphScreen({
             <NetworkIcon aria-hidden />
             <AlertTitle>No challenge relationships at this setting</AlertTitle>
             <AlertDescription>
-              The graph appears when an uploaded invoice line exceeds both the selected percentage threshold and the £5 minimum difference.
+              The graph appears when the supported-price calculation produces a positive challenge that passes both review gates.
             </AlertDescription>
           </Alert>
         )}
@@ -548,7 +597,7 @@ export function KnowledgeGraphScreen({
       {effectiveSelection ? (
         <DataCard
           title={`Evidence · ${selectedTitle}`}
-          description="Every row is a stored invoice line that exceeded the earlier-invoice P90 and both challenge gates."
+          description="Every row is a stored invoice line with a positive challenge produced by the governed supported-price formula."
           action={<Badge variant="outline">{selectedEvidence.length} challenged lines</Badge>}
         >
           <div className="overflow-x-auto">
@@ -559,10 +608,10 @@ export function KnowledgeGraphScreen({
                   <th className="px-3 py-3 font-medium">Repairer</th>
                   <th className="px-3 py-3 font-medium">Original description</th>
                   <th className="px-3 py-3 text-right font-medium">Charged</th>
-                  <th className="px-3 py-3 text-right font-medium">Earlier P90</th>
+                  <th className="px-3 py-3 text-right font-medium">Supported price</th>
                   <th className="px-3 py-3 text-right font-medium">Difference</th>
-                  <th className="px-3 py-3 text-right font-medium">Above P90</th>
-                  <th className="px-3 py-3 text-right font-medium">History used</th>
+                  <th className="px-3 py-3 text-right font-medium">Reduction</th>
+                  <th className="px-3 py-3 text-right font-medium">Historical source</th>
                 </tr>
               </thead>
               <tbody>
@@ -577,9 +626,11 @@ export function KnowledgeGraphScreen({
                       +{preciseMoney(row.difference)}
                     </td>
                     <td className="px-3 py-3 text-right font-medium text-destructive tabular-nums">
-                      +{row.percentageAboveP90.toFixed(1)}%
+                      {row.percentageAboveP90.toFixed(1)}%
                     </td>
-                    <td className="px-3 py-3 text-right tabular-nums">{row.historicalCount}</td>
+                    <td className="px-3 py-3 text-right tabular-nums">
+                      {row.historicalCount ? "Available" : "Not available"}
+                    </td>
                   </tr>
                 ))}
               </tbody>
