@@ -212,6 +212,10 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" })
+  }, [activeScreen])
+
   // The server now computes the operational price decision (P90 policy) for
   // every line — the client no longer overlays it. Toggling the threshold
   // just refetches the workspace with the new p90_threshold_pct. Demo mode
