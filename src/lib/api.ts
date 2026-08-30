@@ -149,6 +149,94 @@ export interface HistoricalObservationPayload {
   source: Record<string, unknown>
 }
 
+export interface LinePriceEvidenceObservation {
+  id: string
+  sourceRecordId: string | null
+  sourceGroup: "in_house" | "historical_claim"
+  origin:
+    "synthetic_in_house" | "historical_claim_store" | "uploaded_invoice_batch"
+  claimReference?: string | null
+  invoiceId?: string | null
+  invoiceNumber?: string | null
+  invoiceDate: string | null
+  repairer?: string | null
+  description: string | null
+  amountNet: number
+  vehicle: {
+    make?: string | null
+    model?: string | null
+    variant?: string | null
+    year?: number | null
+  }
+  sourceReference?: string | null
+  included: boolean
+  inclusionReason: string
+}
+
+export interface LinePriceEvidenceSource {
+  available: boolean
+  eligible: boolean
+  valueNet: number | null
+  configuredWeight: number
+  effectiveWeight: number
+  method: string | null
+  scope: string
+  sampleCount: number
+  currentInvoiceExcluded: boolean
+  synthetic?: boolean
+  observations: LinePriceEvidenceObservation[]
+}
+
+export interface LineExternalPriceEvidenceSource {
+  price_net: number
+  unit_price_net?: number
+  quantity?: number
+  source_reference: string | null
+  source_title: string | null
+  vehicle_make: string | null
+  vehicle_model: string | null
+  approval_status?: string | null
+  eligible: boolean
+  eligibility_reason?: string | null
+}
+
+export interface LinePriceEvidencePayload {
+  caseReference: string
+  invoiceId: string
+  lineId: string
+  description: string
+  ontologyItem: { id: string; code: string; name: string } | null
+  sources: {
+    inHouse: LinePriceEvidenceSource
+    historicalClaims: LinePriceEvidenceSource
+    externalReference: {
+      available: boolean
+      eligible: boolean
+      valueNet: number | null
+      configuredWeight: number
+      effectiveWeight: number
+      method: string | null
+      sources: LineExternalPriceEvidenceSource[]
+    }
+  }
+  decision: {
+    billedNet: number
+    supportedNet: number | null
+    challengeNet: number
+    thresholdPct: number
+    minimumDifferenceNet: number
+    comparisonStatus: string | null
+    rationale: string | null
+  }
+  calculation: Array<{
+    step: number
+    label: string
+    value?: string | number | null
+    detail?: string | null
+    passed?: boolean | null
+  }>
+}
+
 export interface DataReadinessPayload {
   ready: boolean
   ontology_items: number
@@ -369,6 +457,19 @@ export function fetchClaimWorkspace(
   const query = params.size ? `?${params.toString()}` : ""
   return requestJson(
     `/api/v1/claims/${encodeURIComponent(caseReference)}/workspace${query}`
+  )
+}
+
+export function fetchLinePriceEvidence(
+  caseReference: string,
+  lineId: string,
+  p90ThresholdPct: number
+): Promise<LinePriceEvidencePayload> {
+  const query = new URLSearchParams({
+    p90_threshold_pct: String(p90ThresholdPct),
+  })
+  return requestJson(
+    `/api/v1/claims/${encodeURIComponent(caseReference)}/lines/${encodeURIComponent(lineId)}/price-evidence?${query.toString()}`
   )
 }
 

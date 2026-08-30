@@ -101,6 +101,7 @@ from app.services.benchmarking import (
 from app.services.case_result import (
     build_case_result,
     build_claim_workspace,
+    build_line_price_evidence,
     build_uploaded_batch_benchmark_dashboard,
 )
 from app.services.comparison_workflow import run_case_comparison
@@ -2162,6 +2163,30 @@ def get_case_result(
         return build_case_result(db, case_reference, p90_threshold_pct=threshold)
     except LookupError as exc:
         raise _not_found("Claim not found") from exc
+
+
+@router.get(
+    "/claims/{case_reference}/lines/{line_id}/price-evidence",
+    tags=["reports"],
+)
+def get_line_price_evidence(
+    case_reference: str,
+    line_id: str,
+    db: DatabaseSession,
+    p90_threshold_pct: int = Query(DEFAULT_P90_POLICY.default_threshold_pct),
+) -> dict[str, Any]:
+    """Return the exact evidence rows used for one line's supported price."""
+
+    threshold = _validated_p90_threshold_pct(p90_threshold_pct)
+    try:
+        return build_line_price_evidence(
+            db,
+            case_reference,
+            line_id,
+            p90_threshold_pct=threshold,
+        )
+    except LookupError as exc:
+        raise _not_found("Invoice line evidence not found") from exc
 
 
 @router.get("/claims/{case_reference}/knowledge-graph", tags=["reports"])

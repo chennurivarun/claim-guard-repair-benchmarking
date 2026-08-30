@@ -15,6 +15,7 @@ from app.services.case_result import (
     _historical_p90_evidence,
     _is_invoice_header_description,
     _mapped_external_reference,
+    _mapped_external_reference_candidate,
     _uploaded_batch_benchmark_dashboard,
     _uploaded_line_p90_benchmarks,
     _verified_external_observations,
@@ -23,9 +24,7 @@ from app.services.case_result import (
 
 
 def test_invoice_table_heading_is_not_a_repair_description() -> None:
-    assert _is_invoice_header_description(
-        'Invoice Number Date / / ) : Mileage : Job Value'
-    )
+    assert _is_invoice_header_description("Invoice Number Date / / ) : Mileage : Job Value")
     assert not _is_invoice_header_description("MOT Test class IV")
 
 
@@ -97,19 +96,19 @@ def test_historical_p90_falls_back_to_same_item_when_vehicle_is_missing() -> Non
     assert evidence.method == "Historical claims P90 (all vehicle categories fallback)"
 
 
-def test_mapped_item_reference_is_available_as_external_price_evidence() -> None:
-    evidence = _mapped_external_reference(
-        SimpleNamespace(
-            reference_price_net=Decimal("138.00"),
-            source_url_or_ref="ontology_seed.xlsx#full-service",
-            price_source="Reference price bank",
-        )
+def test_workbook_reference_remains_visible_and_eligible_under_current_policy() -> None:
+    item = SimpleNamespace(
+        reference_price_net=Decimal("138.00"),
+        source_url_or_ref="ontology_seed.xlsx#full-service",
+        price_source="Reference price bank",
     )
+    candidate = _mapped_external_reference_candidate(item)
 
-    assert evidence is not None
-    assert evidence["price_net"] == Decimal("138.00")
-    assert evidence["source_reference"] == "ontology_seed.xlsx#full-service"
-    assert evidence["source_title"] == "Reference price bank"
+    assert candidate is not None
+    assert candidate["price_net"] == Decimal("138.00")
+    assert candidate["source_reference"] == "ontology_seed.xlsx#full-service"
+    assert candidate["source_title"] == "Reference price bank"
+    assert _mapped_external_reference(item) == candidate
 
 
 def test_invoice_line_seed_is_not_reused_as_external_price_evidence() -> None:
@@ -128,7 +127,7 @@ def test_mapped_external_reference_scales_unit_price_to_line_quantity() -> None:
     evidence = _mapped_external_reference(
         SimpleNamespace(
             reference_price_net=Decimal("9.75"),
-            source_url_or_ref="ontology_seed.xlsx#engine-oil",
+            source_url_or_ref="https://example.com/engine-oil",
             price_source="Reference price bank",
         ),
         Decimal("4"),

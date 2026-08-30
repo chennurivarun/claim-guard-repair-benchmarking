@@ -329,6 +329,49 @@ def test_bumper_line_calculation_breakdown_is_complete(p90_session) -> None:
     assert "weighted evidence price" in supported_step["detail"]
 
 
+def test_line_price_evidence_reconciles_with_workspace_decision(p90_client) -> None:
+    workspace_response = p90_client.get(
+        f"/api/v1/claims/{CASE_REFERENCE}/workspace",
+        params={"p90_threshold_pct": 10},
+    )
+    assert workspace_response.status_code == 200
+    bumper_line = next(
+        row
+        for row in workspace_response.json()["lines"]
+        if row["description"] == "Front bumper reinforcement"
+    )
+
+    response = p90_client.get(
+        f"/api/v1/claims/{CASE_REFERENCE}/lines/{bumper_line['id']}/price-evidence",
+        params={"p90_threshold_pct": 10},
+    )
+
+    assert response.status_code == 200
+    evidence = response.json()
+    historical = evidence["sources"]["historicalClaims"]
+    assert evidence["lineId"] == bumper_line["id"]
+    assert evidence["decision"]["supportedNet"] == bumper_line["recommended"]
+    assert evidence["decision"]["challengeNet"] == bumper_line["challenge"]
+    assert historical["currentInvoiceExcluded"] is True
+    assert historical["sampleCount"] == len(historical["observations"])
+    assert all(
+        row["description"] == "Front bumper reinforcement" for row in historical["observations"]
+    )
+    assert all(
+        row["invoiceId"] != workspace_response.json()["invoice"]["id"]
+        for row in historical["observations"]
+    )
+
+
+def test_line_price_evidence_hides_unknown_or_cross_claim_line(p90_client) -> None:
+    response = p90_client.get(
+        f"/api/v1/claims/{CASE_REFERENCE}/lines/not-a-line/price-evidence",
+        params={"p90_threshold_pct": 10},
+    )
+
+    assert response.status_code == 404
+
+
 def test_mot_line_suppresses_vat_in_workspace(p90_session) -> None:
     workspace = build_claim_workspace(p90_session, CASE_REFERENCE, p90_threshold_pct=10)
     mot_line = next(row for row in workspace["lines"] if row["description"] == "MOT Test")

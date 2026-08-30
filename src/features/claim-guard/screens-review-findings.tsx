@@ -3,7 +3,6 @@ import {
   ArrowLeftIcon,
   ArrowRightIcon,
   CheckIcon,
-  DownloadIcon,
   EyeIcon,
   ExternalLinkIcon,
   InfoIcon,
@@ -41,6 +40,7 @@ import {
 import { CalculationBreakdown } from "./calculation-breakdown"
 import {
   ChallengeDecisionDialog,
+  HistoricalObservationDialog,
   LineEvidenceSheet,
   type ResearchFormValues,
 } from "./screens-challenge-admin"
@@ -51,9 +51,12 @@ import { StatusBadge } from "./shared"
 import type { ClaimWorkspace, InvoiceLine } from "./types"
 import {
   fetchEngineerAssessments,
-  inHouseRepairCsvUrl,
+  fetchLinePriceEvidence,
+  getApiErrorMessage,
   type EngineerAssessmentPayload,
   type ClaimInvoiceSummary,
+  type LinePriceEvidenceObservation,
+  type LinePriceEvidencePayload,
   type MappingDecisionInput,
 } from "@/lib/api"
 
@@ -539,6 +542,352 @@ function InvoiceComparisonTable({
   )
 }
 
+type EvidenceTableKind = "inHouse" | "historicalClaims"
+
+function evidenceOriginLabel(origin: LinePriceEvidenceObservation["origin"]) {
+  if (origin === "synthetic_in_house") return "Synthetic in-house"
+  if (origin === "uploaded_invoice_batch") return "Uploaded invoice"
+  return "Historical claim store"
+}
+
+function EvidenceObservationTable({
+  rows,
+  onViewSource,
+}: {
+  rows: LinePriceEvidenceObservation[]
+  onViewSource: (observationId: string) => void
+}) {
+  if (!rows.length) {
+    return (
+      <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+        No eligible observations were available for this repair item.
+      </p>
+    )
+  }
+  return (
+    <div className="overflow-x-auto rounded-lg border">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Invoice / observation</TableHead>
+            <TableHead>Origin</TableHead>
+            <TableHead>Vehicle</TableHead>
+            <TableHead>Description</TableHead>
+            <TableHead className="text-right">Net amount</TableHead>
+            <TableHead>Source</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {rows.map((observation) => {
+            const vehicle = [
+              observation.vehicle?.make,
+              observation.vehicle?.model,
+            ]
+              .filter(Boolean)
+              .join(" ")
+            const canViewPersistedSource =
+              observation.origin !== "uploaded_invoice_batch" &&
+              Boolean(observation.id)
+            return (
+              <TableRow key={`${observation.origin}:${observation.id}`}>
+                <TableCell>
+                  <p className="font-medium">
+                    {observation.invoiceNumber ||
+                      observation.claimReference ||
+                      observation.sourceRecordId ||
+                      observation.id}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {observation.invoiceDate || "Date unavailable"}
+                  </p>
+                </TableCell>
+                <TableCell>
+                  <Badge variant="outline">
+                    {evidenceOriginLabel(observation.origin)}
+                  </Badge>
+                </TableCell>
+                <TableCell>{vehicle || "Unavailable"}</TableCell>
+                <TableCell>
+                  {observation.description || "Unavailable"}
+                </TableCell>
+                <TableCell className="text-right font-medium tabular-nums">
+                  {formatMoney(observation.amountNet)}
+                </TableCell>
+                <TableCell>
+                  {canViewPersistedSource ? (
+                    <Button
+                      type="button"
+                      variant="link"
+                      size="sm"
+                      className="h-auto p-0"
+                      onClick={() => onViewSource(observation.id)}
+                    >
+                      View source record
+                    </Button>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">
+                      {observation.invoiceId
+                        ? `Invoice ${observation.invoiceId}`
+                        : "Persisted observation"}
+                    </span>
+                  )}
+                </TableCell>
+              </TableRow>
+            )
+          })}
+        </TableBody>
+      </Table>
+    </div>
+  )
+}
+
+function LinePriceEvidenceCard({
+  caseReference,
+  line,
+  p90ThresholdPct,
+}: {
+  caseReference: string
+  line: InvoiceLine
+  p90ThresholdPct: number
+}) {
+  const [payload, setPayload] = useState<LinePriceEvidencePayload | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [retry, setRetry] = useState(0)
+  const [openTable, setOpenTable] = useState<EvidenceTableKind | null>(null)
+  const [observationId, setObservationId] = useState<string | null>(null)
+
+  useEffect(() => {
+    let active = true
+    fetchLinePriceEvidence(caseReference, line.id, p90ThresholdPct)
+      .then((result) => {
+        if (active) setPayload(result)
+      })
+      .catch((reason) => {
+        if (active) setError(getApiErrorMessage(reason))
+      })
+    return () => {
+      active = false
+    }
+  }, [caseReference, line.id, p90ThresholdPct, retry])
+
+  const percent = (value: number) => `${Math.round(value * 100)}%`
+
+  return (
+    <>
+      <Card className="bg-muted/20">
+        <CardHeader>
+          <CardTitle className="text-base">
+            Evidence used for {line.description}
+          </CardTitle>
+          <CardDescription>
+            Exact source records behind this line&apos;s supported price.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {!payload && !error ? (
+            <p className="rounded-lg border p-4 text-sm text-muted-foreground">
+              Loading line-specific evidence…
+            </p>
+          ) : null}
+          {error ? (
+            <Alert variant="destructive">
+              <AlertTitle>Evidence could not be loaded</AlertTitle>
+              <AlertDescription className="space-y-3">
+                <p>{error}</p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setPayload(null)
+                    setError(null)
+                    setRetry((value) => value + 1)
+                  }}
+                >
+                  Retry
+                </Button>
+              </AlertDescription>
+            </Alert>
+          ) : null}
+          {payload ? (
+            <>
+              {(
+                [
+                  [
+                    "inHouse",
+                    "In-house benchmark P90",
+                    payload.sources.inHouse,
+                  ],
+                  [
+                    "historicalClaims",
+                    "Historical claims P90",
+                    payload.sources.historicalClaims,
+                  ],
+                ] as const
+              ).map(([key, label, source]) => (
+                <div key={key} className="rounded-lg border bg-background p-4">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="text-sm font-medium">{label}</p>
+                        <Badge
+                          variant={source.eligible ? "outline" : "secondary"}
+                        >
+                          {source.eligible ? "Used" : "Unavailable"}
+                        </Badge>
+                      </div>
+                      <p className="mt-1 text-xl font-semibold tabular-nums">
+                        {source.valueNet == null
+                          ? "Not available"
+                          : formatMoney(source.valueNet)}
+                      </p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {source.sampleCount} observation
+                        {source.sampleCount === 1 ? "" : "s"} · {source.scope} ·{" "}
+                        effective weight {percent(source.effectiveWeight)}
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      aria-label={`View ${label.toLowerCase()} evidence for ${line.description}`}
+                      onClick={() =>
+                        setOpenTable((current) =>
+                          current === key ? null : key
+                        )
+                      }
+                    >
+                      <EyeIcon data-icon="inline-start" />
+                      {openTable === key ? "Hide evidence" : "View evidence"}
+                    </Button>
+                  </div>
+                  {source.synthetic ? (
+                    <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">
+                      Synthetic demonstration evidence. Do not treat this
+                      dataset as production insurer evidence.
+                    </p>
+                  ) : null}
+                  {openTable === key ? (
+                    <div className="mt-4 space-y-3">
+                      <EvidenceObservationTable
+                        rows={source.observations}
+                        onViewSource={setObservationId}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        {source.method || "No calculation method available"}.
+                        Current invoice excluded:{" "}
+                        {source.currentInvoiceExcluded ? "yes" : "no"}.
+                      </p>
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+
+              <div className="rounded-lg border bg-background p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="text-sm font-medium">
+                        External reference price
+                      </p>
+                      <Badge
+                        variant={
+                          payload.sources.externalReference.eligible
+                            ? "outline"
+                            : "secondary"
+                        }
+                      >
+                        {payload.sources.externalReference.eligible
+                          ? "Used"
+                          : "Not weighted"}
+                      </Badge>
+                    </div>
+                    <p className="mt-1 text-xl font-semibold tabular-nums">
+                      {payload.sources.externalReference.valueNet == null
+                        ? "Not available"
+                        : formatMoney(
+                            payload.sources.externalReference.valueNet
+                          )}
+                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Effective weight{" "}
+                      {percent(
+                        payload.sources.externalReference.effectiveWeight
+                      )}
+                    </p>
+                  </div>
+                </div>
+                <div className="mt-3 space-y-3">
+                  {payload.sources.externalReference.sources.length ? (
+                    payload.sources.externalReference.sources.map(
+                      (source, index) => {
+                        const isWebSource = /^https?:\/\//i.test(
+                          source.source_reference || ""
+                        )
+                        return (
+                          <div
+                            key={`${source.source_reference ?? "source"}:${index}`}
+                            className="rounded-md border p-3 text-sm"
+                          >
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                              <div>
+                                <p className="font-medium">
+                                  {source.source_title ||
+                                    "Reference price source"}
+                                </p>
+                                <p className="mt-1 text-xs break-all text-muted-foreground">
+                                  {source.source_reference ||
+                                    "No source reference stored"}
+                                </p>
+                                {source.eligibility_reason ? (
+                                  <p className="mt-1 text-xs text-muted-foreground">
+                                    {source.eligibility_reason}
+                                  </p>
+                                ) : null}
+                              </div>
+                              {isWebSource ? (
+                                <Button asChild variant="outline" size="sm">
+                                  <a
+                                    href={source.source_reference || undefined}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                  >
+                                    Open source
+                                    <ExternalLinkIcon data-icon="inline-end" />
+                                  </a>
+                                </Button>
+                              ) : (
+                                <Badge variant="secondary">
+                                  Internal source reference
+                                </Badge>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      }
+                    )
+                  ) : (
+                    <p className="text-sm text-muted-foreground">
+                      No approved source-linked external price is available for
+                      this repair item.
+                    </p>
+                  )}
+                </div>
+              </div>
+            </>
+          ) : null}
+        </CardContent>
+      </Card>
+      <HistoricalObservationDialog
+        key={observationId ?? "closed"}
+        observationId={observationId}
+        onClose={() => setObservationId(null)}
+      />
+    </>
+  )
+}
+
 function AllExtractedLinesTable({ lines }: { lines: InvoiceLine[] }) {
   if (!lines.length) return null
   return (
@@ -892,38 +1241,12 @@ export function ReviewFindingsScreen({
               </p>
             </div>
 
-            <Card className="bg-muted/20">
-              <CardHeader>
-                <CardTitle className="text-base">Evidence used</CardTitle>
-                <CardDescription>
-                  The source file supporting this line&apos;s in-house benchmark.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="flex flex-col gap-4 rounded-lg border bg-background p-4 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <p className="text-sm font-medium">In-house P90</p>
-                    <p className="mt-1 text-xl font-semibold tabular-nums">
-                      {line.inHouseP90 == null
-                        ? "Not available"
-                        : formatMoney(line.inHouseP90)}
-                    </p>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Calculated from the active in-house repair dataset.
-                    </p>
-                  </div>
-                  <Button asChild variant="outline" size="sm">
-                    <a
-                      href={inHouseRepairCsvUrl()}
-                      download="claim-guard-in-house-repair-data.csv"
-                    >
-                      <DownloadIcon data-icon="inline-start" />
-                      Download source CSV
-                    </a>
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
+            <LinePriceEvidenceCard
+              key={`${line.id}:${p90ThresholdPct}`}
+              caseReference={workspace.claim.id}
+              line={line}
+              p90ThresholdPct={p90ThresholdPct}
+            />
 
             <Alert>
               <InfoIcon />

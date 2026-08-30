@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
+from urllib.parse import urlparse
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -93,8 +94,7 @@ def _is_invoice_header_description(description: Any) -> bool:
 
     normalised = " ".join(str(description or "").casefold().split())
     return all(
-        marker in normalised
-        for marker in ("invoice number", "date", "mileage", "job value")
+        marker in normalised for marker in ("invoice number", "date", "mileage", "job value")
     )
 
 
@@ -158,13 +158,13 @@ def _normalised_vehicle_value(value: Any) -> str:
     return " ".join(str(value or "").casefold().split())
 
 
-def _historical_p90_evidence(
+def _historical_p90_selection(
     comparables: list[dict[str, Any]],
     vehicle: Vehicle | None,
     *,
     source_group: str,
-) -> P90Evidence | None:
-    """Build an item P90, preferring exact vehicles for real historical claims."""
+) -> tuple[P90Evidence | None, list[dict[str, Any]], str]:
+    """Return the P90 plus the exact persisted rows used to calculate it."""
 
     current_make = _normalised_vehicle_value(vehicle.make if vehicle else None)
     current_model = _normalised_vehicle_value(vehicle.model if vehicle else None)
@@ -195,8 +195,7 @@ def _historical_p90_evidence(
             exact_vehicle_rows = [
                 row
                 for row in source_rows
-                if _normalised_vehicle_value((row.get("vehicle") or {}).get("make"))
-                == current_make
+                if _normalised_vehicle_value((row.get("vehicle") or {}).get("make")) == current_make
                 and _normalised_vehicle_value((row.get("vehicle") or {}).get("model"))
                 == current_model
             ]
@@ -206,34 +205,58 @@ def _historical_p90_evidence(
         else:
             vehicle_scope = "all vehicle categories fallback"
     if not eligible:
-        return None
+        return None, [], vehicle_scope
     statistics = calculate_benchmark_statistics(_decimal(row.get("price_net")) for row in eligible)
     if statistics.percentile_90 is None:
-        return None
-    return P90Evidence(
-        value=statistics.percentile_90,
-        historical_count=statistics.count,
-        method=(
-            "In-house repair-book P90 (mixed synthetic vehicles)"
-            if source_group == "in_house"
-            else f"Historical claims P90 ({vehicle_scope})"
+        return None, [], vehicle_scope
+    return (
+        P90Evidence(
+            value=statistics.percentile_90,
+            historical_count=statistics.count,
+            method=(
+                "In-house repair-book P90 (mixed synthetic vehicles)"
+                if source_group == "in_house"
+                else f"Historical claims P90 ({vehicle_scope})"
+            ),
+            explanation=(
+                "Synthetic observations were matched to the repair item across the six "
+                "vehicle examples stored in the in-house CSV."
+                if source_group == "in_house"
+                else (
+                    "Eligible previous claims were matched to the repair item and exact make and model."
+                    if vehicle_scope == "strict vehicle match"
+                    else "Vehicle identity was unavailable or had no exact matches, so eligible previous claims were matched to the same repair item across all vehicle categories."
+                )
+            ),
+            contributing_invoices=tuple(
+                str((row.get("provenance") or {}).get("claim_reference") or row.get("id"))
+                for row in eligible
+            ),
+            contributing_prices=tuple(_decimal(row.get("price_net")) for row in eligible),
         ),
-        explanation=(
-            "Synthetic observations were matched to the repair item across the six "
-            "vehicle examples stored in the in-house CSV."
-            if source_group == "in_house"
-            else (
-                "Eligible previous claims were matched to the repair item and exact make and model."
-                if vehicle_scope == "strict vehicle match"
-                else "Vehicle identity was unavailable or had no exact matches, so eligible previous claims were matched to the same repair item across all vehicle categories."
-            )
-        ),
-        contributing_invoices=tuple(
-            str((row.get("provenance") or {}).get("claim_reference") or row.get("id"))
-            for row in eligible
-        ),
-        contributing_prices=tuple(_decimal(row.get("price_net")) for row in eligible),
+        eligible,
+        vehicle_scope,
     )
+
+
+def _historical_p90_evidence(
+    comparables: list[dict[str, Any]],
+    vehicle: Vehicle | None,
+    *,
+    source_group: str,
+) -> P90Evidence | None:
+    """Backward-compatible aggregate-only wrapper used by existing callers/tests."""
+
+    evidence, _, _ = _historical_p90_selection(comparables, vehicle, source_group=source_group)
+    return evidence
+
+
+def _is_web_source_reference(value: Any) -> bool:
+    """Accept only absolute HTTP(S) provenance as externally openable evidence."""
+
+    reference = str(value or "").strip()
+    parsed = urlparse(reference)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
 def _verified_external_observations(
@@ -270,10 +293,10 @@ def _verified_external_price(
     return _decimal(eligible[0].get("price_net")) if eligible else None
 
 
-def _mapped_external_reference(
+def _mapped_external_reference_candidate(
     item: OntologyItem | Any | None, quantity: Any = None
 ) -> dict[str, Any] | None:
-    """Expose a mapped repair item's source-linked price at invoice-line quantity."""
+    """Expose mapped ontology provenance, including non-web internal references."""
 
     if item is None:
         return None
@@ -282,9 +305,11 @@ def _mapped_external_reference(
     source_title = str(getattr(item, "price_source", None) or "").strip()
     normalised_title = source_title.casefold().replace("-", "_").replace(" ", "_")
     normalised_reference = source_reference.casefold()
-    if normalised_title == "auto_unmatched_invoice_line" or normalised_reference.startswith(
-        "invoice_line:"
-    ) or normalised_reference.startswith("invoice-line:"):
+    if (
+        normalised_title == "auto_unmatched_invoice_line"
+        or normalised_reference.startswith("invoice_line:")
+        or normalised_reference.startswith("invoice-line:")
+    ):
         return None
     if price <= 0 or not (source_reference or source_title):
         return None
@@ -300,6 +325,14 @@ def _mapped_external_reference(
         "vehicle_make": None,
         "vehicle_model": None,
     }
+
+
+def _mapped_external_reference(
+    item: OntologyItem | Any | None, quantity: Any = None
+) -> dict[str, Any] | None:
+    """Return a mapped price with its governed web or internal provenance."""
+
+    return _mapped_external_reference_candidate(item, quantity)
 
 
 def _merge_p90_evidence(
@@ -333,6 +366,78 @@ def _merge_p90_evidence(
         contributing_invoices=references,
         contributing_prices=prices,
     )
+
+
+def _serialise_comparable_evidence_row(row: dict[str, Any], *, source_group: str) -> dict[str, Any]:
+    """Expose a bounded, reviewer-safe view of one persisted evidence row."""
+
+    provenance = row.get("provenance") or {}
+    metadata = row.get("comparability_metadata") or {}
+    observed_date = row.get("observed_date")
+    return {
+        "id": row.get("source_observation_id") or row.get("id"),
+        "sourceRecordId": provenance.get("source_record_id"),
+        "sourceGroup": source_group,
+        "origin": (
+            "synthetic_in_house" if source_group == "in_house" else "historical_claim_store"
+        ),
+        "claimReference": provenance.get("claim_reference"),
+        "invoiceNumber": metadata.get("invoice_number"),
+        "invoiceDate": (
+            observed_date.isoformat() if hasattr(observed_date, "isoformat") else observed_date
+        ),
+        "repairer": metadata.get("garage_name") or metadata.get("repairer"),
+        "description": row.get("description"),
+        "amountNet": _money_float(row.get("price_net")),
+        "vehicle": row.get("vehicle") or {},
+        "sourceReference": provenance.get("source_reference"),
+        "included": True,
+        "inclusionReason": row.get("eligibility_reason") or "Eligible governed observation",
+    }
+
+
+def _serialise_uploaded_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Expose one earlier uploaded invoice line used by the historical P90."""
+
+    return {
+        "id": row.get("lineId"),
+        "sourceRecordId": row.get("lineId"),
+        "sourceGroup": "historical_claim",
+        "origin": "uploaded_invoice_batch",
+        "claimReference": None,
+        "invoiceId": row.get("invoiceId"),
+        "invoiceNumber": row.get("invoiceNumber"),
+        "invoiceDate": row.get("invoiceDate"),
+        "repairer": row.get("repairer"),
+        "description": row.get("description"),
+        "amountNet": _money_float(row.get("price")),
+        "vehicle": row.get("vehicle") or {},
+        "sourceReference": None,
+        "included": True,
+        "inclusionReason": (
+            "Earlier uploaded invoice matched to the same repair item and selected vehicle scope."
+        ),
+    }
+
+
+def _effective_source_weights(
+    *, in_house: bool, historical: bool, external: bool
+) -> dict[str, float]:
+    configured = {
+        "inHouse": DEFAULT_P90_POLICY.in_house_weight,
+        "historicalClaims": DEFAULT_P90_POLICY.historical_weight,
+        "externalReference": DEFAULT_P90_POLICY.external_weight,
+    }
+    available = {
+        "inHouse": in_house,
+        "historicalClaims": historical,
+        "externalReference": external,
+    }
+    total = sum((weight for key, weight in configured.items() if available[key]), Decimal("0"))
+    return {
+        key: float(weight / total) if total > 0 and available[key] else 0.0
+        for key, weight in configured.items()
+    }
 
 
 def _percent(value: Any) -> int:
@@ -934,18 +1039,19 @@ def build_case_result(
         uploaded_historical_evidence = (
             _p90_evidence_from_benchmark(benchmark) if benchmark else None
         )
-        in_house_evidence = (
-            None
+        in_house_evidence, in_house_rows, in_house_scope = (
+            (None, [], "excluded")
             if operationally_excluded
-            else _historical_p90_evidence(comparable_records, vehicle, source_group="in_house")
+            else _historical_p90_selection(comparable_records, vehicle, source_group="in_house")
         )
-        stored_historical_evidence = (
-            None
+        stored_historical_evidence, stored_historical_rows, stored_historical_scope = (
+            (None, [], "excluded")
             if operationally_excluded
-            else _historical_p90_evidence(
+            else _historical_p90_selection(
                 comparable_records, vehicle, source_group="historical_claim"
             )
         )
+        uploaded_historical_rows = list((benchmark or {}).get("observations") or [])
         historical_evidence = _merge_p90_evidence(
             stored_historical_evidence,
             uploaded_historical_evidence,
@@ -973,10 +1079,17 @@ def build_case_result(
                 "source_title": (row.get("provenance") or {}).get("source_title"),
                 "vehicle_make": (row.get("vehicle") or {}).get("make"),
                 "vehicle_model": (row.get("vehicle") or {}).get("model"),
+                "approval_status": row.get("approval_status"),
+                "eligible": True,
             }
             for row in external_observations
         ]
         external_price_method = None
+        mapped_reference_candidate = (
+            None
+            if operationally_excluded
+            else _mapped_external_reference_candidate(item, line.quantity)
+        )
         if external_sources:
             external_price_method = (
                 f"Lowest of {len(external_sources)} approved, source-linked external "
@@ -996,6 +1109,24 @@ def build_case_result(
                     "Source-linked external reference unit price stored for the mapped repair "
                     "item, scaled to the invoice-line quantity."
                 )
+        external_audit_sources = external_sources
+        if not external_audit_sources and mapped_reference_candidate is not None:
+            candidate_reference = mapped_reference_candidate.get("source_reference")
+            external_audit_sources = [
+                {
+                    **mapped_reference_candidate,
+                    "price_net": _money_float(mapped_reference_candidate["price_net"]),
+                    "unit_price_net": _money_float(mapped_reference_candidate["unit_price_net"]),
+                    "quantity": float(mapped_reference_candidate["quantity"]),
+                    "approval_status": _enum_value(getattr(item, "approval_status", None)),
+                    "eligible": True,
+                    "eligibility_reason": (
+                        "Approved HTTP(S) source URL."
+                        if _is_web_source_reference(candidate_reference)
+                        else "Internal/imported source retained by the current pricing policy; no website URL is stored."
+                    ),
+                }
+            ]
         decision = _decide_line_from_benchmark(
             billed_net=line.line_total_net,
             in_house=in_house_evidence,
@@ -1008,6 +1139,84 @@ def build_case_result(
             is_mot=is_mot,
             p90_threshold_pct=threshold_decimal,
         )
+        effective_weights = _effective_source_weights(
+            in_house=in_house_evidence is not None,
+            historical=historical_evidence is not None,
+            external=external_price is not None,
+        )
+        line_record["price_evidence"] = {
+            "caseReference": case_reference,
+            "invoiceId": line.invoice_id,
+            "lineId": line.id,
+            "description": line.raw_description,
+            "ontologyItem": (
+                {
+                    "id": item.id,
+                    "code": item.canonical_code,
+                    "name": item.canonical_name,
+                }
+                if item
+                else None
+            ),
+            "sources": {
+                "inHouse": {
+                    "available": in_house_evidence is not None,
+                    "eligible": in_house_evidence is not None,
+                    "valueNet": (
+                        _money_float(in_house_evidence.value) if in_house_evidence else None
+                    ),
+                    "configuredWeight": float(DEFAULT_P90_POLICY.in_house_weight),
+                    "effectiveWeight": effective_weights["inHouse"],
+                    "method": in_house_evidence.method if in_house_evidence else None,
+                    "scope": in_house_scope,
+                    "sampleCount": in_house_evidence.historical_count if in_house_evidence else 0,
+                    "currentInvoiceExcluded": True,
+                    "synthetic": True,
+                    "observations": [
+                        _serialise_comparable_evidence_row(row, source_group="in_house")
+                        for row in in_house_rows
+                    ],
+                },
+                "historicalClaims": {
+                    "available": historical_evidence is not None,
+                    "eligible": historical_evidence is not None,
+                    "valueNet": (
+                        _money_float(historical_evidence.value) if historical_evidence else None
+                    ),
+                    "configuredWeight": float(DEFAULT_P90_POLICY.historical_weight),
+                    "effectiveWeight": effective_weights["historicalClaims"],
+                    "method": historical_evidence.method if historical_evidence else None,
+                    "scope": (
+                        (benchmark or {}).get("vehicleScope")
+                        if uploaded_historical_rows
+                        else stored_historical_scope
+                    ),
+                    "sampleCount": (
+                        historical_evidence.historical_count if historical_evidence else 0
+                    ),
+                    "currentInvoiceExcluded": True,
+                    "observations": [
+                        *[
+                            _serialise_comparable_evidence_row(row, source_group="historical_claim")
+                            for row in stored_historical_rows
+                        ],
+                        *[
+                            _serialise_uploaded_evidence_row(row)
+                            for row in uploaded_historical_rows
+                        ],
+                    ],
+                },
+                "externalReference": {
+                    "available": bool(external_audit_sources),
+                    "eligible": external_price is not None,
+                    "valueNet": _optional_money_float(external_price),
+                    "configuredWeight": float(DEFAULT_P90_POLICY.external_weight),
+                    "effectiveWeight": effective_weights["externalReference"],
+                    "method": external_price_method,
+                    "sources": external_audit_sources,
+                },
+            },
+        }
         if not decision.has_signal:
             line_record["price_decision"] = {
                 "in_house_p90_net": None,
@@ -1090,11 +1299,7 @@ def build_case_result(
                         "decision_calculation": decision.calculation,
                     }
                 )
-            if (
-                challenge is not None
-                and comparison is not None
-                and not operationally_excluded
-            ):
+            if challenge is not None and comparison is not None and not operationally_excluded:
                 challenge_records[-1].update(
                     {
                         "invoice_net": line.line_total_net,
@@ -1392,6 +1597,7 @@ def _uploaded_line_p90_benchmarks(
         if price <= 0:
             continue
         invoice = invoice_by_id[line.invoice_id]
+        source_vehicle = getattr(invoice, "vehicle", None)
         keys, category, _ = _uploaded_line_identity(
             line,
             latest_mappings=latest_mappings,
@@ -1405,6 +1611,13 @@ def _uploaded_line_p90_benchmarks(
             "description": line.raw_description,
             "category": category,
             "price": _money_float(price),
+            "repairer": getattr(invoice, "supplier_name", None),
+            "vehicle": {
+                "make": getattr(source_vehicle, "make", None),
+                "model": getattr(source_vehicle, "model", None),
+                "variant": getattr(source_vehicle, "variant", None),
+                "year": getattr(source_vehicle, "year", None),
+            },
             "exactVehicleMatch": invoice in exact_vehicle_invoices,
         }
         for key in keys:
@@ -1787,6 +2000,38 @@ def build_uploaded_batch_benchmark_dashboard(
         _load_case_graph(session, case_reference),
         **filters,
     )
+
+
+def build_line_price_evidence(
+    session: Session,
+    case_reference: str,
+    line_id: str,
+    *,
+    p90_threshold_pct: int | str | Decimal | None = None,
+) -> dict[str, Any]:
+    """Return the exact governed evidence behind one line's operational decision."""
+
+    result = build_case_result(
+        session,
+        case_reference,
+        p90_threshold_pct=p90_threshold_pct,
+    )
+    line = next((row for row in result["lines"] if row["id"] == line_id), None)
+    if line is None:
+        raise LookupError("Invoice line not found for claim")
+    evidence = dict(line.get("price_evidence") or {})
+    decision = line.get("price_decision") or {}
+    evidence["decision"] = {
+        "billedNet": _money_float(line.get("invoice_net")),
+        "supportedNet": _optional_money_float(decision.get("supported_price_net")),
+        "challengeNet": _money_float(decision.get("challenge_amount_net")),
+        "thresholdPct": decision.get("threshold_pct"),
+        "minimumDifferenceNet": _money_float(DEFAULT_P90_POLICY.minimum_challenge_amount),
+        "comparisonStatus": decision.get("comparison_status"),
+        "rationale": decision.get("rationale"),
+    }
+    evidence["calculation"] = decision.get("calculation") or []
+    return evidence
 
 
 def build_claim_workspace(

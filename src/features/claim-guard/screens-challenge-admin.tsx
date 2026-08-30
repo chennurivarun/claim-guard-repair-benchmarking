@@ -190,7 +190,7 @@ function differenceLabel(value?: number | null) {
 
 const HISTORICAL_OBSERVATION_PATH_PREFIX = "/api/v1/historical-observations/"
 
-function HistoricalObservationDialog({
+export function HistoricalObservationDialog({
   observationId,
   onClose,
 }: {
