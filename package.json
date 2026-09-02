@@ -18,6 +18,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
+    "cytoscape": "^3.34.2",
     "lucide-react": "^1.24.0",
     "next-themes": "^0.4.6",
     "radix-ui": "^1.6.2",
@@ -32,6 +33,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10",
+    "@types/cytoscape": "^3.21.9",
     "@types/node": "^24",
     "@types/react": "^19",
     "@types/react-dom": "^19",
