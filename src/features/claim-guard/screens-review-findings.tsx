@@ -203,6 +203,7 @@ export function ChallengedInvoicesSummary({
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead>Invoice</TableHead>
                 <TableHead className="text-right">Challenge amount</TableHead>
                 <TableHead>Repair item</TableHead>
                 <TableHead className="text-right">Billed price</TableHead>
@@ -216,7 +217,6 @@ export function ChallengedInvoicesSummary({
                   External reference price
                 </TableHead>
                 <TableHead className="text-right">Supported price</TableHead>
-                <TableHead>Invoice</TableHead>
                 <TableHead>Repairer</TableHead>
                 <TableHead>Invoice date</TableHead>
                 <TableHead>Status</TableHead>
@@ -238,6 +238,21 @@ export function ChallengedInvoicesSummary({
                     }
                   }}
                 >
+                  <TableCell>
+                    <span className="block font-medium">
+                      {invoice.invoice_number || invoice.document_filename}
+                    </span>
+                    {invoice.vehicle?.make || invoice.vehicle?.model ? (
+                      <span className="block text-xs text-muted-foreground">
+                        {[invoice.vehicle.make, invoice.vehicle.model]
+                          .filter(Boolean)
+                          .join(" ")}
+                        {invoice.vehicle.registration
+                          ? ` · ${invoice.vehicle.registration}`
+                          : ""}
+                      </span>
+                    ) : null}
+                  </TableCell>
                   <TableCell className="text-right font-semibold text-destructive tabular-nums">
                     {formatMoney(line.challenge_net)}
                   </TableCell>
@@ -262,21 +277,6 @@ export function ChallengedInvoicesSummary({
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
                     {formatMoney(line.supported_net)}
-                  </TableCell>
-                  <TableCell>
-                    <span className="block font-medium">
-                      {invoice.invoice_number || invoice.document_filename}
-                    </span>
-                    {invoice.vehicle?.make || invoice.vehicle?.model ? (
-                      <span className="block text-xs text-muted-foreground">
-                        {[invoice.vehicle.make, invoice.vehicle.model]
-                          .filter(Boolean)
-                          .join(" ")}
-                        {invoice.vehicle.registration
-                          ? ` · ${invoice.vehicle.registration}`
-                          : ""}
-                      </span>
-                    ) : null}
                   </TableCell>
                   <TableCell>{invoice.supplier_name || "—"}</TableCell>
                   <TableCell className="text-xs whitespace-nowrap text-muted-foreground">
