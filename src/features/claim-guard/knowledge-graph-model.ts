@@ -19,7 +19,7 @@ export type ChallengeGraphEdge = {
   id: string
   source: string
   target: string
-  label: "ISSUED" | "CHALLENGED_PART"
+  label: "ISSUED" | "CHALLENGED_PART" | "CHARGED_BY"
   totalChallenge: number
   evidence: GraphEvidence[]
 }
@@ -123,6 +123,11 @@ export function buildChallengeNetwork(
       [
         [graphNodeId("repairer", row.repairer), invoice, "ISSUED"],
         [invoice, graphNodeId("part", row.itemId), "CHALLENGED_PART"],
+        [
+          graphNodeId("part", row.itemId),
+          graphNodeId("repairer", row.repairer),
+          "CHARGED_BY",
+        ],
       ]
     for (const [source, target, label] of relationships) {
       if (!shownIds.has(source) || !shownIds.has(target)) continue

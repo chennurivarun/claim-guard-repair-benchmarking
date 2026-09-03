@@ -208,7 +208,7 @@ function GraphExplorer({
         <div className="flex flex-wrap items-center justify-between gap-3 border-b bg-card px-4 py-3">
           <div>
             <h2 className="font-semibold">
-              Repairer → Invoice → Challenged part
+              Repairer → Invoice → Challenged part · Part → Repairer
             </h2>
             <p className="text-xs text-muted-foreground">
               Top 10 of each type by total challenge amount · Actual challenge
@@ -307,6 +307,16 @@ function GraphExplorer({
                   {
                     graph.edges.filter(
                       (edge) => edge.label === "CHALLENGED_PART"
+                    ).length
+                  }
+                </span>
+              </p>
+              <p>
+                CHARGED_BY{" "}
+                <span className="float-right">
+                  {
+                    graph.edges.filter(
+                      (edge) => edge.label === "CHARGED_BY"
                     ).length
                   }
                 </span>

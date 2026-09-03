@@ -41,11 +41,12 @@ describe("challenge knowledge network", () => {
       ])
     )
     expect(graph.nodes).toHaveLength(6)
-    expect(graph.edges).toHaveLength(4)
+    expect(graph.edges).toHaveLength(6)
     expect(graph.edges.map((edge) => [edge.source, edge.target])).toEqual(
       expect.arrayContaining([
         [graphNodeId("repairer", "Repairer A"), graphNodeId("invoice", "one")],
         [graphNodeId("invoice", "one"), graphNodeId("part", "spark")],
+        [graphNodeId("part", "spark"), graphNodeId("repairer", "Repairer A")],
       ])
     )
     expect(
@@ -62,7 +63,7 @@ describe("challenge knowledge network", () => {
       payload([{ challengeAmount: 10 }, { challengeAmount: 20 }])
     )
     expect(graph.nodes).toHaveLength(3)
-    expect(graph.edges).toHaveLength(2)
+    expect(graph.edges).toHaveLength(3)
     expect(
       graph.nodes.every(
         (node) => node.challengeCount === 2 && node.totalChallenge === 30
@@ -74,6 +75,40 @@ describe("challenge knowledge network", () => {
       )
     ).toBe(true)
     expect(graph.totalChallenge).toBe(30)
+  })
+
+  it("connects one challenged part directly to every repairer that charged it", () => {
+    const graph = buildChallengeNetwork(
+      payload([
+        {
+          invoiceId: "one",
+          itemId: "spark",
+          repairer: "Repairer A",
+          challengeAmount: 10,
+        },
+        {
+          invoiceId: "two",
+          itemId: "spark",
+          repairer: "Repairer B",
+          challengeAmount: 20,
+        },
+      ])
+    )
+    const partId = graphNodeId("part", "spark")
+    const repairerLinks = graph.edges.filter(
+      (edge) => edge.label === "CHARGED_BY" && edge.source === partId
+    )
+
+    expect(repairerLinks).toHaveLength(2)
+    expect(repairerLinks.map((edge) => edge.target)).toEqual(
+      expect.arrayContaining([
+        graphNodeId("repairer", "Repairer A"),
+        graphNodeId("repairer", "Repairer B"),
+      ])
+    )
+    expect(repairerLinks.map((edge) => edge.totalChallenge).sort()).toEqual([
+      10, 20,
+    ])
   })
 
   it("keeps distinct invoices with the same displayed invoice number separate", () => {

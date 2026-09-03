@@ -1161,64 +1161,64 @@ export function ReviewFindingsScreen({
           </CardHeader>
           <CardContent className="flex flex-col gap-6">
             <div className="grid overflow-hidden rounded-lg border md:grid-cols-3 2xl:grid-cols-6">
-              <div className="bg-primary/5 p-5">
+              <div className="flex min-w-0 flex-col bg-primary/5 p-5">
                 <p className="text-xs font-medium text-muted-foreground">
                   Challenge amount
                 </p>
-                <p className="mt-2 text-2xl font-semibold tabular-nums">
+                <p className="mt-auto pt-3 text-2xl font-semibold whitespace-nowrap tabular-nums">
                   {formatMoney(line.challenge)}
                 </p>
               </div>
-              <div className="border-y p-5 md:border-x md:border-y-0">
+              <div className="flex min-w-0 flex-col border-y p-5 md:border-x md:border-y-0">
                 <p className="text-xs font-medium text-muted-foreground">
                   Billed price
                 </p>
-                <p className="mt-2 text-2xl font-semibold tabular-nums">
+                <p className="mt-auto pt-3 text-2xl font-semibold whitespace-nowrap tabular-nums">
                   {formatMoney(line.currentTotal)}
                 </p>
               </div>
-              <div className="border-b p-5 md:border-b-0 2xl:border-r">
+              <div className="flex min-w-0 flex-col border-b p-5 md:border-b-0 2xl:border-r">
                 <p className="text-xs font-medium text-muted-foreground">
                   In-house benchmark P90
                 </p>
                 <p className="mt-1 text-xs text-muted-foreground">
                   Weightage 50%
                 </p>
-                <p className="mt-2 text-2xl font-semibold tabular-nums">
+                <p className="mt-auto pt-3 text-2xl font-semibold whitespace-nowrap tabular-nums">
                   {line.inHouseP90 == null ? "—" : formatMoney(line.inHouseP90)}
                 </p>
               </div>
-              <div className="border-b p-5 md:border-r 2xl:border-b-0">
+              <div className="flex min-w-0 flex-col border-b p-5 md:border-r 2xl:border-b-0">
                 <p className="text-xs font-medium text-muted-foreground">
                   Historical claims P90
                 </p>
                 <p className="mt-1 text-xs text-muted-foreground">
                   Weightage 30%
                 </p>
-                <p className="mt-2 text-2xl font-semibold tabular-nums">
+                <p className="mt-auto pt-3 text-2xl font-semibold whitespace-nowrap tabular-nums">
                   {line.historicalClaimsP90 == null
                     ? "—"
                     : formatMoney(line.historicalClaimsP90)}
                 </p>
               </div>
-              <div className="border-b p-5 md:border-b-0 2xl:border-r">
+              <div className="flex min-w-0 flex-col border-b p-5 md:border-b-0 2xl:border-r">
                 <p className="text-xs font-medium text-muted-foreground">
                   External reference price
                 </p>
                 <p className="mt-1 text-xs text-muted-foreground">
                   Weightage 20%
                 </p>
-                <p className="mt-2 text-2xl font-semibold tabular-nums">
+                <p className="mt-auto pt-3 text-2xl font-semibold whitespace-nowrap tabular-nums">
                   {line.externalReferencePrice == null
                     ? "—"
                     : formatMoney(line.externalReferencePrice)}
                 </p>
               </div>
-              <div className="p-5">
+              <div className="flex min-w-0 flex-col p-5">
                 <p className="text-xs font-medium text-muted-foreground">
                   Supported price
                 </p>
-                <p className="mt-2 text-2xl font-semibold tabular-nums">
+                <p className="mt-auto pt-3 text-2xl font-semibold whitespace-nowrap tabular-nums">
                   {line.recommended == null
                     ? "—"
                     : formatMoney(line.recommended)}
