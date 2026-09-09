@@ -55,14 +55,19 @@ export interface DocumentReviewBriefing {
   prompt_injection_flags?: string[]
 }
 
+export type IntakeGroup = "historical_claim" | "in_house" | "live"
+
 export interface UploadedDocument {
+  intake_group?: IntakeGroup | null
+  role?: string
   id: string
   filename: string
   status: string
   page_count: number | null
   invoice_units?: number
   reprocess_required: boolean
-  kind?: "unknown" | "repair_invoice" | "engineer_assessment" | "supporting_evidence"
+  kind?:
+    "unknown" | "repair_invoice" | "engineer_assessment" | "supporting_evidence"
   paired?: boolean
   manual_review?: boolean
   manual_review_reason?: string | null
@@ -146,11 +151,15 @@ export function fetchCaseDocuments(caseReference = DEFAULT_CASE_REFERENCE) {
 
 export function uploadCurrentDocument(
   file: File,
-  caseReference = DEFAULT_CASE_REFERENCE
+  caseReference = DEFAULT_CASE_REFERENCE,
+  intakeGroup?: IntakeGroup,
+  pairedDocumentId?: string
 ) {
   const form = new FormData()
   form.append("file", file)
   form.append("role", "current")
+  if (intakeGroup) form.append("intake_group", intakeGroup)
+  if (pairedDocumentId) form.append("paired_document_id", pairedDocumentId)
   return requestJson<UploadedDocument>(
     `/api/v1/claims/${encodeURIComponent(caseReference)}/documents`,
     { method: "POST", body: form },

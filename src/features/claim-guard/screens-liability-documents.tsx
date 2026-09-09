@@ -1,3 +1,4 @@
+import { EstimateExtraction } from "./estimate-extraction"
 import { useState } from "react"
 import {
   ArrowRightIcon,
@@ -789,6 +790,12 @@ export function ExtractedInvoiceScreen({
         }
       />
 
+      <EstimateExtraction
+        key={workspace.invoice.id}
+        caseReference={workspace.claim.id}
+        invoiceId={workspace.invoice.id}
+      />
+
       {unresolved.length > 0 && (
         <Alert>
           <ShieldAlertIcon />
@@ -836,8 +843,10 @@ export function ExtractedInvoiceScreen({
                       ? `${workspace.invoice.vehicleCategory.groupRange} · ${workspace.invoice.vehicleCategory.groupCategory}`
                       : "Unclassified — manual review",
                     "Lookup match",
-                    workspace.invoice.vehicleCategory?.matchStatus
-                      ?.replaceAll("_", " ") ?? "manual review",
+                    workspace.invoice.vehicleCategory?.matchStatus?.replaceAll(
+                      "_",
+                      " "
+                    ) ?? "manual review",
                   ],
                   [
                     "Mileage",

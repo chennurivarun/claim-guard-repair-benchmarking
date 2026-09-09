@@ -20,7 +20,6 @@ import {
   ClaimLiabilityScreen,
   DocumentPagesScreen,
   ExtractedInvoiceScreen,
-  UploadProcessingScreen,
 } from "@/features/claim-guard/screens-liability-documents"
 import {
   ChallengedInvoicesSummary,
@@ -31,6 +30,7 @@ import {
   invoiceOptionsForScreen,
   preferredInvoiceIdForScreen,
 } from "@/features/claim-guard/invoice-selection"
+import { ClientIntakeScreen } from "@/features/claim-guard/screens-client-intake"
 import { BenchmarkDashboardScreen } from "@/features/claim-guard/screens-benchmark-dashboard"
 import { KnowledgeGraphScreen } from "@/features/claim-guard/screens-knowledge-graph"
 import {
@@ -138,8 +138,7 @@ function invoiceDisplayLabel(
 export function App() {
   const [workspace, setWorkspace] = useState<ClaimWorkspace>(demoWorkspace)
   const [apiMode, setApiMode] = useState<"api" | "demo">("demo")
-  const [activeScreen, setActiveScreen] =
-    useState<ScreenId>("upload-processing")
+  const [activeScreen, setActiveScreen] = useState<ScreenId>("benchmark-setup")
   const [liabilityStatus, setLiabilityStatus] = useState<LiabilityStatus>(
     demoWorkspace.liability.status
   )
@@ -260,13 +259,17 @@ export function App() {
     (total, invoice) => total + (invoice.challenge_review?.unresolved ?? 0),
     0
   )
-  const challengedInvoices = selectChallengedInvoices(invoices)
+  const clientInvoices = invoices.filter((invoice) => invoice.intake_group)
+  const challengedInvoices = selectChallengedInvoices(clientInvoices)
   const pendingOntologyItems =
     workspace.researchItems?.filter(
       (item) =>
         item.initiatedAutomatically && item.status.toLowerCase() !== "approved"
     ).length ?? 0
-  const invoiceSelectorOptions = invoiceOptionsForScreen(invoices, activeScreen)
+  const invoiceSelectorOptions = invoiceOptionsForScreen(
+    clientInvoices,
+    activeScreen
+  )
   const screenInvoiceReady =
     activeScreen !== "price-comparison" ||
     !challengedInvoiceDetailOpen ||
@@ -296,7 +299,14 @@ export function App() {
     }
     setActiveScreen(screen)
     const preferredInvoiceId = preferredInvoiceIdForScreen(
-      invoices,
+      [
+        "document-pages",
+        "extracted-invoice",
+        "calculation-checks",
+        "review-findings-all",
+      ].includes(screen)
+        ? clientInvoices.filter((invoice) => invoice.intake_group === "live")
+        : clientInvoices,
       screen,
       workspace.invoice.id
     )
@@ -850,9 +860,13 @@ export function App() {
         />
       )
       break
+    case "benchmark-setup":
     case "upload-processing":
       screen = (
-        <UploadProcessingScreen
+        <ClientIntakeScreen
+          key={activeScreen}
+          setup={activeScreen === "benchmark-setup"}
+          onOpenManualReview={openManualReview}
           caseReference={workspace.claim.id}
           finalised={caseFinalised}
           onProcessed={async (preferredDocumentId) => {
@@ -866,31 +880,28 @@ export function App() {
                 )
               : undefined
             setInvoices(latestInvoices)
-            try {
-              await refreshComparison(preferredInvoice?.id)
-            } catch (error) {
-              // The documents are saved either way; never let a comparison
-              // failure leave the invoice list and workspace stale.
-              await refreshWorkspace(preferredInvoice?.id).catch(
-                () => undefined
-              )
-              toast.info(
-                "Documents saved; price comparison could not run yet",
-                {
-                  description: getApiErrorMessage(error),
-                  duration: 9000,
-                }
-              )
-            }
+            await refreshWorkspace(preferredInvoice?.id)
           }}
-          onContinue={() => navigate("benchmark-dashboard")}
-          onOpenManualReview={openManualReview}
+          onContinue={() =>
+            navigate(
+              activeScreen === "benchmark-setup"
+                ? "upload-processing"
+                : "document-pages"
+            )
+          }
         />
       )
       break
     case "document-pages":
       screen = (
-        <DocumentPagesScreen onContinue={() => navigate("extracted-invoice")} />
+        <DocumentPagesScreen
+          invoiceId={workspace.invoice.id}
+          caseReference={workspace.claim.id}
+          documentId={
+            invoices.find((row) => row.id === workspace.invoice.id)?.document_id
+          }
+          onContinue={() => navigate("extracted-invoice")}
+        />
       )
       break
     case "extracted-invoice":
@@ -908,7 +919,7 @@ export function App() {
       screen = (
         <CalculationChecksScreen
           workspace={workspace}
-          onContinue={() => void handleRunComparison()}
+          onContinue={() => void handleRunComparison("review-findings-all")}
         />
       )
       break
@@ -967,20 +978,41 @@ export function App() {
       break
     case "review-findings-all":
       screen = (
-        <ReviewFindingsScreen
-          workspace={workspace}
-          mode="all"
-          p90ThresholdPct={p90ThresholdPct}
-          enabled={apiMode === "api" && !caseFinalised}
-          processing={challengeSaving}
-          onDecision={handleChallengeDecision}
-          onInspect={inspectLine}
-          onContinue={() => navigate("challenge-review")}
-          onMappingDecision={handleMappingDecision}
-          mappingSavingLineId={mappingSavingLineId}
-          onProposeNewItem={handleResearch}
-          researchSaving={researchSaving}
-        />
+        <>
+          <Alert>
+            <AlertTitle>
+              {workspace.lines.some((line) => line.requiresExtractionReview)
+                ? "Extraction review required"
+                : workspace.lines.some(
+                      (line) => line.comparisonStatus === "CHALLENGE"
+                    )
+                  ? "Challenge recommended"
+                  : workspace.lines.some(
+                        (line) => line.comparisonStatus === "MISSING"
+                      ) || !workspace.lines.length
+                    ? "Needs review — insufficient benchmark evidence"
+                    : "No challenge recommended"}
+            </AlertTitle>
+            <AlertDescription>
+              Review every line below and open its supporting evidence before
+              making a challenge decision.
+            </AlertDescription>
+          </Alert>
+          <ReviewFindingsScreen
+            workspace={workspace}
+            mode="all"
+            p90ThresholdPct={p90ThresholdPct}
+            enabled={apiMode === "api" && !caseFinalised}
+            processing={challengeSaving}
+            onDecision={handleChallengeDecision}
+            onInspect={inspectLine}
+            onContinue={() => navigate("challenge-review")}
+            onMappingDecision={handleMappingDecision}
+            mappingSavingLineId={mappingSavingLineId}
+            onProposeNewItem={handleResearch}
+            researchSaving={researchSaving}
+          />
+        </>
       )
       break
     case "missing-items":
@@ -1194,7 +1226,22 @@ export function App() {
                 </select>
               </div>
             ) : null}
-            {screenInvoiceReady ? screen : null}
+            {[
+              "document-pages",
+              "extracted-invoice",
+              "calculation-checks",
+              "review-findings-all",
+            ].includes(activeScreen) && !clientInvoices.length ? (
+              <Alert>
+                <AlertTitle>Upload a client invoice to begin</AlertTitle>
+                <AlertDescription>
+                  Use Benchmark data setup for reference invoices, or Document
+                  Intelligence for a fresh invoice.
+                </AlertDescription>
+              </Alert>
+            ) : screenInvoiceReady ? (
+              screen
+            ) : null}
           </>
         )}
       </AppShell>

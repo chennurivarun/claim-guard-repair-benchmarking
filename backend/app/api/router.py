@@ -600,6 +600,8 @@ def upload_document(
     db: DatabaseSession,
     file: Annotated[UploadFile, File()],
     role: Annotated[str, Form()] = "current",
+    intake_group: Annotated[str | None, Form()] = None,
+    paired_document_id: Annotated[str | None, Form()] = None,
 ) -> dict[str, Any]:
     case = db.scalar(select(Case).where(Case.case_reference == case_reference))
     if case is None:
@@ -613,7 +615,19 @@ def upload_document(
             },
         )
     try:
-        document_role = DocumentRole(role)
+        if intake_group not in {None, "historical_claim", "in_house", "live"}:
+            raise ValueError("Unknown intake group")
+        document_role = (
+            DocumentRole.CURRENT if intake_group == "live" else DocumentRole.HISTORICAL
+        ) if intake_group else DocumentRole(role)
+        if paired_document_id:
+            target = db.get(Document, paired_document_id)
+            if target is None or target.case_id != case.id or not target.invoices:
+                raise ValueError("The engineer estimate must reference an extracted invoice in this claim.")
+            if len(target.invoices) != 1:
+                raise ValueError("Choose a single-invoice document for explicit estimate linkage.")
+            if (target.metadata_json or {}).get("intake_group") != intake_group:
+                raise ValueError("The engineer estimate and invoice must have the same intake group.")
         content = file.file.read()
         document = store_pdf(
             db,
@@ -621,6 +635,8 @@ def upload_document(
             filename=file.filename or "invoice.pdf",
             content=content,
             role=document_role,
+            intake_group=intake_group,
+            paired_document_id=paired_document_id,
         )
         db.commit()
     except ValueError as exc:
@@ -982,6 +998,7 @@ def get_invoices(
             "uploaded_at": invoice.created_at.isoformat(),
             "document_id": invoice.document_id,
             "document_filename": invoice.document.original_filename,
+            "intake_group": (invoice.document.metadata_json or {}).get("intake_group"),
             "document_role": invoice.document_role.value,
             "supplier_name": invoice.supplier_name,
             "vehicle": (
@@ -1380,7 +1397,7 @@ def benchmark_dashboard(
 ) -> dict[str, Any]:
     """Read the governed, invoice-only repair benchmarking database."""
 
-    if case_reference and source_group is None:
+    if case_reference:
         try:
             uploaded_dashboard = build_uploaded_batch_benchmark_dashboard(
                 db,
@@ -1391,6 +1408,7 @@ def benchmark_dashboard(
                 date_to=date_to,
                 minimum_count=minimum_count,
                 challenge_threshold_pct=challenge_threshold_pct,
+                source_group=source_group,
             )
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc

@@ -456,3 +456,97 @@ def test_invoice_net_falls_back_to_sum_of_line_totals_when_invoice_total_missing
     assert workspace["summary"]["challengePrice"] == 99.0
     assert workspace["summary"]["challengeAmount"] == 101.0
     engine.dispose()
+
+
+def test_client_live_invoice_excludes_legacy_and_other_live_invoices(p90_session):
+    from sqlalchemy import select
+    invoices = p90_session.scalars(select(Invoice).order_by(Invoice.invoice_date)).all()
+    current = invoices[-1]
+    current.document.metadata_json = {"intake_group": "live"}
+    p90_session.flush()
+    assert build_claim_workspace(p90_session, CASE_REFERENCE, invoice_id=current.id)["summary"]["challengeAmount"] == 0
+    for invoice in invoices[:3]:
+        invoice.document.metadata_json = {"intake_group": "historical_claim"}
+    p90_session.flush()
+    assert build_claim_workspace(p90_session, CASE_REFERENCE, invoice_id=current.id)["summary"]["challengeAmount"] > 0
+    invoices[0].document.metadata_json = {"intake_group": "live"}
+    p90_session.flush()
+    assert build_claim_workspace(p90_session, CASE_REFERENCE, invoice_id=current.id)["summary"]["challengeAmount"] == 0
+
+
+def test_client_in_house_benchmark_works_without_claim_history(p90_session):
+    from sqlalchemy import select
+    invoices = p90_session.scalars(select(Invoice).order_by(Invoice.invoice_date)).all()
+    for invoice in invoices:
+        invoice.document.metadata_json = {"intake_group": "live" if invoice == invoices[-1] else "in_house"}
+    p90_session.flush()
+    workspace = build_claim_workspace(p90_session, CASE_REFERENCE, invoice_id=invoices[-1].id)
+    assert workspace["summary"]["challengeAmount"] > 0
+
+
+def test_client_dashboard_has_no_legacy_fallback(p90_client):
+    for source in ("historical_claim", "in_house"):
+        response = p90_client.get("/api/v1/benchmarks/dashboard", params={
+            "case_reference": CASE_REFERENCE, "source_group": source,
+        })
+        assert response.status_code == 200
+        assert response.json()["benchmarks"] == []
+        assert response.json()["summary"]["observationCount"] == 0
+
+
+def test_client_duplicate_cannot_move_from_benchmark_to_live(p90_session, monkeypatch, tmp_path):
+    from sqlalchemy import select
+
+    import app.services.document_processing as processing
+    monkeypatch.setattr(processing.settings, "storage_dir", tmp_path)
+    case = p90_session.scalar(select(Case).where(Case.case_reference == CASE_REFERENCE))
+    content = b"%PDF-1.7\nclient-intake-test"
+    stored = processing.store_pdf(p90_session, case=case, filename="client.pdf", content=content,
+                                  intake_group="historical_claim")
+    assert processing.store_pdf(p90_session, case=case, filename="renamed.pdf", content=content,
+                                intake_group="historical_claim").id == stored.id
+    with pytest.raises(ValueError, match="another intake group"):
+        processing.store_pdf(p90_session, case=case, filename="live.pdf", content=content,
+                             intake_group="live")
+
+
+def test_explicit_estimate_pair_enriches_only_missing_fields(p90_session):
+    from sqlalchemy import select
+
+    from app.models import EngineerAssessment
+    from app.services.engineer_assessment import engineer_assessment_payload, pair_case_assessments
+    invoice = p90_session.scalars(select(Invoice).order_by(Invoice.invoice_date)).all()[-1]
+    invoice.document.metadata_json = {"intake_group": "live"}
+    document = _add_document(p90_session, invoice.case_id, "estimate.pdf")
+    document.metadata_json = {"intake_group": "live", "paired_document_id": invoice.document_id}
+    assessment = EngineerAssessment(case_id=invoice.case_id, document_id=document.id,
+                                    registration="TEST123", vehicle_make="Conflicting make", mileage=12345)
+    p90_session.add(assessment)
+    p90_session.flush()
+    pair_case_assessments(p90_session, invoice.case_id)
+    p90_session.flush()
+    assert assessment.paired_invoice_id == invoice.id
+    assert invoice.vehicle.make == "BMW"
+    assert invoice.vehicle.registration == "TEST123"
+    assert invoice.vehicle.mileage == 12345
+    payload = engineer_assessment_payload(assessment)
+    assert payload["field_sources"]["registration"]["document_id"] == document.id
+    assert "make" not in payload["field_sources"]
+
+
+def test_ambiguous_estimate_does_not_choose_arbitrary_invoice(p90_session):
+    from sqlalchemy import select
+
+    from app.models import EngineerAssessment
+    from app.services.engineer_assessment import pair_case_assessments
+    invoices = p90_session.scalars(select(Invoice)).all()
+    for invoice in invoices:
+        invoice.vehicle.registration = "SAME123"
+    document = _add_document(p90_session, invoices[0].case_id, "ambiguous-estimate.pdf")
+    assessment = EngineerAssessment(case_id=invoices[0].case_id, document_id=document.id,
+                                    registration="SAME123")
+    p90_session.add(assessment)
+    p90_session.flush()
+    pair_case_assessments(p90_session, invoices[0].case_id)
+    assert assessment.paired_invoice_id is None
+    assert "Multiple invoices" in assessment.pair_reasons_json[0]

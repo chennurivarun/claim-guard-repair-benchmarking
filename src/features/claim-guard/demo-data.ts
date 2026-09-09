@@ -1,6 +1,7 @@
 import type { ClaimWorkspace, InvoiceLine, ScreenId, StageId } from "./types"
 
 export const screenStage: Record<ScreenId, StageId> = {
+  "benchmark-setup": "documents",
   "claim-liability": "liability",
   "upload-processing": "documents",
   "document-pages": "documents",
@@ -19,8 +20,9 @@ export const screenStage: Record<ScreenId, StageId> = {
 }
 
 export const screenTitles: Record<ScreenId, string> = {
+  "benchmark-setup": "Benchmark data setup",
   "claim-liability": "Claim & Liability",
-  "upload-processing": "Upload & Processing",
+  "upload-processing": "Document Intelligence",
   "document-pages": "Document Pages",
   "extracted-invoice": "Extracted Invoice",
   "calculation-checks": "Calculation Checks",

@@ -280,6 +280,8 @@ def store_pdf(
     filename: str,
     content: bytes,
     role: DocumentRole = DocumentRole.CURRENT,
+    intake_group: str | None = None,
+    paired_document_id: str | None = None,
 ) -> Document:
     """Normalise and immutably store a supported document before creating its record."""
 
@@ -289,6 +291,14 @@ def store_pdf(
         select(Document).where(Document.case_id == case.id, Document.sha256 == digest)
     )
     if existing is not None:
+        previous_group = (existing.metadata_json or {}).get("intake_group")
+        if intake_group and previous_group != intake_group:
+            if previous_group is None and intake_group != "live":
+                # Re-upload is an explicit selection of an existing client file.
+                existing.metadata_json = {**(existing.metadata_json or {}), "intake_group": intake_group}
+                existing.document_role = DocumentRole.HISTORICAL
+            else:
+                raise ValueError("This file already belongs to another intake group. Use a fresh invoice for the live demo.")
         return existing
 
     storage_dir = Path(settings.storage_dir) / "cases" / case.id / digest[:12]
@@ -307,6 +317,8 @@ def store_pdf(
         metadata_json={
             "safe_filename": normalised.stored_filename,
             "source_format": normalised.source_format,
+            "intake_group": intake_group,
+            "paired_document_id": paired_document_id,
         },
     )
     session.add(document)
@@ -488,6 +500,14 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
             page for page in analysis.pages
             if page.page_type.value == PageType.ENGINEER_ASSESSMENT.value
         ]
+        if document_metadata.get("paired_document_id"):
+            engineer_pages = analysis.pages
+            for page_row in page_rows.values():
+                page_row.page_type = PageType.ENGINEER_ASSESSMENT
+        if document_metadata.get("intake_group") and engineer_pages:
+            # A separately supplied estimate is supporting evidence, never an
+            # additional repair invoice or a reference price observation.
+            analysis.invoices = []
         has_benchmarkable_lines = any(
             extracted.has_benchmarkable_part_lines() for extracted in analysis.invoices
         )
@@ -899,6 +919,7 @@ def serialise_document(document: Document) -> dict[str, Any]:
         "filename": document.original_filename,
         "sha256": document.sha256,
         "role": document.document_role.value,
+        "intake_group": metadata.get("intake_group"),
         "kind": document.document_kind.value,
         "paired": bool(
             document.engineer_assessment

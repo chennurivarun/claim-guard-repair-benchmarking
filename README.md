@@ -1,5 +1,7 @@
 # ClaimGuard
 
+For the current client demo, follow [Client invoice demonstration](docs/CLIENT_DEMO_WORKFLOW.md): client-only benchmark setup → fresh invoice and optional engineer estimate → source and extraction review → benchmark outcome.
+
 ClaimGuard is a UK motor-claims invoice validation and price-challenge pilot. A handler confirms liability, uploads repair invoices, reviews extraction and ontology mapping, compares each net line against governed evidence, and issues an auditable challenge only after human approval.
 
 The project is a working full-stack implementation: a React/Vite interface in the shadcn design language, a FastAPI service, deterministic comparison logic, an optional schema-constrained hosted LLM boundary, a SQLite audit store, native PDF/Azure OCR processing, and JSON/XLSX/SQLite/DOCX/PDF outputs.

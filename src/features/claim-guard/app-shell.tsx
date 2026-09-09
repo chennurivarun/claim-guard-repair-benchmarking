@@ -45,15 +45,35 @@ import {
 import type { LiabilityStatus, ScreenId } from "./types"
 
 const primaryNavigation = [
-  { id: "upload-processing", label: "Documents", icon: FileTextIcon },
+  {
+    id: "benchmark-setup",
+    label: "Benchmark data setup",
+    icon: LibraryBigIcon,
+  },
+  {
+    id: "upload-processing",
+    label: "Document Intelligence",
+    icon: FileTextIcon,
+  },
+  { id: "document-pages", label: "Source documents", icon: FileScanIcon },
+  {
+    id: "extracted-invoice",
+    label: "Review extraction",
+    icon: ReceiptTextIcon,
+  },
+  {
+    id: "review-findings-all",
+    label: "Invoice outcome & evidence",
+    icon: SearchCheckIcon,
+  },
   {
     id: "benchmark-dashboard",
-    label: "Claims benchmarks",
+    label: "Repair Price Benchmarking",
     icon: BarChart3Icon,
   },
   {
     id: "in-house-benchmarks",
-    label: "In-house benchmarks",
+    label: "In-house Benchmark",
     icon: BarChart3Icon,
   },
   {
@@ -79,12 +99,7 @@ const administration = [
     label: "Claim & liability",
     icon: ClipboardCheckIcon,
   },
-  { id: "document-pages", label: "Source document", icon: FileScanIcon },
-  {
-    id: "extracted-invoice",
-    label: "Extracted invoice",
-    icon: ReceiptTextIcon,
-  },
+
   {
     id: "review-findings-all",
     label: "Review findings",
@@ -120,7 +135,7 @@ const reviewScreens: ScreenId[] = [
 ]
 
 function primaryActiveId(activeScreen: ScreenId): ScreenId {
-  if (documentScreens.includes(activeScreen)) return "upload-processing"
+  if (documentScreens.includes(activeScreen)) return activeScreen
   if (activeScreen === "calculation-checks") return "upload-processing"
   if (reviewScreens.includes(activeScreen)) return "price-comparison"
   return activeScreen

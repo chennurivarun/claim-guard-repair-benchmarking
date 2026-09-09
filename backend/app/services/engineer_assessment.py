@@ -61,10 +61,37 @@ def pair_case_assessments(session: Session, case_id: str) -> None:
         .options(selectinload(Invoice.vehicle), selectinload(Invoice.line_items))
     ).all()
     for assessment in assessments:
+        operation_ids = [operation.id for operation in assessment.operations]
+        if operation_ids:
+            session.execute(delete(AssessmentInvoiceVariance).where(
+                AssessmentInvoiceVariance.assessment_operation_id.in_(operation_ids)
+            ))
+        # Remove only values previously filled by this assessment before
+        # re-evaluating the link. Preserve later handler corrections.
+        for invoice in invoices:
+            sources = dict((invoice.document.metadata_json or {}).get("field_sources", {}))
+            for field, source in list(sources.items()):
+                if source.get("document_id") == assessment.document_id:
+                    if invoice.vehicle and getattr(invoice.vehicle, field, None) == source.get("value"):
+                        setattr(invoice.vehicle, field, None)
+                    del sources[field]
+            invoice.document.metadata_json = {
+                **(invoice.document.metadata_json or {}), "field_sources": sources
+            }
         candidates: list[tuple[float, Invoice, list[str]]] = []
         for invoice in invoices:
+            assessment_group = (assessment.document.metadata_json or {}).get("intake_group")
+            invoice_group = (invoice.document.metadata_json or {}).get("intake_group")
+            if assessment_group != invoice_group:
+                continue
             reasons: list[str] = []
             score = 0.0
+            explicit_document = (assessment.document.metadata_json or {}).get("paired_document_id")
+            if explicit_document:
+                if invoice.document_id != explicit_document:
+                    continue
+                score = 1.0
+                reasons.append("Uploaded together for this invoice")
             invoice_registration = invoice.vehicle.registration if invoice.vehicle else None
             if assessment.registration and invoice_registration:
                 if re.sub(r"\W", "", assessment.registration).upper() == re.sub(
@@ -72,6 +99,9 @@ def pair_case_assessments(session: Session, case_id: str) -> None:
                 ).upper():
                     score += 0.70
                     reasons.append("registration exact match")
+                else:
+                    # Explicit upload association must not override conflicting identities.
+                    continue
             if assessment.claim_reference and invoice.invoice_number:
                 if assessment.claim_reference.upper() in invoice.invoice_number.upper():
                     score += 0.25
@@ -79,17 +109,31 @@ def pair_case_assessments(session: Session, case_id: str) -> None:
             if score:
                 candidates.append((score, invoice, reasons))
         candidates.sort(key=lambda row: row[0], reverse=True)
-        if not candidates or candidates[0][0] < 0.70:
+        ambiguous = len(candidates) > 1 and candidates[0][0] == candidates[1][0]
+        if not candidates or candidates[0][0] < 0.70 or ambiguous:
             assessment.paired_invoice_id = None
             assessment.pair_status = "unpaired"
             assessment.pair_confidence = candidates[0][0] if candidates else 0.0
-            assessment.pair_reasons_json = candidates[0][2] if candidates else ["no safe identifier match"]
+            assessment.pair_reasons_json = (["Multiple invoices share the same identifiers; manual linkage required"] if ambiguous else candidates[0][2] if candidates else ["no safe identifier match"])
             continue
         score, invoice, reasons = candidates[0]
         assessment.paired_invoice_id = invoice.id
         assessment.pair_status = "paired"
         assessment.pair_confidence = min(score, 1.0)
         assessment.pair_reasons_json = reasons
+        if invoice.vehicle:
+            sources = dict((invoice.document.metadata_json or {}).get("field_sources", {}))
+            for field, estimate_field in (("make", "vehicle_make"), ("model", "vehicle_model"),
+                                          ("registration", "registration"), ("vin", "vin"),
+                                          ("mileage", "mileage")):
+                value = getattr(assessment, estimate_field)
+                if getattr(invoice.vehicle, field) in (None, "") and value not in (None, ""):
+                    setattr(invoice.vehicle, field, value)
+                    sources[field] = {"document_id": assessment.document_id,
+                                      "label": "Engineer estimate", "value": value}
+            invoice.document.metadata_json = {
+                **(invoice.document.metadata_json or {}), "field_sources": sources
+            }
         operation_ids = [operation.id for operation in assessment.operations]
         if operation_ids:
             session.execute(
@@ -158,6 +202,14 @@ def engineer_assessment_payload(assessment: EngineerAssessment) -> dict:
         "assessment_number": assessment.assessment_number,
         "claim_reference": assessment.claim_reference,
         "registration": assessment.registration,
+        "vehicle_make": assessment.vehicle_make,
+        "vehicle_model": assessment.vehicle_model,
+        "vin": assessment.vin,
+        "mileage": assessment.mileage,
+        "field_sources": (
+            (assessment.paired_invoice.document.metadata_json or {}).get("field_sources", {})
+            if assessment.paired_invoice else {}
+        ),
         "pair_status": assessment.pair_status,
         "pair_confidence": assessment.pair_confidence,
         "pair_reasons": assessment.pair_reasons_json or [],

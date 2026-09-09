@@ -73,3 +73,31 @@ def test_five_assessments_pair_safely_without_entering_p90_history(engineer_engi
         )
         assert "within_threshold" in statuses
         assert "above_10_percent" in statuses
+
+
+def test_client_live_invoice_and_separate_estimate_are_processed_as_one_invoice(engineer_engine):
+    from sqlalchemy import select
+
+    from app.models import Invoice
+    with Session(engineer_engine, expire_on_commit=False) as session:
+        case = Case(case_reference="CG-CLIENT-LIVE-TEST", created_by="pytest.handler")
+        session.add(case)
+        session.flush()
+        path = PAIR_DIR / "CLM-UK-001_Repair_Invoice.pdf"
+        invoice_document = document_processing.store_pdf(
+            session, case=case, filename=path.name, content=path.read_bytes(), intake_group="live"
+        )
+        document_processing.process_document(session, invoice_document)
+        path = PAIR_DIR / "CLM-UK-001_Engineer_Assessment.pdf"
+        estimate_document = document_processing.store_pdf(
+            session, case=case, filename=path.name, content=path.read_bytes(),
+            intake_group="live", paired_document_id=invoice_document.id,
+        )
+        document_processing.process_document(session, estimate_document)
+        session.flush()
+        invoices = session.scalars(select(Invoice).where(Invoice.case_id == case.id)).all()
+        assert len(invoices) == 1
+        assessment = session.scalar(select(EngineerAssessment).where(EngineerAssessment.case_id == case.id))
+        assert assessment.paired_invoice_id == invoices[0].id
+        assert not estimate_document.invoices
+        assert document_processing.serialise_document(estimate_document)["intake_group"] == "live"

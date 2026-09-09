@@ -415,7 +415,7 @@ def _serialise_uploaded_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
         "sourceReference": None,
         "included": True,
         "inclusionReason": (
-            "Earlier uploaded invoice matched to the same repair item and selected vehicle scope."
+            "Selected reference invoice matched to the same repair item and vehicle scope."
         ),
     }
 
@@ -854,10 +854,16 @@ def build_case_result(
     threshold_decimal = resolve_threshold_pct(p90_threshold_pct)
     graph = _graph or _load_case_graph(session, case_reference)
     uploaded_p90_benchmarks: dict[str, dict[str, Any]] = {}
+    client_in_house: dict[str, dict[str, Any]] = {}
     for uploaded_invoice in graph["invoices"]:
         uploaded_p90_benchmarks.update(
             _uploaded_line_p90_benchmarks(graph, current_invoice=uploaded_invoice)
         )
+    for uploaded_invoice in graph["invoices"]:
+        if _client_intake_group(uploaded_invoice):
+            client_in_house.update(_uploaded_line_p90_benchmarks(
+                graph, current_invoice=uploaded_invoice, source_group="in_house"
+            ))
     case: Case = graph["case"]
     context: ClaimContext | None = graph["context"]
     liability: LiabilityAssessment | None = graph["liability"]
@@ -1127,6 +1133,20 @@ def build_case_result(
                     ),
                 }
             ]
+        client_only = bool(invoice and _client_intake_group(invoice))
+        if client_only:
+            client_benchmark = None if operationally_excluded else client_in_house.get(line.id)
+            in_house_evidence = (
+                _p90_evidence_from_benchmark(client_benchmark) if client_benchmark else None
+            )
+            in_house_rows = []
+            in_house_scope = "Client-provided in-house repair invoices"
+            historical_evidence = uploaded_historical_evidence
+            stored_historical_rows = []
+            external_price = None
+            external_sources = []
+            external_audit_sources = []
+            external_price_method = None
         decision = _decide_line_from_benchmark(
             billed_net=line.line_total_net,
             in_house=in_house_evidence,
@@ -1171,8 +1191,11 @@ def build_case_result(
                     "scope": in_house_scope,
                     "sampleCount": in_house_evidence.historical_count if in_house_evidence else 0,
                     "currentInvoiceExcluded": True,
-                    "synthetic": True,
+                    "synthetic": not client_only,
                     "observations": [
+                        {**_serialise_uploaded_evidence_row(row), "sourceGroup": "in_house"}
+                        for row in (client_in_house.get(line.id) or {}).get("observations", [])
+                    ] if client_only else [
                         _serialise_comparable_evidence_row(row, source_group="in_house")
                         for row in in_house_rows
                     ],
@@ -1548,11 +1571,17 @@ def _uploaded_line_identity(
     return keys, category, identity
 
 
+def _client_intake_group(invoice: Invoice) -> str | None:
+    document = getattr(invoice, "document", None)
+    return (getattr(document, "metadata_json", None) or {}).get("intake_group")
+
+
 def _uploaded_line_p90_benchmarks(
     graph: dict[str, Any],
     *,
     current_invoice: Invoice,
     minimum_count: int = 3,
+    source_group: str = "historical_claim",
 ) -> dict[str, dict[str, Any]]:
     """Compare current lines with earlier uploaded invoices in the same batch.
 
@@ -1569,6 +1598,16 @@ def _uploaded_line_p90_benchmarks(
     except StopIteration:
         return {}
     prior_invoices = invoices[:current_index]
+    if _client_intake_group(current_invoice):
+        # Client benchmarks are explicitly selected uploads. Live cases never
+        # enter this reference population, even on subsequent comparisons.
+        prior_invoices = [
+            row for row in invoices
+            if row.id != current_invoice.id
+            and _client_intake_group(row) == source_group
+            and _enum_value(row.document_role) == "invoice"
+            and _enum_value(row.document.document_kind) != "engineer_assessment"
+        ]
     current_vehicle = getattr(current_invoice, "vehicle", None)
     current_make = _normalised_vehicle_value(getattr(current_vehicle, "make", None))
     current_model = _normalised_vehicle_value(getattr(current_vehicle, "model", None))
@@ -1714,6 +1753,7 @@ def _uploaded_batch_benchmark_dashboard(
     date_to: date | None = None,
     minimum_count: int = 1,
     challenge_threshold_pct: Decimal | int | float = Decimal("10"),
+    source_group: str | None = None,
 ) -> dict[str, Any] | None:
     """Build dashboard rows and graph edges from one uploaded invoice batch.
 
@@ -1723,7 +1763,11 @@ def _uploaded_batch_benchmark_dashboard(
     """
 
     invoices: list[Invoice] = graph["invoices"]
-    if not invoices:
+    if source_group:
+        invoices = [row for row in invoices if _client_intake_group(row) == source_group
+                    and _enum_value(row.document_role) == "invoice"
+                    and _enum_value(row.document.document_kind) != "engineer_assessment"]
+    if not invoices and not source_group:
         return None
     invoice_by_id = {invoice.id: invoice for invoice in invoices}
     latest_mappings = _latest_by(graph["mappings"], "invoice_line_item_id")
@@ -1771,7 +1815,7 @@ def _uploaded_batch_benchmark_dashboard(
         }
         records.append(record)
         records_by_line[line.id] = record
-    if not records:
+    if not records and not source_group:
         return None
 
     available_vehicle_classes = sorted({str(row["vehicleClass"]) for row in records})
@@ -1801,6 +1845,7 @@ def _uploaded_batch_benchmark_dashboard(
         for line_id, result in _uploaded_line_p90_benchmarks(
             graph,
             current_invoice=invoice,
+            source_group=source_group or "historical_claim",
         ).items():
             record = records_by_line.get(line_id)
             if record is None or record not in filtered_records:

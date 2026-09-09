@@ -245,6 +245,7 @@ export interface DataReadinessPayload {
 }
 
 export interface ClaimInvoiceSummary {
+  intake_group?: "historical_claim" | "in_house" | "live" | null
   id: string
   invoice_number: string | null
   invoice_date: string | null
@@ -304,6 +305,14 @@ export interface EngineerAssessmentVariancePayload {
 }
 
 export interface EngineerAssessmentPayload {
+  field_sources?: Record<
+    string,
+    { document_id: string; label: string; value: string | number }
+  >
+  vehicle_make?: string | null
+  vehicle_model?: string | null
+  vin?: string | null
+  mileage?: number | null
   id: string
   document_id: string
   assessment_number: string | null

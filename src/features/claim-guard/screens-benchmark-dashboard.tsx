@@ -4,7 +4,6 @@ import {
   ArrowUpDownIcon,
   ArrowUpIcon,
   DatabaseIcon,
-  DownloadIcon,
   EyeIcon,
   Share2Icon,
 } from "lucide-react"
@@ -26,11 +25,7 @@ import type {
   BenchmarkExceptionPayload,
   BenchmarkObservationPayload,
 } from "@/lib/api"
-import {
-  downloadInHouseRepairCsv,
-  fetchBenchmarkDashboard,
-  fetchBenchmarkObservations,
-} from "@/lib/api"
+import { fetchBenchmarkDashboard, fetchBenchmarkObservations } from "@/lib/api"
 
 import { DataCard, MINIMUM_CHALLENGE_AMOUNT, ScreenHeading } from "./shared"
 import type { ClaimWorkspace } from "./types"
@@ -548,26 +543,16 @@ export function BenchmarkDashboardScreen({
       <ScreenHeading
         title={
           sourceGroup === "in_house"
-            ? "In-house repair benchmarks"
-            : "Historical claims benchmarks"
+            ? "In-house Benchmark"
+            : "Repair Price Benchmarking"
         }
         description={
           sourceGroup === "in_house"
-            ? "Review the synthetic in-house repair dataset generated from extracted invoice parts. Each repair item has six varied, dated examples anchored to matching uploaded invoice prices when available, with an auditable offline fallback when the configured LLM is unavailable."
+            ? "Review prices from client-provided in-house repair invoices uploaded in Benchmark data setup."
             : "Review prices extracted from uploaded repair invoices, kept separate from in-house and external evidence."
         }
         action={
           <div className="flex flex-wrap gap-2">
-            {sourceGroup === "in_house" && apiMode === "api" ? (
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => void downloadInHouseRepairCsv()}
-              >
-                <DownloadIcon aria-hidden />
-                Download in-house CSV
-              </Button>
-            ) : null}
             <Button
               type="button"
               variant="outline"
@@ -677,9 +662,9 @@ export function BenchmarkDashboardScreen({
       <div className="grid gap-4 sm:grid-cols-3" aria-label="Benchmark totals">
         {(sourceGroup === "in_house"
           ? [
-              ["Synthetic repair records", dashboard.summary.observationCount],
+              ["Invoice observations", dashboard.summary.observationCount],
               ["Benchmark groups", dashboard.benchmarks.length],
-              ["Configured samples per item", 6],
+              ["Challenged lines", challengedLineCount],
             ]
           : [
               ["Invoice observations", dashboard.summary.observationCount],
@@ -714,7 +699,7 @@ export function BenchmarkDashboardScreen({
         }
         description={
           sourceGroup === "in_house"
-            ? "Only the active synthetic in-house CSV is included. Each repair-item record contributes six validated prices across mixed vehicle examples. Equivalent records with the same display name are combined, so the Samples column can be a multiple of six."
+            ? "Only client-provided in-house invoices are included. Source rows remain available for each repair item."
             : `Only uploaded historical-claim invoice observations are included here. Red counts require both more than ${challengeThreshold}% above P90 and at least ${preciseMoney(MINIMUM_CHALLENGE_AMOUNT)} difference.`
         }
         action={<Badge variant="outline">P90 · interpolated</Badge>}
@@ -767,7 +752,9 @@ export function BenchmarkDashboardScreen({
                   </>
                 ) : null}
                 <th className="px-3 py-3 text-right font-medium">
-                  {sourceGroup === "in_house" ? "CSV rows" : "Invoices used"}
+                  {sourceGroup === "in_house"
+                    ? "Invoices used"
+                    : "Invoices used"}
                 </th>
               </tr>
             </thead>
@@ -902,7 +889,7 @@ export function BenchmarkDashboardScreen({
             }
             description={
               evidenceMode === "exceptions"
-                ? `${sourceTitle}. Each row was compared only with earlier invoices and exceeded both challenge gates.`
+                ? `${sourceTitle}. Each row was compared with other selected reference invoices and exceeded both challenge gates.`
                 : `${sourceTitle}. These invoice rows are the evidence behind the selected benchmark.`
             }
           >
@@ -1034,126 +1021,147 @@ export function BenchmarkDashboardScreen({
         </div>
       ) : null}
 
-      <DataCard
-        title={`Selected invoice · ${workspace.invoice.number}`}
-        description={`Operational comparison: the selected invoice is excluded from its own P90. A challenge requires both more than ${challengeThreshold}% above P90 and at least ${preciseMoney(MINIMUM_CHALLENGE_AMOUNT)} difference.`}
-        action={<Badge variant="outline">Current invoice excluded</Badge>}
-      >
-        {selectedInvoiceBenchmarks.length ? (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[780px] text-left text-sm">
-              <thead className="border-b bg-muted/50 text-xs text-muted-foreground">
-                <tr>
-                  <th className="px-3 py-3 font-medium">Line item</th>
-                  <th className="px-3 py-3 font-medium">Standard category</th>
-                  <th className="px-3 py-3 text-right font-medium">Current</th>
-                  <th className="px-3 py-3 text-right font-medium">P90</th>
-                  <th className="px-3 py-3 text-right font-medium">
-                    Difference
-                  </th>
-                  <th className="px-3 py-3 font-medium">Decision</th>
-                  <th className="px-3 py-3 text-right font-medium">Evidence</th>
-                </tr>
-              </thead>
-              <tbody>
-                {selectedInvoiceBenchmarks.map((line) => {
-                  const benchmark = line.p90Benchmark!
-                  // The operational status comes only from the server's
-                  // comparisonStatus (see backend price_decision.py) — never
-                  // recomputed client-side, so this table can't disagree
-                  // with Review findings or the line evidence sheet.
-                  const exceedsThreshold = line.comparisonStatus === "CHALLENGE"
-                  return (
-                    <tr
-                      key={line.id}
-                      className="border-b align-top last:border-0"
-                    >
-                      <td className="px-3 py-3 font-medium">
-                        {line.description}
-                      </td>
-                      <td className="px-3 py-3 text-muted-foreground">
-                        {benchmark.category}
-                      </td>
-                      <td className="px-3 py-3 text-right tabular-nums">
-                        {preciseMoney(benchmark.currentPrice)}
-                      </td>
-                      <td className="px-3 py-3 text-right font-semibold tabular-nums">
-                        {preciseMoney(benchmark.p90)}
-                      </td>
-                      <td
-                        className={`px-3 py-3 text-right tabular-nums ${
-                          exceedsThreshold ? "text-destructive" : "text-success"
-                        }`}
+      {dashboard.summary.observationCount > 0 &&
+      selectedInvoiceBenchmarks.length > 0 ? (
+        <DataCard
+          title={`Selected invoice · ${workspace.invoice.number}`}
+          description={`Operational comparison: the selected invoice is excluded from its own P90. A challenge requires both more than ${challengeThreshold}% above P90 and at least ${preciseMoney(MINIMUM_CHALLENGE_AMOUNT)} difference.`}
+          action={<Badge variant="outline">Current invoice excluded</Badge>}
+        >
+          {selectedInvoiceBenchmarks.length ? (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[780px] text-left text-sm">
+                <thead className="border-b bg-muted/50 text-xs text-muted-foreground">
+                  <tr>
+                    <th className="px-3 py-3 font-medium">Line item</th>
+                    <th className="px-3 py-3 font-medium">Standard category</th>
+                    <th className="px-3 py-3 text-right font-medium">
+                      Current
+                    </th>
+                    <th className="px-3 py-3 text-right font-medium">P90</th>
+                    <th className="px-3 py-3 text-right font-medium">
+                      Difference
+                    </th>
+                    <th className="px-3 py-3 font-medium">Decision</th>
+                    <th className="px-3 py-3 text-right font-medium">
+                      Evidence
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {selectedInvoiceBenchmarks.map((line) => {
+                    const benchmark = line.p90Benchmark!
+                    // The operational status comes only from the server's
+                    // comparisonStatus (see backend price_decision.py) — never
+                    // recomputed client-side, so this table can't disagree
+                    // with Review findings or the line evidence sheet.
+                    const exceedsThreshold =
+                      line.comparisonStatus === "CHALLENGE"
+                    return (
+                      <tr
+                        key={line.id}
+                        className="border-b align-top last:border-0"
                       >
-                        {signedMoney(benchmark.difference)}
-                      </td>
-                      <td className="px-3 py-3">
-                        <Badge
-                          variant={
-                            exceedsThreshold ? "destructive" : "secondary"
-                          }
+                        <td className="px-3 py-3 font-medium">
+                          {line.description}
+                        </td>
+                        <td className="px-3 py-3 text-muted-foreground">
+                          {benchmark.category}
+                        </td>
+                        <td className="px-3 py-3 text-right tabular-nums">
+                          {preciseMoney(benchmark.currentPrice)}
+                        </td>
+                        <td className="px-3 py-3 text-right font-semibold tabular-nums">
+                          {preciseMoney(benchmark.p90)}
+                        </td>
+                        <td
+                          className={`px-3 py-3 text-right tabular-nums ${
+                            exceedsThreshold
+                              ? "text-destructive"
+                              : "text-success"
+                          }`}
                         >
-                          {exceedsThreshold ? "Challenge" : "Within threshold"}
-                        </Badge>
-                      </td>
-                      <td className="px-3 py-3 text-right">
-                        <details className="group inline-block text-left">
-                          <summary className="cursor-pointer list-none rounded-md border px-3 py-1.5 text-xs font-medium">
-                            View {benchmark.historicalCount} prices
-                          </summary>
-                          <div className="mt-2 min-w-[340px] rounded-lg border bg-card p-3 shadow-sm">
-                            <p className="mb-2 text-xs text-muted-foreground">
-                              {benchmark.method}. Current invoice excluded.
-                            </p>
-                            <table className="w-full text-xs">
-                              <thead className="text-muted-foreground">
-                                <tr>
-                                  <th className="py-1 text-left font-medium">
-                                    Invoice
-                                  </th>
-                                  <th className="py-1 text-left font-medium">
-                                    Description
-                                  </th>
-                                  <th className="py-1 text-right font-medium">
-                                    Price
-                                  </th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {benchmark.observations.map((observation) => (
-                                  <tr
-                                    key={observation.lineId}
-                                    className="border-t"
-                                  >
-                                    <td className="py-1.5 pr-2 font-medium">
-                                      {observation.invoiceNumber}
-                                    </td>
-                                    <td className="py-1.5 pr-2 text-muted-foreground">
-                                      {observation.description}
-                                    </td>
-                                    <td className="py-1.5 text-right tabular-nums">
-                                      {preciseMoney(observation.price)}
-                                    </td>
+                          {signedMoney(benchmark.difference)}
+                        </td>
+                        <td className="px-3 py-3">
+                          <Badge
+                            variant={
+                              exceedsThreshold ? "destructive" : "secondary"
+                            }
+                          >
+                            {exceedsThreshold
+                              ? "Challenge"
+                              : "Within threshold"}
+                          </Badge>
+                        </td>
+                        <td className="px-3 py-3 text-right">
+                          <details className="group inline-block text-left">
+                            <summary className="cursor-pointer list-none rounded-md border px-3 py-1.5 text-xs font-medium">
+                              View {benchmark.historicalCount} prices
+                            </summary>
+                            <div className="mt-2 min-w-[340px] rounded-lg border bg-card p-3 shadow-sm">
+                              <p className="mb-2 text-xs text-muted-foreground">
+                                {benchmark.method}. Current invoice excluded.
+                              </p>
+                              <table className="w-full text-xs">
+                                <thead className="text-muted-foreground">
+                                  <tr>
+                                    <th className="py-1 text-left font-medium">
+                                      Invoice
+                                    </th>
+                                    <th className="py-1 text-left font-medium">
+                                      Description
+                                    </th>
+                                    <th className="py-1 text-right font-medium">
+                                      Price
+                                    </th>
                                   </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        </details>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        ) : null}
-      </DataCard>
+                                </thead>
+                                <tbody>
+                                  {benchmark.observations.map((observation) => (
+                                    <tr
+                                      key={observation.lineId}
+                                      className="border-t"
+                                    >
+                                      <td className="py-1.5 pr-2 font-medium">
+                                        {observation.invoiceNumber}
+                                      </td>
+                                      <td className="py-1.5 pr-2 text-muted-foreground">
+                                        {observation.description}
+                                      </td>
+                                      <td className="py-1.5 text-right tabular-nums">
+                                        {preciseMoney(observation.price)}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </details>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+        </DataCard>
+      ) : (
+        <DataCard
+          title="Invoice comparison"
+          description="Upload client reference invoices and a fresh repair invoice to compare prices. Comparisons appear when sufficient matching evidence is available."
+        >
+          <p className="p-4 text-sm text-muted-foreground">
+            No invoice comparison available yet.
+          </p>
+        </DataCard>
+      )}
 
       <p className="border-t pt-4 text-xs text-muted-foreground">
-        Aggregate statistics use all valid stored invoice lines. Challenge
-        counts use only earlier invoices, so the invoice being evaluated never
-        contributes to its own P90.
+        Aggregate statistics use client reference invoices. Each invoice is
+        excluded from its own comparison; live invoices remain outside the
+        reference dataset.
         {loadError ? ` ${loadError}` : ""}
       </p>
     </div>

@@ -84,6 +84,7 @@ import type {
   DocumentProcessingResult,
   UploadedDocument,
 } from "./document-api"
+import { fetchEngineerAssessments } from "@/lib/api"
 import { DocumentBriefingButton } from "./document-briefing"
 import { DataCard, ScreenHeading, StatusBadge } from "./shared"
 
@@ -781,8 +782,14 @@ interface PageCorrectionDraft {
 
 export function DocumentPagesWorkflow({
   onContinue,
+  caseReference,
+  documentId,
+  invoiceId,
 }: {
   onContinue: () => void
+  caseReference?: string
+  documentId?: string
+  invoiceId?: string
 }) {
   const [pages, setPages] = useState<DocumentPageRecord[]>([])
   const [loading, setLoading] = useState(true)
@@ -803,8 +810,24 @@ export function DocumentPagesWorkflow({
 
   useEffect(() => {
     let active = true
-    void fetchDocumentPages()
-      .then((records) => {
+    void Promise.all([
+      fetchDocumentPages(caseReference),
+      fetchEngineerAssessments(caseReference),
+    ])
+      .then(([allPages, assessments]) => {
+        const pairedDocumentIds = new Set(
+          assessments
+            .filter((a) => a.pair_status === "paired")
+            .filter((a) => a.paired_invoice_id === invoiceId)
+            .map((a) => a.document_id)
+        )
+        const records = documentId
+          ? allPages.filter(
+              (p) =>
+                p.document_id === documentId ||
+                pairedDocumentIds.has(p.document_id)
+            )
+          : allPages
         if (!active) return
         setPages(records)
         setLoadError(null)
@@ -818,7 +841,7 @@ export function DocumentPagesWorkflow({
     return () => {
       active = false
     }
-  }, [])
+  }, [caseReference, documentId, invoiceId])
 
   const documentNames = Array.from(
     new Set(pages.map((page) => page.document_filename))
@@ -844,7 +867,11 @@ export function DocumentPagesWorkflow({
       for (const documentId of documentIds) {
         await processUploadedDocument(documentId, true)
       }
-      setPages(await fetchDocumentPages())
+      setPages(
+        (await fetchDocumentPages(caseReference)).filter(
+          (p) => !documentId || p.document_id === documentId
+        )
+      )
       toast.success("Corrected document reprocessed", {
         description:
           "Invoice grouping and extraction now use the saved page corrections.",
