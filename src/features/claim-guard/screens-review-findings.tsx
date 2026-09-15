@@ -44,15 +44,18 @@ import {
   LineEvidenceSheet,
   type ResearchFormValues,
 } from "./screens-challenge-admin"
+import { ExtractsSection } from "./extracts-section"
 import { formatMoney } from "./format"
 import { documentImageUrl } from "./document-api"
 import { isMappingApproved } from "./mapping-rules"
 import { StatusBadge } from "./shared"
 import type { ClaimWorkspace, InvoiceLine } from "./types"
 import {
+  fetchClaimExtracts,
   fetchEngineerAssessments,
   fetchLinePriceEvidence,
   getApiErrorMessage,
+  type ClaimExtractsPayload,
   type EngineerAssessmentPayload,
   type ClaimInvoiceSummary,
   type LinePriceEvidenceObservation,
@@ -1031,6 +1034,29 @@ export function ReviewFindingsScreen({
       cancelled = true
     }
   }, [workspace.claim.id, workspace.invoice.id])
+  const [extracts, setExtracts] = useState<ClaimExtractsPayload | null>(null)
+  const [extractsLoading, setExtractsLoading] = useState(true)
+  const [extractsError, setExtractsError] = useState<string | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    fetchClaimExtracts(workspace.claim.id)
+      .then((payload) => {
+        if (cancelled) return
+        setExtracts(payload)
+        setExtractsError(null)
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return
+        setExtracts(null)
+        setExtractsError(getApiErrorMessage(error))
+      })
+      .finally(() => {
+        if (!cancelled) setExtractsLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [workspace.claim.id])
   const line =
     challenged[Math.min(activeIndex, Math.max(challenged.length - 1, 0))]
   const unresolved = challenged.filter(
@@ -1057,6 +1083,11 @@ export function ReviewFindingsScreen({
           </p>
         </div>
         <EngineerAssessmentCard assessment={engineerAssessment} />
+        <ExtractsSection
+          extracts={extracts}
+          loading={extractsLoading}
+          error={extractsError}
+        />
         <Alert>
           <InfoIcon />
           <AlertTitle>
@@ -1085,6 +1116,11 @@ export function ReviewFindingsScreen({
           </h1>
         </div>
         <EngineerAssessmentCard assessment={engineerAssessment} />
+        <ExtractsSection
+          extracts={extracts}
+          loading={extractsLoading}
+          error={extractsError}
+        />
         <Alert>
           <CheckIcon />
           <AlertTitle>No price challenges found</AlertTitle>
@@ -1136,6 +1172,11 @@ export function ReviewFindingsScreen({
       </div>
 
       <EngineerAssessmentCard assessment={engineerAssessment} />
+      <ExtractsSection
+        extracts={extracts}
+        loading={extractsLoading}
+        error={extractsError}
+      />
 
       <div className="grid min-w-0 gap-6 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.65fr)]">
         <Card>
