@@ -8,12 +8,14 @@ Fixtures in sample-data/auda-style/ replicate the client's real Auda 7 set
 - a photo-page PDF (image-only pages, as uploaded from a phone).
 
 The intake contract under test: processing succeeds, nothing is FAILED or
-discarded, every manual-review document carries a stored briefing, and mixed
-documents (assessment content plus genuinely priced pages) yield invoice
-units for their priced pages even in deterministic, LLM-free mode.
+discarded, every manual-review document carries a stored briefing, and an
+authorised Audatex assessment's priced PARTS/EXTRAS/LABOUR pages stay
+assessment evidence rather than becoming invoice units, even in
+deterministic, LLM-free mode (see test_page_classification.py for the
+identity-gate unit tests, and the mixed-bundle rescue path exercised in
+test_mixed_and_rotated_bundles.py, which is unaffected by this).
 """
 
-from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -22,6 +24,7 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.database import get_db
+from app.extraction.schemas import PageType
 from app.init_db import initialize_database
 from app.main import app
 
@@ -89,65 +92,53 @@ def test_rolled_up_calculation_invoice_is_retained_with_briefing(auda_client):
     assert document["review_briefing"], "manual-review document must carry a briefing"
 
 
-def test_audatex_full_report_extracts_priced_pages_as_invoice_units(auda_client):
-    """Deterministic mode: the mixed Full Report keeps its assessment kind but
-    its priced PARTS and EXTRAS pages become invoice units with correct
-    page provenance instead of dead-ending in manual review with zero units."""
+def test_audatex_full_report_keeps_priced_pages_as_assessment_evidence(tmp_path):
+    """The previous assertion here was deliberately reversed on 2026-09-15.
 
-    document = _process(auda_client, "Auda7_full_report.pdf")
-    assert document["status"] == "ready"
-    assert document["kind"] == "engineer_assessment"
-    assert document["invoice_units"] >= 1
-
-    invoices = auda_client.get("/api/v1/claims/AUDA-ACCEPT/invoices").json()
-    document_invoices = [
-        invoice for invoice in invoices if invoice["document_id"] == document["id"]
-    ]
-    assert document_invoices, "priced pages must be persisted as invoice units"
-    lines = [line for invoice in document_invoices for line in invoice["lines"]]
-
-    parts_lines = [line for line in lines if line["part_number"]]
-    assert parts_lines, "parts schedule lines must carry their part numbers"
-    assert {"0019846529", "0008111122", "9068110198"} <= {
-        line["part_number"] for line in parts_lines
-    }
-    assert all(Decimal(str(line["line_total_net"])) > 0 for line in parts_lines)
-    # Page provenance: every part-numbered line comes from the PARTS page (4).
-    assert {line["source_page_number"] for line in parts_lines} == {4}
-
-    # ExtractedLine.benchmarkable semantics: part kind or part number, positive net.
-    benchmarkable = [
-        line
-        for line in lines
-        if (line["kind"] == "part" or line["part_number"])
-        and line["line_total_net"] is not None
-        and Decimal(str(line["line_total_net"])) > 0
-    ]
-    assert benchmarkable, "parts-page lines must be benchmarkable"
-
-    # The assessment side may still need manual review (the labour pages hold
-    # no governed operation rows); when it does, the briefing must exist.
-    if document["manual_review"]:
-        assert document["review_briefing"]
-
-
-def test_full_report_parts_lines_are_benchmarkable_in_deterministic_pipeline(tmp_path):
-    """Pipeline-level check of ExtractedLine.benchmarkable on the parts page."""
+    Until this change, this test (then named
+    ``test_audatex_full_report_extracts_priced_pages_as_invoice_units``)
+    asserted that an Audatex "Full Report"'s priced PARTS and EXTRAS pages
+    were flipped to INVOICE and their rows persisted as invoice line items.
+    The client requires the opposite: pages belonging to an authorised
+    assessment must remain assessment evidence and must never become
+    invoice units, however many priced rows they contain. See
+    ``_ASSESSMENT_IDENTITY_PATTERN`` and the identity gate added to
+    ``_reclassify_priced_assessment_pages`` in
+    backend/app/extraction/pdf_pipeline.py, and the Risks bullet in
+    invoice-assessment-matching-plan.md ("Task 6 reverses a green
+    acceptance assertion") which records this as an intended change.
+    """
 
     from app.extraction.pdf_pipeline import PDFPipeline, PipelineConfig
 
     analysis = PDFPipeline(PipelineConfig(ocr_enabled=False)).analyse(
         FIXTURES / "Auda7_full_report.pdf", tmp_path / "pages"
     )
-    part_lines = [
-        line
+
+    # The PARTS page's part numbers must never surface as an invoice line,
+    # on this page or any other -- the priced schedule stays assessment
+    # evidence rather than becoming a benchmarkable invoice unit.
+    invoice_part_numbers = {
+        line.part_number
         for invoice in analysis.invoices
         for line in invoice.line_items
         if line.part_number
-    ]
-    assert part_lines
-    assert all(line.benchmarkable for line in part_lines)
-    assert any(invoice.has_benchmarkable_part_lines() for invoice in analysis.invoices)
+    }
+    assert not {"0019846529", "0008111122", "9068110198"} & invoice_part_numbers
+    assert not any(invoice.has_benchmarkable_part_lines() for invoice in analysis.invoices)
+
+    # Every page of the document (Summary/LABOUR/EXTRAS/PARTS) stays
+    # ENGINEER_ASSESSMENT; none of it is reclassified to INVOICE.
+    assert [page.page_type for page in analysis.pages] == [
+        PageType.ENGINEER_ASSESSMENT
+    ] * len(analysis.pages)
+
+    # TODO(task-4): once engineer_assessment_parser reads PARTS/EXTRAS/LABOUR/
+    # PAINT tables (today it only reads governed `OP|` rows, so this document
+    # yields zero ParsedOperation rows and no EngineerAssessment is
+    # persisted), assert that part numbers 0019846529 / 0008111122 /
+    # 9068110198 arrive as AssessmentOperation rows with
+    # line_item_type == "parts" and source_page_id pointing at page 4.
 
 
 @pytest.mark.slow
