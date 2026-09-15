@@ -104,3 +104,78 @@ def test_other_page_with_priced_rows_still_rescued_to_invoice() -> None:
 
     assert other_page.page_type == PageType.INVOICE
     assert other_page.group_key is not None
+
+
+def test_engineer_report_marker_keeps_gt_motive_schedule_as_assessment() -> None:
+    """A GT Motive-style "Engineer Report" template carries no Audatex
+    Summary Information / Assessment Number heading, but it is still an
+    authorised estimate. Its priced Paint and Materials schedule must stay
+    ENGINEER_ASSESSMENT rather than being flipped to INVOICE by the widened
+    _SCHEDULE_HEADING_PATTERN."""
+
+    identity_page = _page(
+        1,
+        "Engineer Report\nClaim ABC 123456\n",
+        PageType.ENGINEER_ASSESSMENT,
+    )
+    schedule_page = _page(
+        3,
+        "Engineer Report   GT Motive, A.A 03/03/2026 - 3/3\n"
+        "Paint and Materials\n"
+        "Paint labour 3.60 hrs 45.00 162.00\n"
+        "Paint materials consumables 128.40\n"
+        "Primer and clearcoat 96.75\n"
+        "Masking materials 22.30\n",
+        PageType.ENGINEER_ASSESSMENT,
+    )
+    pages = [identity_page, schedule_page]
+
+    _reclassify_priced_assessment_pages(pages)
+
+    assert [page.page_type for page in pages] == [
+        PageType.ENGINEER_ASSESSMENT,
+        PageType.ENGINEER_ASSESSMENT,
+    ]
+
+
+def test_other_page_rescue_survives_authorised_assessment_gate() -> None:
+    """The identity gate must only ever skip ENGINEER_ASSESSMENT pages: an
+    authorised assessment elsewhere in the bundle must not disable the
+    OTHER-page rescue for a genuinely unrelated priced page."""
+
+    summary_page = _page(
+        1,
+        "Assessment Report\nSummary Information\nAssessment Number D7576879",
+        PageType.ENGINEER_ASSESSMENT,
+    )
+    other_page = _page(
+        2,
+        "Repair account for services rendered\n"
+        "Bumper cover supply and fit 245.00\n"
+        "Headlamp bracket replacement 88.50\n"
+        "Wheel alignment check 45.00",
+        PageType.OTHER,
+    )
+    pages = [summary_page, other_page]
+
+    _reclassify_priced_assessment_pages(pages)
+
+    assert summary_page.page_type == PageType.ENGINEER_ASSESSMENT
+    assert other_page.page_type == PageType.INVOICE
+    assert other_page.group_key is not None
+
+
+def test_group_key_finds_invoice_number_when_date_matches_first() -> None:
+    """re.search only ever inspects the first match of the pattern, so on
+    real client text with "Invoice Date" printed above "Invoice Number" the
+    first hit is the non-digit "Date" candidate, which the old code returned
+    as a dead end (falling through to invoice:page-N). Iterating with
+    re.finditer must keep scanning for the first digit-bearing candidate."""
+
+    key = _group_key(
+        PageType.INVOICE,
+        "Invoice Date      26/11/2025\nInvoice Number    22564547648/1~AJ123456\n",
+        1,
+    )
+    assert key is not None
+    assert "22564547648/1~AJ123456" in key

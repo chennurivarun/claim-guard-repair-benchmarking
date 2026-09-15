@@ -191,8 +191,7 @@ def _group_key(page_type: PageType, text: str, page_number: int) -> str | None:
         r"Document No\.?\s*[:#]?\s*([A-Z0-9/~-]{3,})",
     )
     for pattern in patterns:
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-        if match:
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
             candidate = match.group(1).upper()
             if any(character.isdigit() for character in candidate):
                 return f"{page_type.value}:{candidate}"
@@ -226,15 +225,12 @@ def _label_rotated_service_sequences(pages: list[PageAnalysis]) -> None:
     apply(run)
 
 
-_SCHEDULE_HEADING_PATTERN = re.compile(
-    r"(?im)^\s*(?:parts|extras|paint work|paint (?:and|&) materials|specialist operation|"
-    r"additional items)\b"
-)
+_SCHEDULE_HEADING_PATTERN = re.compile(r"(?im)^\s*(?:parts|extras)\b")
 _PRICED_ROW_AMOUNT_PATTERN = re.compile(r"(?:£|gbp)?\s*\d[\d,]*\.\d{2}\s*$", re.IGNORECASE)
 _GOVERNED_OPERATION_ROW_PATTERN = re.compile(r"(?im)^\s*op\|")
 _ASSESSMENT_IDENTITY_PATTERN = re.compile(
     r"(?im)^\s*(?:summary information|assessment report|assessment number|"
-    r"report type\s*:?\s*full report)"
+    r"report type\s*:?\s*full report|engineer report|estimate details|estimate id)"
 )
 _NON_LINE_ROW_TOKENS = ("total", "deduction", "discount", "vat", "balance", "payment")
 
@@ -269,23 +265,29 @@ def _reclassify_priced_assessment_pages(pages: list[PageAnalysis]) -> None:
     remain assessment evidence for the deterministic assessment parser.
 
     An authorised Audatex estimate (identified by a "Summary Information" /
-    "Assessment Report" / "Assessment Number" / "Report Type: Full Report"
-    heading on any page) is a different case entirely: its PARTS/EXTRAS/
-    LABOUR schedules are assessment evidence, not invoice units, and must
-    never be flipped — see the client requirement recorded in
-    tests/acceptance/test_auda_style_documents.py. That path returns early so
-    the OTHER-page rescue below is only ever reached by non-assessment
-    bundles.
+    "Assessment Report" / "Assessment Number" / "Report Type: Full Report" /
+    "Engineer Report" / "Estimate Details" / "Estimate ID" heading on any
+    page) is a different case entirely: its PARTS/EXTRAS/LABOUR schedules
+    are assessment evidence, not invoice units, and must never be flipped —
+    see the client requirement recorded in
+    tests/acceptance/test_auda_style_documents.py. That check only ever
+    skips ENGINEER_ASSESSMENT pages, though: the OTHER-page rescue below
+    must keep running for the rest of the document, because a genuinely
+    mixed bundle can carry both an authorised assessment and unrelated
+    priced pages.
     """
 
     if not any(page.page_type == PageType.ENGINEER_ASSESSMENT for page in pages):
         return
-    if any(_ASSESSMENT_IDENTITY_PATTERN.search(page.text) for page in pages):
-        return
+    is_authorised_assessment = any(
+        _ASSESSMENT_IDENTITY_PATTERN.search(page.text) for page in pages
+    )
     for page in pages:
         if _GOVERNED_OPERATION_ROW_PATTERN.search(page.text):
             continue
         if page.page_type == PageType.ENGINEER_ASSESSMENT:
+            if is_authorised_assessment:
+                continue
             if (
                 not _SCHEDULE_HEADING_PATTERN.search(page.text)
                 or _priced_row_count(page.text) < 3

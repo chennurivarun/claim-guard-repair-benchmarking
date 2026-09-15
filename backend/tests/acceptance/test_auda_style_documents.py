@@ -127,6 +127,10 @@ def test_audatex_full_report_keeps_priced_pages_as_assessment_evidence(tmp_path)
     assert not {"0019846529", "0008111122", "9068110198"} & invoice_part_numbers
     assert not any(invoice.has_benchmarkable_part_lines() for invoice in analysis.invoices)
 
+    # Guard against a vacuous pass: without a fixed page count, an empty
+    # analysis.pages list would satisfy the comparison below trivially.
+    assert len(analysis.pages) == 4
+
     # Every page of the document (Summary/LABOUR/EXTRAS/PARTS) stays
     # ENGINEER_ASSESSMENT; none of it is reclassified to INVOICE.
     assert [page.page_type for page in analysis.pages] == [
@@ -139,6 +143,28 @@ def test_audatex_full_report_keeps_priced_pages_as_assessment_evidence(tmp_path)
     # persisted), assert that part numbers 0019846529 / 0008111122 /
     # 9068110198 arrive as AssessmentOperation rows with
     # line_item_type == "parts" and source_page_id pointing at page 4.
+
+
+def test_audatex_full_report_api_intake_yields_no_invoice_line_items(auda_client):
+    """API-level companion to the pipeline-level test above: through the real
+    client, an authorised Audatex Full Report processes to ready, keeps its
+    engineer_assessment kind, carries a stored review briefing (its
+    assessment content cannot be parsed automatically yet), and every
+    invoice persisted for the document is the empty manual-review stub --
+    never a benchmarkable line sourced from the PARTS/EXTRAS/LABOUR pages."""
+
+    document = _process(auda_client, "Auda7_full_report.pdf")
+    assert document["status"] == "ready"
+    assert document["kind"] == "engineer_assessment"
+    if document["manual_review"]:
+        assert document["review_briefing"]
+
+    invoices = auda_client.get("/api/v1/claims/AUDA-ACCEPT/invoices").json()
+    document_invoices = [
+        invoice for invoice in invoices if invoice["document_id"] == document["id"]
+    ]
+    for invoice in document_invoices:
+        assert invoice["lines"] == []
 
 
 @pytest.mark.slow
