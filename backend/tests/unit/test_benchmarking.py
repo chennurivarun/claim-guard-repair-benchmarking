@@ -12,6 +12,7 @@ from app.services.benchmarking import (
     canonical_benchmark_category,
 )
 from app.services.case_result import (
+    _assessment_line_benchmarks,
     _historical_p90_evidence,
     _is_invoice_header_description,
     _mapped_external_reference,
@@ -511,3 +512,260 @@ def test_uploaded_dashboard_and_graph_share_the_same_rolling_p90_exceptions() ->
         for row in item["exceptions"]
     }
     assert graph_exceptions == {"BATCH-004", "BATCH-005", "BATCH-006"}
+
+
+# --- Task 11: second benchmark from past assessments -----------------------
+
+
+def _bmw_3_series() -> SimpleNamespace:
+    return SimpleNamespace(make="BMW", model="3 Series")
+
+
+def _assessment_line(
+    *, op_id: str, category: str, total_net: str, description: str = "Front Bumper Cover"
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=op_id,
+        category=category,
+        raw_description=description,
+        normalised_description=description.casefold(),
+        total_net=total_net,
+    )
+
+
+def _section_total_line(
+    *, line_id: str, invoice_id: str, line_item_type: str, line_total_net: str
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=line_id,
+        invoice_id=invoice_id,
+        status=ReviewStatus.PENDING,
+        line_total_net=line_total_net,
+        raw_description=f"Total {line_item_type.title()} Amount",
+        normalised_description=f"total {line_item_type} amount",
+        is_section_total=True,
+        line_item_type=line_item_type,
+        raw_category=f"Total {line_item_type.title()} Amount",
+    )
+
+
+def _current_invoice_and_line(
+    *, price: str = "500.00", description: str = "Front Bumper Cover", is_section_total: bool = False
+) -> tuple[SimpleNamespace, SimpleNamespace]:
+    invoice = SimpleNamespace(id="invoice-current", invoice_number="INV-CUR", vehicle=_bmw_3_series())
+    line = SimpleNamespace(
+        id="line-current",
+        invoice_id=invoice.id,
+        status=ReviewStatus.PENDING,
+        line_total_net=price,
+        raw_description=description,
+        normalised_description=description.casefold(),
+        is_section_total=is_section_total,
+        line_item_type="parts",
+        raw_category="Parts",
+    )
+    return invoice, line
+
+
+def _matching_prior_assessment(
+    *, index: int, parts_net: str, op_total_net: str, paired_invoice_id: str | None = None
+) -> tuple[SimpleNamespace, SimpleNamespace]:
+    """One prior invoice, its matched Total Parts section total, and its assessment."""
+
+    invoice_id = f"invoice-a{index}"
+    invoice = SimpleNamespace(id=invoice_id, invoice_number=f"INV-A{index}", vehicle=_bmw_3_series())
+    total_line = _section_total_line(
+        line_id=f"total-a{index}",
+        invoice_id=invoice_id,
+        line_item_type="parts",
+        line_total_net=parts_net,
+    )
+    assessment = SimpleNamespace(
+        id=f"assessment-a{index}",
+        paired_invoice_id=paired_invoice_id or invoice_id,
+        assessment_number=f"ASSESS-{index}",
+        parts_net=parts_net,
+        paint_net=None,
+        extras_net=None,
+        labour_net=None,
+        operations=[
+            _assessment_line(op_id=f"op-a{index}", category="parts", total_net=op_total_net)
+        ],
+    )
+    return invoice, total_line, assessment
+
+
+def test_assessment_benchmark_is_a_distinct_mean_from_the_p90_benchmark() -> None:
+    current_invoice, current_line = _current_invoice_and_line()
+
+    p90_invoices = []
+    p90_lines = []
+    for index, price in enumerate(["400.00", "410.00", "420.00"], start=1):
+        invoice = SimpleNamespace(
+            id=f"invoice-p{index}",
+            invoice_number=f"INV-P{index}",
+            invoice_date=None,
+            vehicle=_bmw_3_series(),
+        )
+        p90_invoices.append(invoice)
+        p90_lines.append(
+            SimpleNamespace(
+                id=f"line-p{index}",
+                invoice_id=invoice.id,
+                status=ReviewStatus.PENDING,
+                line_total_net=price,
+                raw_description="Front Bumper Cover",
+                normalised_description="front bumper cover",
+                is_section_total=False,
+            )
+        )
+
+    assessment_rows = [
+        _matching_prior_assessment(index=index, parts_net="1000.00", op_total_net=total)
+        for index, total in enumerate(["300.00", "310.00", "320.00"], start=1)
+    ]
+    assessment_invoices = [row[0] for row in assessment_rows]
+    assessment_total_lines = [row[1] for row in assessment_rows]
+    assessments = [row[2] for row in assessment_rows]
+
+    graph = {
+        # The P90 helper treats list order as invoice-date order and truncates
+        # at the current invoice's index, so it must sort after its own priors.
+        "invoices": [*p90_invoices, current_invoice, *assessment_invoices],
+        "lines": [current_line, *p90_lines, *assessment_total_lines],
+        "mappings": [],
+        "ontology": {},
+        "assessments": assessments,
+    }
+
+    p90_result = _uploaded_line_p90_benchmarks(graph, current_invoice=current_invoice)["line-current"]
+    assessment_result = _assessment_line_benchmarks(graph, current_invoice=current_invoice)[
+        "line-current"
+    ]
+
+    assert p90_result["method"] == "Interpolated percentile (PERCENTILE.INC)"
+    assert assessment_result["method"] == "Past assessments mean (same make and model)"
+    assert assessment_result["value"] == 310.0
+    assert assessment_result["sampleCount"] == 3
+    assert assessment_result["value"] != p90_result["p90"]
+
+    # Assessment rows never leak into the invoice-based P90 population.
+    assert all("assessmentOperationId" not in row for row in p90_result["observations"])
+    assert {row["lineId"] for row in p90_result["observations"]} == {
+        "line-p1",
+        "line-p2",
+        "line-p3",
+    }
+
+
+def test_assessment_benchmark_excludes_rows_whose_section_total_does_not_match() -> None:
+    current_invoice, current_line = _current_invoice_and_line()
+
+    matching = [
+        _matching_prior_assessment(index=index, parts_net="1000.00", op_total_net=total)
+        for index, total in enumerate(["300.00", "310.00", "320.00"], start=1)
+    ]
+    # A fourth prior claim whose invoice total does not match its assessment's
+    # parts total -- its row must never enter the population.
+    mismatched_invoice, mismatched_total_line, mismatched_assessment = _matching_prior_assessment(
+        index=4, parts_net="1000.00", op_total_net="999.00"
+    )
+    mismatched_total_line = SimpleNamespace(
+        **{**mismatched_total_line.__dict__, "line_total_net": "1500.00"}
+    )
+
+    invoices = [current_invoice, *(row[0] for row in matching), mismatched_invoice]
+    lines = [current_line, *(row[1] for row in matching), mismatched_total_line]
+    assessments = [*(row[2] for row in matching), mismatched_assessment]
+
+    graph = {
+        "invoices": invoices,
+        "lines": lines,
+        "mappings": [],
+        "ontology": {},
+        "assessments": assessments,
+    }
+
+    result = _assessment_line_benchmarks(graph, current_invoice=current_invoice)["line-current"]
+
+    assert result["sampleCount"] == 3
+    assert all(row["total"] != 999.0 for row in result["observations"])
+    assert all(row["assessmentId"] != "assessment-a4" for row in result["observations"])
+
+
+def test_assessment_benchmark_excludes_the_current_invoice_own_paired_assessment() -> None:
+    current_invoice, current_line = _current_invoice_and_line()
+
+    matching = [
+        _matching_prior_assessment(index=index, parts_net="1000.00", op_total_net=total)
+        for index, total in enumerate(["300.00", "310.00", "320.00"], start=1)
+    ]
+    # A fourth assessment paired to the CURRENT invoice -- structurally
+    # eligible (same section match, same vehicle) but must be excluded solely
+    # because it is this invoice's own assessment.
+    own_invoice, own_total_line, own_assessment = _matching_prior_assessment(
+        index=5,
+        parts_net="1000.00",
+        op_total_net="999.00",
+        paired_invoice_id=current_invoice.id,
+    )
+
+    invoices = [current_invoice, *(row[0] for row in matching)]
+    lines = [current_line, *(row[1] for row in matching), own_total_line]
+    assessments = [*(row[2] for row in matching), own_assessment]
+
+    graph = {
+        "invoices": invoices,
+        "lines": lines,
+        "mappings": [],
+        "ontology": {},
+        "assessments": assessments,
+    }
+
+    result = _assessment_line_benchmarks(graph, current_invoice=current_invoice)["line-current"]
+
+    assert result["sampleCount"] == 3
+    assert all(row["total"] != 999.0 for row in result["observations"])
+    assert all(row["assessmentId"] != "assessment-a5" for row in result["observations"])
+
+
+def test_assessment_benchmark_unavailable_below_minimum_count() -> None:
+    current_invoice, current_line = _current_invoice_and_line()
+
+    matching = [
+        _matching_prior_assessment(index=index, parts_net="1000.00", op_total_net=total)
+        for index, total in enumerate(["300.00", "310.00"], start=1)
+    ]
+
+    graph = {
+        "invoices": [current_invoice, *(row[0] for row in matching)],
+        "lines": [current_line, *(row[1] for row in matching)],
+        "mappings": [],
+        "ontology": {},
+        "assessments": [row[2] for row in matching],
+    }
+
+    result = _assessment_line_benchmarks(graph, current_invoice=current_invoice)
+
+    assert "line-current" not in result
+
+
+def test_assessment_benchmark_never_computed_for_a_section_total_row() -> None:
+    current_invoice, current_line = _current_invoice_and_line(is_section_total=True)
+
+    matching = [
+        _matching_prior_assessment(index=index, parts_net="1000.00", op_total_net=total)
+        for index, total in enumerate(["300.00", "310.00", "320.00"], start=1)
+    ]
+
+    graph = {
+        "invoices": [current_invoice, *(row[0] for row in matching)],
+        "lines": [current_line, *(row[1] for row in matching)],
+        "mappings": [],
+        "ontology": {},
+        "assessments": [row[2] for row in matching],
+    }
+
+    result = _assessment_line_benchmarks(graph, current_invoice=current_invoice)
+
+    assert "line-current" not in result
