@@ -71,6 +71,17 @@ def test_engineer_report_is_classified_and_parsed_as_non_invoice(tmp_path: Path)
     assert len(parsed.operations) == 5
     assert parsed.confidence == pytest.approx(0.99)
 
+    # Every figure in the CALCULATION block reaches a column. This report spells
+    # the paint total "Total Paint/Material Costs" -- singular, no spaces around
+    # the slash -- which is not one of the client spellings in FIELD_SYNONYMS.
+    assert parsed.fields["labour_net"] == Decimal("125.60")
+    assert parsed.fields["paint_net"] == Decimal("94.20")
+    assert parsed.fields["parts_net"] == Decimal("0.00")
+    assert parsed.fields["extras_net"] == Decimal("150.00")
+    assert parsed.fields["subtotal_net"] == Decimal("369.80")
+    assert parsed.fields["vat_total"] == Decimal("73.96")
+    assert parsed.fields["gross_total"] == Decimal("443.76")
+
 
 def test_format_1_identity_totals_and_sections(monkeypatch: pytest.MonkeyPatch) -> None:
     parsed = parse_engineer_assessment(
@@ -146,8 +157,14 @@ def test_format_1_parts_and_extras_rows(monkeypatch: pytest.MonkeyPatch) -> None
     # A zero-priced extra ("C/Car Class A") is still recorded.
     assert extras[2].description == "C/Car Class A"
     assert extras[2].total == Decimal("0.00")
-    assert parsed.printed_totals["sub_total"] == Decimal("1195.65")
-    assert parsed.printed_totals["sundry"] == Decimal("41.85")
+    # Printed totals are filed under the section that closed, then their own
+    # label, so PARTS' "Sub Total" cannot be overwritten by another section's.
+    assert parsed.printed_totals["parts"] == {
+        "sub_total": Decimal("1195.65"),
+        "sundry_parts": Decimal("41.85"),
+        "total_parts": Decimal("1237.50"),
+    }
+    assert parsed.printed_totals["extras"] == {"total_extras": Decimal("136.32")}
 
 
 def test_format_2_inline_rate_prices_seventeen_labour_rows(
@@ -177,7 +194,10 @@ def test_format_2_inline_rate_prices_seventeen_labour_rows(
     assert labour[5].total == Decimal("0.00")
     # Only the labour pages were captured; nothing downstream may be invented.
     assert parsed.fields.get("gross_total") is None
-    assert parsed.printed_work_units == {"labour": Decimal("139.0")}
+    assert parsed.printed_work_units == {"labour": {"total_work_units": Decimal("139.0")}}
+    assert parsed.printed_totals == {
+        "labour": {"total_panel_mechanical_labour": Decimal("1112.00")}
+    }
 
 
 def test_format_7_printed_totals_are_never_reconciled_against_rows(
@@ -191,12 +211,15 @@ def test_format_7_printed_totals_are_never_reconciled_against_rows(
 
     # The document prints 300 and 113.2 work units against rows summing to 101
     # and 151. Both figures are persisted; the gap is a finding, not a fix.
-    assert parsed.printed_work_units == {"labour": Decimal("300"), "paint": Decimal("113.2")}
+    assert parsed.printed_work_units == {
+        "labour": {"total_work_units": Decimal("300")},
+        "paint": {"total_work_units": Decimal("113.2")},
+    }
     assert parsed.row_work_units == {"labour": Decimal("101"), "paint": Decimal("151")}
 
     parts = [op for op in parsed.operations if op.line_item_type == "parts"]
     assert len(parts) == 7
-    assert parsed.printed_totals["sub_total"] == Decimal("907.70")
+    assert parsed.printed_totals["parts"]["sub_total"] == Decimal("907.70")
     assert parsed.row_totals["parts"] == Decimal("908.30")
     assert parsed.fields["parts_net"] == Decimal("939.00")
 
@@ -231,6 +254,133 @@ def test_identity_without_operations_still_parses() -> None:
 def test_assessment_without_any_identifier_is_rejected() -> None:
     with pytest.raises(ValueError):
         parse_engineer_assessment([_page("Assessment report\nRepair Information\nLABOUR\n")])
+
+
+GRID_CALCULATION_AFTER_EXTRAS = (
+    HEADER_ONLY
+    + """EXTRAS
+Description   Bet.   Price
+Corrosion protection      6.00
+Calculation
+Labour Rate   38.00
+Overall Discount   0.00
+Repair Grand Total Excl. VAT   4912.59
+VAT 20%   982.52
+"""
+)
+
+EXTRAS_WITH_A_CREDIT = (
+    HEADER_ONLY
+    + """EXTRAS
+Description   Bet.   Price
+Corrosion protection      6.00
+Goodwill credit      -20.00
+Rebate applied      (5.00)
+"""
+)
+
+EXTRAS_WITH_A_TOTAL_PREFIXED_ROW = (
+    HEADER_ONLY
+    + """EXTRAS
+Description   Bet.   Price
+Corrosion protection      6.00
+Total Loss Admin      12.00
+Car Care Kit      8.00
+Total Extras      26.00
+"""
+)
+
+STRAPLINE_BETWEEN_HEADING_AND_COLUMNS = (
+    HEADER_ONLY
+    + """Repair Information
+LABOUR
+Using Manufacturer Times
+Number   Description   WU
+82650R00   R + R LEFT FRONT OUTER DOOR HANDLE   2
+   Total Work Units   2
+"""
+)
+
+BASIS_PRINTED_ABOVE_ITS_HEADING = (
+    HEADER_ONLY
+    + """Repair Information
+Time Basis 10 WU=1HR.Price £80.00/HR
+LABOUR
+Guide Number   Description   WU
+52904A00   REPAIR LOWER TAILGATE   40.0
+"""
+)
+
+
+def test_grid_rendered_calculation_block_does_not_extend_the_extras_section() -> None:
+    """A Calculation block laid out as table rows is not twelve more extras.
+
+    Rendered with colons the block is single-cell and harmless, but a report
+    whose Calculation/Summary is a real Word table emits "Labour Rate   38.00"
+    -- structurally identical to an extras row. The stop-heading closes EXTRAS
+    before any of it is read.
+    """
+
+    parsed = parse_engineer_assessment([_page(GRID_CALCULATION_AFTER_EXTRAS)])
+
+    extras = [op for op in parsed.operations if op.line_item_type == "extras"]
+    assert len(extras) == 1
+    assert extras[0].description == "Corrosion protection"
+    assert parsed.row_totals == {"extras": Decimal("6.00")}
+
+
+def test_a_credit_row_keeps_its_negative_sign() -> None:
+    parsed = parse_engineer_assessment([_page(EXTRAS_WITH_A_CREDIT)])
+
+    assert [op.description for op in parsed.operations] == [
+        "Corrosion protection",
+        "Goodwill credit",
+        "Rebate applied",
+    ]
+    assert parsed.operations[1].total == Decimal("-20.00")
+    # Accountancy-style parentheses mean the same thing.
+    assert parsed.operations[2].total == Decimal("-5.00")
+    assert parsed.row_totals == {"extras": Decimal("-19.00")}
+
+
+def test_a_row_named_total_loss_admin_is_a_row_not_a_printed_total() -> None:
+    """The keyword alone cannot tell a total from a description that starts with one.
+
+    # ponytail: the discriminator is the trailing band -- a real section total
+    # is never followed by another priced row. A "Total ..." row printed as the
+    # last line before the genuine totals would still be misread.
+    """
+
+    parsed = parse_engineer_assessment([_page(EXTRAS_WITH_A_TOTAL_PREFIXED_ROW)])
+
+    assert [op.description for op in parsed.operations] == [
+        "Corrosion protection",
+        "Total Loss Admin",
+        "Car Care Kit",
+    ]
+    assert parsed.row_totals == {"extras": Decimal("26.00")}
+    assert parsed.printed_totals == {"extras": {"total_extras": Decimal("26.00")}}
+
+
+def test_a_strapline_under_a_heading_does_not_steal_the_section() -> None:
+    parsed = parse_engineer_assessment([_page(STRAPLINE_BETWEEN_HEADING_AND_COLUMNS)])
+
+    assert [op.line_item_type for op in parsed.operations] == ["labour"]
+    assert parsed.operations[0].raw_category == "LABOUR"
+    assert parsed.printed_work_units == {"labour": {"total_work_units": Decimal("2")}}
+
+
+def test_a_time_basis_printed_above_its_heading_still_prices_the_section() -> None:
+    parsed = parse_engineer_assessment([_page(BASIS_PRINTED_ABOVE_ITS_HEADING)])
+
+    assert len(parsed.operations) == 1
+    operation = parsed.operations[0]
+    assert operation.line_item_type == "labour"
+    assert operation.work_units == Decimal("40.0")
+    assert operation.hours == Decimal("4.00")
+    assert operation.unit_price == Decimal("80.00")
+    assert operation.total == Decimal("320.00")
+    assert operation.price_derived is True
 
 
 def test_wrapped_description_joins_and_an_unrated_row_keeps_no_price() -> None:

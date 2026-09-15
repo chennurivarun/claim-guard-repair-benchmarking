@@ -25,7 +25,15 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from app.domain.line_item_type import ensure_line_item_type
 from app.extraction.invoice_parser import PARTS_SCHEDULE_ROW_PATTERN
-from app.extraction.label_grid import parse_date, parse_money, read_label_values
+from app.extraction.label_grid import (
+    FIELD_SYNONYMS,
+    parse_date,
+    parse_money,
+    read_label_values,
+)
+from app.extraction.label_grid import (
+    _normalise_label as normalise_label,  # one spelling of "is this a label?"
+)
 from app.extraction.schemas import PageAnalysis
 
 
@@ -53,13 +61,37 @@ class ParsedOperation:
 
 @dataclass
 class ParsedEngineerAssessment:
+    """Everything one assessment report yielded, printed figures kept apart from rows.
+
+    The two "printed" maps are both **two levels deep** —
+    ``{line_item_type: {label_slug: amount}}`` — because a label alone is not
+    unique across a report: Format 1 prints ``Sub Total`` under PARTS and could
+    print it again under EXTRAS, and the flat shape silently kept only the last
+    one.  ``label_slug`` is the printed label lowercased with every run of
+    non-alphanumerics folded to ``_``, so the PARTS band of Format 1 reads::
+
+        printed_totals == {
+            "parts": {
+                "sub_total": Decimal("1195.65"),
+                "sundry_parts": Decimal("41.85"),
+                "total_parts": Decimal("1237.50"),
+            },
+            "extras": {"total_extras": Decimal("136.32")},
+        }
+        printed_work_units == {"labour": {"total_work_units": Decimal("218")}}
+
+    ``row_work_units`` and ``row_totals`` stay one level deep and keyed by
+    ``line_item_type``: they are sums the parser computed, not labels it read.
+    Nothing here is ever reconciled against anything else.
+    """
+
     fields: dict[str, object] = field(default_factory=dict)
     operations: list[ParsedOperation] = field(default_factory=list)
     confidence: float = 0.0
-    #: Work-unit totals exactly as printed, keyed by ``line_item_type``.
-    printed_work_units: dict[str, Decimal] = field(default_factory=dict)
-    #: Money totals exactly as printed ("Sub Total", "Sundry Parts", ...).
-    printed_totals: dict[str, Decimal] = field(default_factory=dict)
+    #: Work-unit totals exactly as printed: ``{line_item_type: {label_slug: wu}}``.
+    printed_work_units: dict[str, dict[str, Decimal]] = field(default_factory=dict)
+    #: Money totals exactly as printed: ``{line_item_type: {label_slug: amount}}``.
+    printed_totals: dict[str, dict[str, Decimal]] = field(default_factory=dict)
     #: Sum of the parsed rows, for comparison against the printed figures.
     row_work_units: dict[str, Decimal] = field(default_factory=dict)
     row_totals: dict[str, Decimal] = field(default_factory=dict)
@@ -115,6 +147,11 @@ RESIDUAL_LABELS: dict[str, tuple[str, ...]] = {
     "roadworthiness": ("Vehicle Status on Inspection",),
     "damage_areas": ("Damage Areas",),
     "vat_rate": ("VAT Rate",),
+    # ponytail: the governed prototype prints "Total Paint/Material Costs"
+    # (singular, unspaced slash); the client reports print "Total Paint /
+    # Materials Costs".  ``FIELD_SYNONYMS`` owns the client spellings, so the
+    # prototype's one lives here rather than widening the shared table.
+    "paint_net": ("Total Paint/Material Costs",),
 }
 
 # Heading -> the section a row sits in.  An unrecognised heading that is
@@ -136,9 +173,27 @@ _CELL_SPLIT = re.compile(r"\s{2,}")
 _COLUMN_HEADER = re.compile(
     r"(?i)^(?:guide\s*(?:no\.?|number)|number|description)\b.*\b(?:wu|price)\s*$"
 )
-_BARE_NUMBER = re.compile(r"^\d+(?:\.\d+)?$")
-_PRICE_CELL = re.compile(r"^£?\s*\d[\d,]*(?:\.\d{1,2})?$")
+_BARE_NUMBER = re.compile(r"^-?\d+(?:\.\d+)?$")
+# A credit is printed as "-20.00", "-£20.00", "£-20.00" or "(20.00)" depending on
+# the system that rendered it; all four are the same number.
+_AMOUNT_BODY = r"-?\s*£?\s*-?\s*\d[\d,]*(?:\.\d{1,2})?"
+_PRICE_CELL = re.compile(rf"^(?:{_AMOUNT_BODY}|\(\s*{_AMOUNT_BODY}\s*\))$")
+_PARENTHESISED = re.compile(r"^\(\s*(.*?)\s*\)$")
 _TOTAL_LABEL = re.compile(r"(?i)^(?:total|sub[ -]?total|sundry|deduction)\b")
+#: Words a printed total's label may carry after its keyword.  Every real one
+#: stays inside this ("Sub Total", "Sundry Parts", "Deduction from RRP",
+#: "Total Work Units", "TOTAL PANEL/MECHANICAL LABOUR"); a description that
+#: merely opens with the keyword usually does not.
+_MAX_TOTAL_TRAILING_WORDS = 2
+#: Headings that end a schedule.  Without them the section opened by "EXTRAS"
+#: stays open across the Calculation/Summary block, and a report that renders
+#: that block as two-cell table rows turns every one of its figures into a
+#: fabricated extras operation.
+_STOP_HEADING = re.compile(
+    r"(?i)^(?:calculation|summary(?:\s+(?:calculation|information))?"
+    r"|claims?\s+details|vehicle\s+details|vehicle\s+condition|addresses)"
+    r"\s*(?:[:\-—–]|$)"
+)
 _TOTAL_WORK_UNITS = re.compile(r"(?i)^total\s+work\s+units$")
 _HOURS_SUFFIX = re.compile(r"(?i)^(.*?)\s+[\d.]+\s*hours$")
 _NO_NUMBER = re.compile(r"(?i)^no\s*[nm][uo]mber$")
@@ -167,11 +222,94 @@ class _Section:
     rate: Decimal | None = None
 
 
+#: Every label either reader knows, so a schedule can tell a row from the start
+#: of a header block.  Built from the shared table plus this module's residuals
+#: and normalised by ``label_grid`` itself, so the two never drift apart.
+_FIELD_LABELS: frozenset[str] = frozenset(
+    normalise_label(label)
+    for labels in (*FIELD_SYNONYMS.values(), *RESIDUAL_LABELS.values())
+    for label in labels
+)
+
+
 def _next_non_blank(lines: list[str], index: int) -> str | None:
     for candidate in lines[index + 1 :]:
         if candidate.strip():
             return candidate.strip()
     return None
+
+
+def _is_field_label(cell: str) -> bool:
+    """Is this cell a header label rather than the description of a row?
+
+    Matching is strict — the whole cell, or everything left of a ``:`` — so a
+    description that merely opens with a label's first word ("Model Options")
+    is still a row.
+    """
+
+    label, separator, _ = cell.partition(":")
+    if separator and normalise_label(label) in _FIELD_LABELS:
+        return True
+    return normalise_label(cell) in _FIELD_LABELS
+
+
+def _cell_amount(cell: str) -> Decimal | None:
+    """Parse a printed amount, honouring both ways of writing a credit."""
+
+    text = cell.strip()
+    wrapped = _PARENTHESISED.match(text)
+    negative = wrapped is not None
+    if wrapped is not None:
+        text = wrapped.group(1)
+    amount = parse_money(text)
+    if amount is None:
+        return None
+    # "-£20.00" hides the sign from ``parse_money``, which only sees "20.00".
+    negative = negative or amount < 0 or text.lstrip().startswith("-")
+    return -abs(amount) if negative else abs(amount)
+
+
+def _label_slug(label: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_") or "total"
+
+
+def _total_label_text(label: str) -> str | None:
+    """The label of a printed section total, or ``None`` for an ordinary row.
+
+    ``Total Loss Admin   12.00`` is an extras row, not a total, and the keyword
+    prefix alone cannot tell the two apart.  The hours suffix is dropped first
+    so ``TOTAL PANEL/MECHANICAL LABOUR 13.9 HOURS`` is measured on its label.
+    """
+
+    keyword = _TOTAL_LABEL.match(label)
+    if keyword is None:
+        return None
+    hours = _HOURS_SUFFIX.match(label)
+    text = hours.group(1) if hours else label
+    trailing = text[min(keyword.end(), len(text)) :].split()
+    if len(trailing) > _MAX_TOTAL_TRAILING_WORDS:
+        return None
+    return text
+
+
+def _in_totals_band(lines: list[str], index: int) -> bool:
+    """Does the run of total rows closing this section start here?
+
+    A real section total is never followed by another priced row of the same
+    section — the band runs to the next heading or the end of the page.  That
+    is the second half of telling ``Total Extras`` from ``Total Loss Admin``.
+    """
+
+    for candidate in lines[index + 1 :]:
+        stripped = candidate.strip()
+        if not stripped:
+            continue
+        cells = _CELL_SPLIT.split(stripped)
+        if len(cells) == 1:
+            return True
+        if not _TOTAL_LABEL.match(cells[0].strip()):
+            return False
+    return True
 
 
 def _residual_fields(text: str) -> dict[str, str]:
@@ -240,8 +378,22 @@ def _open_section(heading: str, code: str, header: str | None) -> _Section:
     return _Section(heading=heading, line_item_type=code, kind=kind)
 
 
-def _section_start(stripped: str, cells: list[str], lines: list[str], index: int) -> _Section | None:
-    """A heading is a short, single-cell, colon-free line of words."""
+def _section_start(
+    stripped: str,
+    cells: list[str],
+    lines: list[str],
+    index: int,
+    allow_fallback: bool = True,
+) -> _Section | None:
+    """A heading is a short, single-cell, colon-free line of words.
+
+    ``allow_fallback`` gates the unrecognised-heading rule only.  A strapline
+    between a real heading and its column header ("LABOUR" / "Using
+    Manufacturer Times" / "Number Description WU") satisfies that rule exactly
+    as well as the heading does, and would otherwise steal the section — so the
+    caller switches it off for the line directly after a section opened.  A
+    heading ``_SECTIONS`` recognises always wins, fallback or not.
+    """
 
     if len(cells) != 1 or ":" in stripped or len(stripped.split()) > 5:
         return None
@@ -251,7 +403,7 @@ def _section_start(stripped: str, cells: list[str], lines: list[str], index: int
     for pattern, code in _SECTIONS:
         if pattern.match(stripped):
             return _open_section(stripped, code, header)
-    if header and _COLUMN_HEADER.match(header):
+    if allow_fallback and header and _COLUMN_HEADER.match(header):
         return _open_section(stripped, ensure_line_item_type(stripped), header)
     return None
 
@@ -282,14 +434,23 @@ def parse_engineer_assessment(pages: list[PageAnalysis]) -> ParsedEngineerAssess
 
     sequence = 0
     section: _Section | None = None
+    # A basis read before any section is open belongs to the next one opened.
+    pending_basis: tuple[Decimal, Decimal | None] | None = None
     for page in pages:
         lines = page.text.splitlines()
         # A wrapped description is only ever the line directly under its row.
+        # ponytail: `pending` is scoped to one page, so a description wrapped
+        # across a page break keeps only the fragment printed before the break.
+        # The continuation opens the next page with no row above it to fold
+        # into and is dropped rather than attached to the wrong operation.
         pending: tuple[int, int] | None = None
+        previous_index: int | None = None
+        opened_at: int | None = None
         for index, line in enumerate(lines):
             stripped = line.strip()
             if not stripped:
                 continue
+            previous_index, previous = index, previous_index
             if stripped.upper().startswith("OP|"):
                 operation = _governed_operation(stripped, sequence + 1, page.page_number)
                 if operation is not None:
@@ -302,24 +463,56 @@ def parse_engineer_assessment(pages: list[PageAnalysis]) -> ParsedEngineerAssess
             # under its section heading and above the column header, so it
             # would otherwise read as a heading of its own.
             basis = _INLINE_RATE.search(stripped) or _TIME_BASIS.search(stripped)
-            if basis is not None and section is not None:
-                section.wu_per_hour = Decimal(basis.group(1)) or Decimal("10")
-                if basis.re is _INLINE_RATE:
-                    section.rate = parse_money(basis.group(2))
+            if basis is not None:
+                wu_per_hour = Decimal(basis.group(1)) or Decimal("10")
+                rate = parse_money(basis.group(2)) if basis.re is _INLINE_RATE else None
+                if section is not None:
+                    section.wu_per_hour = wu_per_hour
+                    if rate is not None:
+                        section.rate = rate
+                else:
+                    pending_basis = (wu_per_hour, rate)
                 pending = None
                 continue
 
             cells = [cell.strip() for cell in _CELL_SPLIT.split(stripped)]
-            started = _section_start(stripped, cells, lines, index)
+
+            if _STOP_HEADING.match(cells[0]):
+                section = None
+                opened_at = None
+                pending = None
+                continue
+
+            allow_fallback = not (
+                section is not None and opened_at is not None and opened_at == previous
+            )
+            started = _section_start(stripped, cells, lines, index, allow_fallback)
             if started is not None:
+                if pending_basis is not None:
+                    started.wu_per_hour, stashed_rate = pending_basis
+                    if stashed_rate is not None:
+                        started.rate = stashed_rate
+                    pending_basis = None
                 section = started
+                opened_at = index
                 pending = None
                 continue
             if section is None:
                 continue
 
-            if len(cells) >= 2 and _TOTAL_LABEL.match(cells[0]):
-                _record_printed_total(parsed, section, cells)
+            if len(cells) >= 2:
+                total_label = _total_label_text(cells[0])
+                if total_label is not None and _in_totals_band(lines, index):
+                    _record_printed_total(parsed, section, total_label, cells[-1])
+                    pending = None
+                    continue
+
+            if _is_field_label(cells[0]):
+                # The schedule is over: this is a Calculation/Summary block that
+                # happens to be rendered as table rows.  Closing here is what
+                # keeps its figures from becoming operations of the last section.
+                section = None
+                opened_at = None
                 pending = None
                 continue
 
@@ -373,17 +566,17 @@ def _governed_operation(line: str, sequence: int, page_number: int) -> ParsedOpe
 
 
 def _record_printed_total(
-    parsed: ParsedEngineerAssessment, section: _Section, cells: list[str]
+    parsed: ParsedEngineerAssessment, section: _Section, label: str, cell: str
 ) -> None:
-    value = parse_money(cells[-1])
+    """File a printed total under the section it closed, then its own label."""
+
+    value = _cell_amount(cell)
     if value is None:
         return
-    label = cells[0]
-    if _TOTAL_WORK_UNITS.match(label):
-        parsed.printed_work_units[section.line_item_type] = value
-        return
-    hours = _HOURS_SUFFIX.match(label)
-    parsed.printed_totals[ensure_line_item_type(hours.group(1) if hours else label)] = value
+    bucket = (
+        parsed.printed_work_units if _TOTAL_WORK_UNITS.match(label) else parsed.printed_totals
+    )
+    bucket.setdefault(section.line_item_type, {})[_label_slug(label)] = value
 
 
 def _schedule_operation(
@@ -420,7 +613,7 @@ def _work_unit_operation(
         return None
     if code and _NO_NUMBER.match(code):
         code = None
-    work_units = parse_money(cells[-1])
+    work_units = _cell_amount(cells[-1])
     if work_units is None:
         return None
     rate = _rate_for(section, parsed.fields)
@@ -493,7 +686,7 @@ def _priced_operation(
     description = cells[0]
     if not re.search(r"[A-Za-z]", description):
         return None
-    price = parse_money(cells[-1])
+    price = _cell_amount(cells[-1])
     if price is None:
         return None
     _accumulate(parsed.row_totals, section.line_item_type, price)
