@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import create_engine, inspect
 
+import app.models  # noqa: F401  (registers every table on Base.metadata)
 from app.database import Base
 from app.domain.line_item_type import (
     CANONICAL_TYPES,
