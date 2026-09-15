@@ -27,6 +27,7 @@ does not touch. Idempotent: re-running overwrites the same files.
 from __future__ import annotations
 
 import json
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -855,7 +856,6 @@ def build_repair_invoice_format_7() -> DocxDocumentType:
         ],
     )
 
-    add_heading_line(doc, "Validation note", bold=False)
     doc.add_paragraph(
         "Validation note: Verified against Assessment T4592861 / Claim "
         "Reference 426953180/3 for Oliver Reed. All invoice fields and "
@@ -876,7 +876,7 @@ def build_repair_invoice_format_7() -> DocxDocumentType:
 MANIFEST: list[dict[str, Any]] = [
     {
         "filename": "DL_Auda_format_1_assessment.docx",
-        "document_kind": "assessment",
+        "document_kind": "engineer_assessment",
         "pair_id": 1,
         "claim_reference": "245338996/1",
         "policy_number": "PH",
@@ -884,6 +884,7 @@ MANIFEST: list[dict[str, Any]] = [
         "vehicle_make": "HYUNDAI",
         "vehicle_model": "140 SE Nav",
         "assessment_number": "D7576879",
+        "assessment_ref": None,
         "invoice_number": None,
         "section_totals": {
             "labour": "2509.20",
@@ -895,7 +896,7 @@ MANIFEST: list[dict[str, Any]] = [
     },
     {
         "filename": "DL_Repair_Invoice_format_1.docx",
-        "document_kind": "invoice",
+        "document_kind": "repair_invoice",
         "pair_id": 1,
         "claim_reference": "245338996/1",
         "policy_number": None,
@@ -903,6 +904,7 @@ MANIFEST: list[dict[str, Any]] = [
         "vehicle_make": None,
         "vehicle_model": None,
         "assessment_number": None,
+        "assessment_ref": None,
         "invoice_number": "343653726836/1~3538",
         "section_totals": {
             "parts": "1237.50",
@@ -914,7 +916,7 @@ MANIFEST: list[dict[str, Any]] = [
     },
     {
         "filename": "DL_Auda_format_2_assessment.docx",
-        "document_kind": "assessment",
+        "document_kind": "engineer_assessment",
         "pair_id": 2,
         "claim_reference": "123456/1",
         "policy_number": "103466899",
@@ -922,13 +924,14 @@ MANIFEST: list[dict[str, Any]] = [
         "vehicle_make": "SKODA",
         "vehicle_model": "KAROQ SE TSI 115]",
         "assessment_number": "D7576879",
+        "assessment_ref": None,
         "invoice_number": None,
         "section_totals": {"labour": "1112.00"},
         "gross_total": None,
     },
     {
         "filename": "DL_Invoice_2_request_for_payment.docx",
-        "document_kind": "invoice",
+        "document_kind": "repair_invoice",
         "pair_id": 2,
         "claim_reference": "123456/1",
         "policy_number": "103466899",
@@ -948,7 +951,7 @@ MANIFEST: list[dict[str, Any]] = [
     },
     {
         "filename": "DL_Auda_format_7_assessment.docx",
-        "document_kind": "assessment",
+        "document_kind": "engineer_assessment",
         "pair_id": 7,
         "claim_reference": "426953180/3",
         "policy_number": "PL-739284",
@@ -956,6 +959,7 @@ MANIFEST: list[dict[str, Any]] = [
         "vehicle_make": "HYUNDAI",
         "vehicle_model": "140 SE Nav",
         "assessment_number": "T4592861",
+        "assessment_ref": None,
         "invoice_number": None,
         "section_totals": {
             "labour": "1910.00",
@@ -967,14 +971,16 @@ MANIFEST: list[dict[str, Any]] = [
     },
     {
         "filename": "DL_Repair_Invoice_format_7.docx",
-        "document_kind": "invoice",
+        "document_kind": "repair_invoice",
         "pair_id": 7,
         "claim_reference": "426953180/3",
         "policy_number": None,
         "registration": "JK21MNO",
         "vehicle_make": None,
         "vehicle_model": None,
-        "assessment_number": "T4592861",
+        "assessment_number": None,
+        "validation_note_assessment_number": "T4592861",
+        "assessment_ref": None,
         "invoice_number": "343653726836/1~3538",
         "section_totals": {
             "parts": "939.00",
@@ -996,6 +1002,28 @@ BUILDERS: dict[str, Any] = {
 }
 
 
+_FIXED_ZIP_TIME = (1980, 1, 1, 0, 0, 0)
+
+
+def _normalise_zip_timestamps(path) -> None:
+    """Rewrite the .docx archive with fixed entry timestamps.
+
+    python-docx stamps every zip member with the current time, so a rerun
+    produced six binary diffs even though the content was identical. Fixing the
+    timestamps makes the build byte-idempotent, which is what lets a CI check
+    assert the committed fixtures are current.
+    """
+
+    with zipfile.ZipFile(path) as source:
+        members = [(info, source.read(info.filename)) for info in source.infolist()]
+    with zipfile.ZipFile(path, "w") as target:
+        for info, payload in members:
+            fixed = zipfile.ZipInfo(info.filename, date_time=_FIXED_ZIP_TIME)
+            fixed.compress_type = info.compress_type
+            fixed.external_attr = info.external_attr
+            target.writestr(fixed, payload)
+
+
 def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     for entry in MANIFEST:
@@ -1004,6 +1032,7 @@ def main() -> None:
         document = builder()
         target = OUTPUT_DIR / filename
         document.save(target)
+        _normalise_zip_timestamps(target)
         print(f"Wrote {target}")
 
     manifest_path = OUTPUT_DIR / "manifest.json"

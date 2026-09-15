@@ -1,7 +1,7 @@
 [
   {
     "filename": "DL_Auda_format_1_assessment.docx",
-    "document_kind": "assessment",
+    "document_kind": "engineer_assessment",
     "pair_id": 1,
     "claim_reference": "245338996/1",
     "policy_number": "PH",
@@ -9,6 +9,7 @@
     "vehicle_make": "HYUNDAI",
     "vehicle_model": "140 SE Nav",
     "assessment_number": "D7576879",
+    "assessment_ref": null,
     "invoice_number": null,
     "section_totals": {
       "labour": "2509.20",
@@ -20,7 +21,7 @@
   },
   {
     "filename": "DL_Repair_Invoice_format_1.docx",
-    "document_kind": "invoice",
+    "document_kind": "repair_invoice",
     "pair_id": 1,
     "claim_reference": "245338996/1",
     "policy_number": null,
@@ -28,6 +29,7 @@
     "vehicle_make": null,
     "vehicle_model": null,
     "assessment_number": null,
+    "assessment_ref": null,
     "invoice_number": "343653726836/1~3538",
     "section_totals": {
       "parts": "1237.50",
@@ -39,7 +41,7 @@
   },
   {
     "filename": "DL_Auda_format_2_assessment.docx",
-    "document_kind": "assessment",
+    "document_kind": "engineer_assessment",
     "pair_id": 2,
     "claim_reference": "123456/1",
     "policy_number": "103466899",
@@ -47,6 +49,7 @@
     "vehicle_make": "SKODA",
     "vehicle_model": "KAROQ SE TSI 115]",
     "assessment_number": "D7576879",
+    "assessment_ref": null,
     "invoice_number": null,
     "section_totals": {
       "labour": "1112.00"
@@ -55,7 +58,7 @@
   },
   {
     "filename": "DL_Invoice_2_request_for_payment.docx",
-    "document_kind": "invoice",
+    "document_kind": "repair_invoice",
     "pair_id": 2,
     "claim_reference": "123456/1",
     "policy_number": "103466899",
@@ -75,7 +78,7 @@
   },
   {
     "filename": "DL_Auda_format_7_assessment.docx",
-    "document_kind": "assessment",
+    "document_kind": "engineer_assessment",
     "pair_id": 7,
     "claim_reference": "426953180/3",
     "policy_number": "PL-739284",
@@ -83,6 +86,7 @@
     "vehicle_make": "HYUNDAI",
     "vehicle_model": "140 SE Nav",
     "assessment_number": "T4592861",
+    "assessment_ref": null,
     "invoice_number": null,
     "section_totals": {
       "labour": "1910.00",
@@ -94,14 +98,16 @@
   },
   {
     "filename": "DL_Repair_Invoice_format_7.docx",
-    "document_kind": "invoice",
+    "document_kind": "repair_invoice",
     "pair_id": 7,
     "claim_reference": "426953180/3",
     "policy_number": null,
     "registration": "JK21MNO",
     "vehicle_make": null,
     "vehicle_model": null,
-    "assessment_number": "T4592861",
+    "assessment_number": null,
+    "validation_note_assessment_number": "T4592861",
+    "assessment_ref": null,
     "invoice_number": "343653726836/1~3538",
     "section_totals": {
       "parts": "939.00",
