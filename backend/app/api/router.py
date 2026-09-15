@@ -106,7 +106,7 @@ from app.services.case_result import (
 )
 from app.services.comparison_workflow import run_case_comparison
 from app.services.document_processing import process_document, serialise_document, store_pdf
-from app.services.engineer_assessment import engineer_assessment_payload
+from app.services.engineer_assessment import engineer_assessment_payload, run_case_gap_fill
 from app.services.extraction_review import (
     recalculate_invoice_findings,
     review_extraction_line,
@@ -1486,6 +1486,10 @@ def compare_claim(case_reference: str, db: DatabaseSession) -> dict[str, Any]:
     if case is None:
         raise _not_found("Claim not found")
     try:
+        # Comparison is the "after all documents are loaded" moment, so the
+        # assessment gap-fill sweep runs here before anything reads the
+        # invoice's vehicle or claim identity.
+        run_case_gap_fill(db, case.id)
         ontology_count = db.scalar(select(func.count(OntologyItem.id))) or 0
         history_count = db.scalar(select(func.count(HistoricalObservation.id))) or 0
         if ontology_count == 0:

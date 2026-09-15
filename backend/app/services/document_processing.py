@@ -1018,6 +1018,13 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
                 )
 
         pair_case_assessments(session, case.id)
+        # Pairing writes its gap-fill attribution onto the *invoice's*
+        # document, which is this one whenever the invoice is uploaded after
+        # its assessment. ``document_metadata`` was snapshotted before that,
+        # so carry the attribution across or the write below discards it.
+        document_metadata["field_sources"] = (document.metadata_json or {}).get(
+            "field_sources", {}
+        )
 
         document.upload_status = UploadStatus.READY
         if analysis.manual_review_reason:

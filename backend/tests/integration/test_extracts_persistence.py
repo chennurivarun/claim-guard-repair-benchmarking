@@ -146,8 +146,11 @@ def test_format_1_pair_persists_every_extract_column(extracts_client) -> None:
         invoice = session.scalars(select(Invoice)).one()
         assert invoice.invoice_number == "343653726836/1~3538"
         assert invoice.claim_reference == "245338996/1"
-        # The repairer's invoice prints no policy number; the assessment does.
-        assert invoice.policy_number is None
+        # The repairer's invoice prints no policy number; the assessment does,
+        # and the gap-fill writes it onto the invoice once the pair is linked.
+        # What was extracted is therefore checked on the extract itself.
+        assert invoice.extraction_payload_json["header"]["policy_number"] is None
+        assert invoice.policy_number == "PH"
         assert _money(invoice.paint_net) == Decimal("1029.57")
         assert _money(invoice.other_net) == Decimal("136.32")
         assert _money(invoice.labour_net) == Decimal("2509.20")

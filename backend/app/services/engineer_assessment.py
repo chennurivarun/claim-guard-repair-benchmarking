@@ -6,13 +6,72 @@ import re
 from decimal import Decimal
 
 from sqlalchemy import delete, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, object_session, selectinload
 
+from app.domain.line_item_type import ensure_line_item_type
+from app.domain.normalisation import normalise_identifier
 from app.models import (
     AssessmentInvoiceVariance,
     EngineerAssessment,
     Invoice,
+    InvoiceLineItem,
 )
+
+#: The three printed identities an invoice and an assessment can share, with
+#: the wording used in ``pair_reasons_json``.  The invoice number is
+#: deliberately absent: formats 1 and 7 print the *same* invoice number
+#: ("343653726836/1~3538") for two different claims, so keying on it would
+#: cross-link them.  ``metadata_json["assessment_reference"]`` (format 2's
+#: "BOY1537") is absent for the same reason -- it matches nothing on the
+#: report it accompanies and is display evidence only.
+PAIR_KEYS: tuple[tuple[str, str], ...] = (
+    ("registration", "registration"),
+    ("claim_reference", "claim reference"),
+    ("policy_number", "policy number"),
+)
+
+#: Fields the assessment can fill on the invoice's vehicle, as
+#: ``vehicle attribute -> assessment attribute``.
+VEHICLE_FILL_FIELDS: tuple[tuple[str, str], ...] = (
+    ("make", "vehicle_make"),
+    ("model", "vehicle_model"),
+    ("variant", "vehicle_variant"),
+    ("registration", "registration"),
+    ("vin", "vin"),
+    ("mileage", "mileage"),
+)
+
+#: Fields the assessment can fill on the invoice itself.
+INVOICE_FILL_FIELDS: tuple[tuple[str, str], ...] = (
+    ("claim_reference", "claim_reference"),
+    ("policy_number", "policy_number"),
+)
+
+INVOICE_FILL_NAMES = frozenset(field for field, _ in INVOICE_FILL_FIELDS)
+
+FILL_LABEL = "Filled from engineer assessment"
+
+#: An invoice section total resolves to one assessment section total.  Note
+#: that the assessment's ``paint_net`` is the paint *materials* cost (the
+#: "Total Paint & Materials" line), while paintwork *labour* is part of
+#: ``labour_net``.
+SECTION_TOTAL_FIELDS: dict[str, str] = {
+    "parts": "parts_net",
+    "paint_materials": "paint_net",
+    "extras": "extras_net",
+    "labour": "labour_net",
+}
+
+#: An invoice "Total Labour" pays for both of the assessment's work-unit
+#: sections -- panel/mechanical labour *and* paintwork -- so the breakdown for
+#: a labour total is the union of both.  Every other section maps to the
+#: operations carrying its own code.
+SECTION_OPERATION_CATEGORIES: dict[str, tuple[str, ...]] = {
+    "labour": ("labour", "paint"),
+}
+
+#: Section totals are compared to the penny.
+SECTION_TOTAL_TOLERANCE = Decimal("0.01")
 
 ALIASES = {
     "front bumper remove refit": "front bumper remove refit",
@@ -49,6 +108,54 @@ def _match_score(left: str, right: str) -> float:
     return len(left_tokens & right_tokens) / len(left_tokens | right_tokens)
 
 
+def _fill_holder(invoice: Invoice, field: str):
+    """Where a filled field lives: the invoice itself, or its vehicle."""
+
+    return invoice if field in INVOICE_FILL_NAMES else invoice.vehicle
+
+
+def _compare_pair_keys(
+    assessment: EngineerAssessment, invoice: Invoice
+) -> tuple[set[str], list[str], bool]:
+    """Compare the three printed identities; return matches, reasons, conflict.
+
+    A key counts only when *both* documents print it.  A key printed on both
+    sides that disagrees is a conflict, and a conflict is fatal however well
+    the other two keys read: two different claims can share a repairer, a
+    registration or (as formats 1 and 7 do) an invoice number, but they cannot
+    share a claim reference.
+    """
+
+    invoice_values = {
+        "registration": invoice.vehicle.registration if invoice.vehicle else None,
+        "claim_reference": invoice.claim_reference,
+        "policy_number": invoice.policy_number,
+    }
+    matched: set[str] = set()
+    reasons: list[str] = []
+    conflict = False
+    for key, label in PAIR_KEYS:
+        left = normalise_identifier(getattr(assessment, key, None))
+        right = normalise_identifier(invoice_values[key])
+        if left and right:
+            if left == right:
+                matched.add(key)
+                reasons.append(f"{label} exact match")
+            else:
+                conflict = True
+                reasons.append(
+                    f"{label} conflict: assessment {getattr(assessment, key)} "
+                    f"versus invoice {invoice_values[key]}"
+                )
+        elif left:
+            reasons.append(f"{label} not printed on the invoice")
+        elif right:
+            reasons.append(f"{label} not printed on the assessment")
+        else:
+            reasons.append(f"{label} not printed on either document")
+    return matched, reasons, conflict
+
+
 def pair_case_assessments(session: Session, case_id: str) -> None:
     assessments = session.scalars(
         select(EngineerAssessment)
@@ -72,68 +179,93 @@ def pair_case_assessments(session: Session, case_id: str) -> None:
             sources = dict((invoice.document.metadata_json or {}).get("field_sources", {}))
             for field, source in list(sources.items()):
                 if source.get("document_id") == assessment.document_id:
-                    if invoice.vehicle and getattr(invoice.vehicle, field, None) == source.get("value"):
-                        setattr(invoice.vehicle, field, None)
+                    holder = _fill_holder(invoice, field)
+                    if holder is not None and getattr(holder, field, None) == source.get("value"):
+                        setattr(holder, field, None)
                     del sources[field]
             invoice.document.metadata_json = {
                 **(invoice.document.metadata_json or {}), "field_sources": sources
             }
+        explicit_document = (assessment.document.metadata_json or {}).get("paired_document_id")
         candidates: list[tuple[float, Invoice, list[str]]] = []
+        rejected: list[tuple[float, Invoice, list[str]]] = []
+        conflicting: list[tuple[float, Invoice, list[str]]] = []
         for invoice in invoices:
             assessment_group = (assessment.document.metadata_json or {}).get("intake_group")
             invoice_group = (invoice.document.metadata_json or {}).get("intake_group")
             if assessment_group != invoice_group:
                 continue
-            reasons: list[str] = []
-            score = 0.0
-            explicit_document = (assessment.document.metadata_json or {}).get("paired_document_id")
+            if explicit_document and invoice.document_id != explicit_document:
+                continue
+            matched, reasons, conflict = _compare_pair_keys(assessment, invoice)
+            if conflict:
+                # An explicit upload association must not override conflicting
+                # identities, so this drops the candidate even when the two
+                # documents were uploaded together. The reasons are kept so an
+                # unpaired assessment can still say what disagreed.
+                conflicting.append((0.0, invoice, reasons))
+                continue
             if explicit_document:
-                if invoice.document_id != explicit_document:
-                    continue
-                score = 1.0
-                reasons.append("Uploaded together for this invoice")
-            invoice_registration = invoice.vehicle.registration if invoice.vehicle else None
-            if assessment.registration and invoice_registration:
-                if re.sub(r"\W", "", assessment.registration).upper() == re.sub(
-                    r"\W", "", invoice_registration
-                ).upper():
-                    score += 0.70
-                    reasons.append("registration exact match")
-                else:
-                    # Explicit upload association must not override conflicting identities.
-                    continue
-            if assessment.claim_reference and invoice.invoice_number:
-                if assessment.claim_reference.upper() in invoice.invoice_number.upper():
-                    score += 0.25
-                    reasons.append("claim reference found in invoice number")
-            if score:
-                candidates.append((score, invoice, reasons))
+                candidates.append((1.0, invoice, ["Uploaded together for this invoice", *reasons]))
+                continue
+            confidence = len(matched) / len(PAIR_KEYS)
+            # ponytail: the spec asks for all three keys, but two of the three
+            # shared invoices print no policy number and the repo's own
+            # acceptance pairs print no claim reference either, so a literal
+            # 3-of-3 rule pairs nothing.  The rule applied here is "every key
+            # printed on both documents must agree, the registration must be
+            # one of them, and a printed claim reference must agree" -- it
+            # pairs all three client pairs and can never pair across claims.
+            # Open question for the client: is a missing policy number
+            # allowed to leave the pair linked?
+            eligible = "registration" in matched and (
+                "claim_reference" in matched
+                or normalise_identifier(invoice.claim_reference) is None
+            )
+            (candidates if eligible else rejected).append((confidence, invoice, reasons))
         candidates.sort(key=lambda row: row[0], reverse=True)
+        rejected.sort(key=lambda row: row[0], reverse=True)
         ambiguous = len(candidates) > 1 and candidates[0][0] == candidates[1][0]
-        if not candidates or candidates[0][0] < 0.70 or ambiguous:
+        if not candidates or ambiguous:
+            fallback = candidates or rejected or conflicting
             assessment.paired_invoice_id = None
             assessment.pair_status = "unpaired"
-            assessment.pair_confidence = candidates[0][0] if candidates else 0.0
-            assessment.pair_reasons_json = (["Multiple invoices share the same identifiers; manual linkage required"] if ambiguous else candidates[0][2] if candidates else ["no safe identifier match"])
+            assessment.pair_confidence = fallback[0][0] if fallback else 0.0
+            assessment.pair_reasons_json = (
+                ["Multiple invoices share the same identifiers; manual linkage required"]
+                if ambiguous
+                else fallback[0][2] if fallback else ["no safe identifier match"]
+            )
             continue
         score, invoice, reasons = candidates[0]
         assessment.paired_invoice_id = invoice.id
         assessment.pair_status = "paired"
         assessment.pair_confidence = min(score, 1.0)
         assessment.pair_reasons_json = reasons
+        # Mandatory gaps are filled from the assessment, never overwritten:
+        # a handler correction made after an earlier pass survives because the
+        # unfill above only reverts a value it still recognises as its own.
+        sources = dict((invoice.document.metadata_json or {}).get("field_sources", {}))
+        fills: list[tuple[object, str, str]] = [
+            (invoice, field, assessment_field) for field, assessment_field in INVOICE_FILL_FIELDS
+        ]
         if invoice.vehicle:
-            sources = dict((invoice.document.metadata_json or {}).get("field_sources", {}))
-            for field, estimate_field in (("make", "vehicle_make"), ("model", "vehicle_model"),
-                                          ("registration", "registration"), ("vin", "vin"),
-                                          ("mileage", "mileage")):
-                value = getattr(assessment, estimate_field)
-                if getattr(invoice.vehicle, field) in (None, "") and value not in (None, ""):
-                    setattr(invoice.vehicle, field, value)
-                    sources[field] = {"document_id": assessment.document_id,
-                                      "label": "Engineer estimate", "value": value}
-            invoice.document.metadata_json = {
-                **(invoice.document.metadata_json or {}), "field_sources": sources
-            }
+            fills += [
+                (invoice.vehicle, field, assessment_field)
+                for field, assessment_field in VEHICLE_FILL_FIELDS
+            ]
+        for holder, field, assessment_field in fills:
+            value = getattr(assessment, assessment_field)
+            if getattr(holder, field) in (None, "") and value not in (None, ""):
+                setattr(holder, field, value)
+                sources[field] = {
+                    "document_id": assessment.document_id,
+                    "label": FILL_LABEL,
+                    "value": value,
+                }
+        invoice.document.metadata_json = {
+            **(invoice.document.metadata_json or {}), "field_sources": sources
+        }
         operation_ids = [operation.id for operation in assessment.operations]
         if operation_ids:
             session.execute(
@@ -195,7 +327,100 @@ def pair_case_assessments(session: Session, case_id: str) -> None:
             )
 
 
-def engineer_assessment_payload(assessment: EngineerAssessment) -> dict:
+def run_case_gap_fill(session: Session, case_id: str) -> None:
+    """Re-pair every assessment in a case once all of its documents are loaded.
+
+    ``process_document`` already pairs after each upload, but an assessment
+    that arrives last can only fill the invoice it arrives after.  This is the
+    "after all documents are loaded" sweep the spec asks for; it is idempotent
+    because the fill reverses its own earlier fills before re-evaluating.
+    """
+
+    pair_case_assessments(session, case_id)
+
+
+def _decimal(value: str | None) -> Decimal | None:
+    return None if value in (None, "") else Decimal(value)
+
+
+def section_breakdown_for_invoice(session: Session, invoice: Invoice) -> list[dict]:
+    """Resolve each rolled-up invoice total to its assessment section.
+
+    Computed at read time and persisted nowhere.  A difference is *reported*,
+    never enforced: nothing here raises, changes a queue or blocks pricing.
+    An assessment that does not print a section total leaves ``matches`` as
+    ``None`` -- "not captured" is not the same answer as "does not match".
+    """
+
+    assessment = session.scalar(
+        select(EngineerAssessment)
+        .where(EngineerAssessment.paired_invoice_id == invoice.id)
+        .options(selectinload(EngineerAssessment.operations))
+    )
+    totals = session.scalars(
+        select(InvoiceLineItem)
+        .where(
+            InvoiceLineItem.invoice_id == invoice.id,
+            InvoiceLineItem.is_section_total.is_(True),
+        )
+        .order_by(InvoiceLineItem.sequence_no)
+    ).all()
+
+    breakdowns: list[dict] = []
+    for line in totals:
+        line_item_type = line.line_item_type or ensure_line_item_type(line.raw_category)
+        billed = _decimal(line.line_total_net)
+        section_field = SECTION_TOTAL_FIELDS.get(line_item_type)
+        assessed = (
+            _decimal(getattr(assessment, section_field, None))
+            if assessment is not None and section_field
+            else None
+        )
+        difference = billed - assessed if billed is not None and assessed is not None else None
+        categories = SECTION_OPERATION_CATEGORIES.get(line_item_type, (line_item_type,))
+        rows = [
+            {
+                "id": operation.id,
+                "category": operation.category,
+                "raw_category": operation.raw_category,
+                "description": operation.raw_description,
+                "work_units": operation.work_units,
+                "hours": operation.hours,
+                "unit_price_net": operation.unit_price_net,
+                "total_net": operation.total_net,
+            }
+            for operation in (assessment.operations if assessment is not None else [])
+            if operation.category in categories
+        ]
+        breakdowns.append(
+            {
+                "invoice_line_item_id": line.id,
+                "line_item_type": line_item_type,
+                "raw_category": line.raw_category,
+                "description": line.raw_description,
+                "invoice_total": line.line_total_net,
+                "assessment_id": assessment.id if assessment is not None else None,
+                "assessment_total": (
+                    getattr(assessment, section_field, None)
+                    if assessment is not None and section_field
+                    else None
+                ),
+                "matches": (
+                    None if difference is None else abs(difference) <= SECTION_TOTAL_TOLERANCE
+                ),
+                "difference": None if difference is None else f"{difference:.2f}",
+                "breakdown_source": "engineer assessment",
+                "rows": rows,
+            }
+        )
+    return breakdowns
+
+
+def engineer_assessment_payload(
+    assessment: EngineerAssessment, session: Session | None = None
+) -> dict:
+    session = session or object_session(assessment)
+    invoice = assessment.paired_invoice
     return {
         "id": assessment.id,
         "document_id": assessment.document_id,
@@ -207,8 +432,13 @@ def engineer_assessment_payload(assessment: EngineerAssessment) -> dict:
         "vin": assessment.vin,
         "mileage": assessment.mileage,
         "field_sources": (
-            (assessment.paired_invoice.document.metadata_json or {}).get("field_sources", {})
-            if assessment.paired_invoice else {}
+            (invoice.document.metadata_json or {}).get("field_sources", {})
+            if invoice else {}
+        ),
+        "section_breakdowns": (
+            section_breakdown_for_invoice(session, invoice)
+            if invoice is not None and session is not None
+            else []
         ),
         "pair_status": assessment.pair_status,
         "pair_confidence": assessment.pair_confidence,
