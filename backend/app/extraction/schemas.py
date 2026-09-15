@@ -247,6 +247,9 @@ class ExtractedAssessmentOperation(BaseModel):
     category: str
     code: str | None = None
     part_number: str | None = None
+    #: The literal printed in the part-number column, including the "Renew"
+    #: placeholder that `part_number` drops.
+    part_number_raw: str | None = None
     description: str
     work_units: Decimal | None = None
     hours: Decimal | None = None
@@ -254,6 +257,13 @@ class ExtractedAssessmentOperation(BaseModel):
     unit_price: Decimal | None = None
     total: Decimal | None = None
     page_number: int
+    #: Canonical code for the printed section the row sat in, and the heading
+    #: verbatim -- see `app.domain.line_item_type`.
+    line_item_type: str = "unknown"
+    raw_category: str | None = None
+    #: True when the price was computed from work units and a printed rate
+    #: rather than read off the row.
+    price_derived: bool = False
 
 
 class ExtractedEngineerAssessment(BaseModel):
