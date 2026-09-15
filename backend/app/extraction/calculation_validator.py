@@ -56,6 +56,22 @@ def _not_applicable(finding_type: str, *, explanation: str) -> MathFinding:
     )
 
 
+#: Which printed section a row belongs to, per stated total. A total and the
+#: rows that make it up have to land in the same family, or the row sum is
+#: reconciled against the wrong printed figure: a repairer's "Total Parts"
+#: covers its sundry-parts line, and "Additional charges" covers the
+#: specialist-operation rows printed above it. Codes come from
+#: :mod:`app.domain.line_item_type`, which is an open vocabulary -- an
+#: unrecognised section simply belongs to no family and is only ever counted in
+#: the subtotal.
+SECTION_FAMILIES: dict[str, frozenset[str]] = {
+    "labour": frozenset({"labour"}),
+    "parts": frozenset({"parts", "sundry"}),
+    "paint": frozenset({"paint", "paint_materials"}),
+    "extras": frozenset({"extras", "additional", "specialist_operation"}),
+}
+
+
 def validate_invoice(
     invoice: ExtractedInvoice,
     *,
@@ -63,7 +79,11 @@ def validate_invoice(
     invoice_tolerance: Decimal = Decimal("0.05"),
 ) -> list[MathFinding]:
     findings: list[MathFinding] = []
-    for line in invoice.line_items:
+    # A section total printed instead of the section's rows is evidence of the
+    # section's value, never a priced row. It must not enter any row sum, or
+    # every rolled-up invoice reports a mismatch against its own totals.
+    itemised = [line for line in invoice.line_items if not line.is_section_total]
+    for line in itemised:
         if line.quantity is None or line.unit_price_net is None or line.line_total_net is None:
             findings.append(
                 _finding(
@@ -90,32 +110,65 @@ def validate_invoice(
 
     comparable_lines = [
         line.line_total_net
-        for line in invoice.line_items
+        for line in itemised
         if line.line_total_net is not None and line.vat_applicable
     ]
-    labour_lines = [
-        line.line_total_net
-        for line in invoice.line_items
-        if line.line_total_net is not None and line.item_kind == "labour"
-    ]
-    calculated_labour = sum(labour_lines, ZERO)
-    summary_only_labour = (
-        not labour_lines
-        and invoice.totals.labour_net is not None
-        and invoice.totals.labour_net != ZERO
-    )
-    calculated_subtotal = sum(comparable_lines, ZERO) + (
-        invoice.totals.labour_net if summary_only_labour else ZERO
-    )
-    calculated_parts = sum(
-        (
-            line.line_total_net
-            for line in invoice.line_items
-            if line.line_total_net is not None
-            and line.vat_applicable
-            and line.item_kind != "labour"
-        ),
-        ZERO,
+    # Section codes only exist once the extraction recognised the printed
+    # sections. Without them the historical attribution stands unchanged:
+    # labour is item_kind "labour", parts is every other vatable row. A fully
+    # rolled-up invoice has no itemised rows to read codes off, so its section
+    # totals are the only evidence of its sections there is.
+    coded = itemised or invoice.line_items
+    sectioned = any(line.line_item_type for line in coded)
+
+    def section_rows(code: str) -> list[Decimal]:
+        if sectioned:
+            family = SECTION_FAMILIES[code]
+            return [
+                line.line_total_net
+                for line in itemised
+                if line.line_total_net is not None and line.line_item_type in family
+            ]
+        if code == "labour":
+            return [
+                line.line_total_net
+                for line in itemised
+                if line.line_total_net is not None and line.item_kind == "labour"
+            ]
+        if code == "parts":
+            return [
+                line.line_total_net
+                for line in itemised
+                if line.line_total_net is not None
+                and line.vat_applicable
+                and line.item_kind != "labour"
+            ]
+        return []
+
+    stated = {
+        "labour": invoice.totals.labour_net,
+        "parts": invoice.totals.parts_net,
+        "paint": invoice.totals.paint_net,
+        "extras": invoice.totals.extras_net,
+    }
+    if not sectioned:
+        # Paint and extras cannot be attributed to rows without section codes,
+        # so they stay out of the reconciliation exactly as they always have.
+        stated = {"labour": stated["labour"]}
+    # Sections the invoice states a total for but prints no rows for. Their
+    # stated amount is the only evidence of the section's value, so the
+    # section's own row check is not applicable and the subtotal uses the
+    # stated figure instead of an absent row sum.
+    summary_only = {
+        code
+        for code, amount in stated.items()
+        if amount is not None and amount != ZERO and not section_rows(code)
+    }
+
+    calculated_labour = sum(section_rows("labour"), ZERO)
+    calculated_parts = sum(section_rows("parts"), ZERO)
+    calculated_subtotal = sum(comparable_lines, ZERO) + sum(
+        (stated[code] for code in sorted(summary_only)), ZERO
     )
     findings.append(
         _not_applicable(
@@ -126,7 +179,7 @@ def validate_invoice(
                 "included in the subtotal, VAT and gross-total checks."
             ),
         )
-        if summary_only_labour
+        if "labour" in summary_only
         else _finding(
             "LABOUR_TOTAL_MISMATCH",
             calculated_labour,
@@ -137,14 +190,27 @@ def validate_invoice(
         )
     )
     findings.append(
-            _finding(
-                "PARTS_TOTAL_MISMATCH",
-                calculated_parts,
-                invoice.totals.parts_net,
-                invoice_tolerance,
-                severity="high",
-                explanation="Sum of extracted vatable non-labour lines against the stated parts total.",
-            )
+        _not_applicable(
+            "PARTS_TOTAL_MISMATCH",
+            explanation=(
+                "Parts are stated only in the invoice summary, so there are no "
+                "detailed parts lines to reconcile. The stated parts amount is "
+                "included in the subtotal, VAT and gross-total checks."
+            ),
+        )
+        if "parts" in summary_only
+        else _finding(
+            "PARTS_TOTAL_MISMATCH",
+            calculated_parts,
+            invoice.totals.parts_net,
+            invoice_tolerance,
+            severity="high",
+            explanation=(
+                "Sum of the extracted parts-section lines against the stated parts total."
+                if sectioned
+                else "Sum of extracted vatable non-labour lines against the stated parts total."
+            ),
+        )
     )
     findings.append(
         _finding(
@@ -154,8 +220,8 @@ def validate_invoice(
             invoice_tolerance,
             severity="high",
             explanation=(
-                "Sum of vatable extracted line totals plus any summary-only labour "
-                "amount against invoice subtotal."
+                "Sum of vatable extracted line totals plus the stated total of every "
+                "section the invoice rolled up against invoice subtotal."
             ),
         )
     )

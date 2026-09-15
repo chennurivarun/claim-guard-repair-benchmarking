@@ -21,6 +21,8 @@ from app.domain.liability import (
     InvoiceClaimFacts,
     claim_invoice_consistency,
 )
+from app.domain.line_item_type import UNKNOWN as UNKNOWN_LINE_ITEM_TYPE
+from app.domain.line_item_type import ensure_line_item_type
 from app.enums import (
     AuditActorType,
     CaseStatus,
@@ -44,8 +46,12 @@ from app.enums import (
 from app.extraction.azure_document_intelligence import AzureDocumentIntelligenceOCR
 from app.extraction.calculation_validator import validate_invoice
 from app.extraction.docx_ingest import docx_to_pdf_bytes
-from app.extraction.engineer_assessment_parser import parse_engineer_assessment
+from app.extraction.engineer_assessment_parser import (
+    ParsedEngineerAssessment,
+    parse_engineer_assessment,
+)
 from app.extraction.pdf_pipeline import PDFPipeline, PipelineConfig
+from app.extraction.schemas import PageAnalysis
 from app.llm.document_briefing import (
     DocumentBriefingPage,
     build_document_briefing,
@@ -257,6 +263,7 @@ def _severity(value: str) -> Severity:
     return {
         "info": Severity.INFO,
         "warning": Severity.WARNING,
+        "medium": Severity.WARNING,
         "review": Severity.WARNING,
         "high": Severity.ERROR,
         "error": Severity.ERROR,
@@ -427,6 +434,131 @@ def _persist_claim_findings(
         )
 
 
+def _assessment_pages_with_continuations(
+    pages: list[PageAnalysis],
+) -> list[PageAnalysis]:
+    """Return the assessment pages plus the unidentifiable pages they run onto.
+
+    A report's repair schedule continues onto pages that carry no identity
+    marker of their own -- a bare continuation of the table and nothing else --
+    which the classifier can only call OTHER. Feeding the parser the identified
+    pages alone silently truncates the schedule (Format 2 keeps 2 of its 17
+    labour rows), so an OTHER page directly following assessment pages is read
+    as part of the same report. The page's stored classification is left
+    untouched: this widens what the parser reads, not what the document says.
+    """
+
+    selected: list[PageAnalysis] = []
+    inside_report = False
+    for page in pages:
+        if page.page_type.value == PageType.ENGINEER_ASSESSMENT.value:
+            inside_report = True
+            selected.append(page)
+        elif inside_report and page.page_type.value == PageType.OTHER.value:
+            selected.append(page)
+        else:
+            inside_report = False
+    return selected
+
+
+def _json_amounts(bucket: dict[str, dict[str, Decimal]]) -> dict[str, dict[str, str]]:
+    """Render a two-level ``{type: {label: amount}}`` map JSON-safe."""
+
+    return {
+        code: {label: str(amount) for label, amount in labels.items()}
+        for code, labels in bucket.items()
+    }
+
+
+#: A printed figure and the rows beneath it are allowed to differ by rounding
+#: without that being a disagreement worth a handler's time.
+_PRINTED_ROW_TOLERANCE = Decimal("0.05")
+
+
+def _printed_row_disagreements(
+    parsed: ParsedEngineerAssessment,
+) -> list[dict[str, str]]:
+    """Report where a report's printed section figures and its rows disagree.
+
+    Nothing is corrected. The report's own arithmetic is the evidence the
+    client asked to see, so both numbers are kept exactly as found and the
+    disagreement is recorded beside them. A section is in agreement when *any*
+    figure printed for it matches the row sum -- a PARTS band prints a
+    sub-total, a sundry line and a section total, and the rows only ever
+    reproduce one of them.
+    """
+
+    disagreements: list[dict[str, str]] = []
+    for measure, printed, rows in (
+        ("work units", parsed.printed_work_units, parsed.row_work_units),
+        ("total", parsed.printed_totals, parsed.row_totals),
+    ):
+        for code, labels in printed.items():
+            row_value = rows.get(code)
+            if row_value is None or not labels:
+                continue
+            if any(
+                abs(amount - row_value) <= _PRINTED_ROW_TOLERANCE
+                for amount in labels.values()
+            ):
+                continue
+            label, amount = min(
+                labels.items(), key=lambda item: abs(item[1] - row_value)
+            )
+            disagreements.append(
+                {
+                    "line_item_type": code,
+                    "measure": measure,
+                    "printed_label": label,
+                    "printed": str(amount),
+                    "rows": str(row_value),
+                    "difference": str(amount - row_value),
+                }
+            )
+    return disagreements
+
+
+def _persist_assessment_arithmetic_findings(
+    session: Session,
+    *,
+    case: Case,
+    assessment: EngineerAssessment,
+    disagreements: list[dict[str, str]],
+) -> None:
+    """Record printed-versus-row disagreements as claim consistency findings.
+
+    Medium severity: the report is internally inconsistent, which a handler
+    must see, but nothing about it is corrected or blocked. The figures also
+    live in the assessment's extraction payload, so they survive a case that
+    has no claim context to hang a finding on.
+    """
+
+    context = case.claim_context
+    if context is None:
+        return
+    for disagreement in disagreements:
+        session.add(
+            ClaimConsistencyFinding(
+                claim_context_id=context.id,
+                finding_code="ASSESSMENT_PRINTED_TOTAL_DISAGREEMENT",
+                severity=_severity("medium"),
+                status=ConsistencyFindingStatus.OPEN,
+                field_name=f"{disagreement['line_item_type']} {disagreement['measure']}",
+                expected_value=disagreement["printed"],
+                observed_value=disagreement["rows"],
+                source_entity_type="engineer_assessment",
+                source_entity_id=assessment.id,
+                explanation=(
+                    f"The engineer assessment prints {disagreement['line_item_type']} "
+                    f"{disagreement['measure']} of {disagreement['printed']} "
+                    f"({disagreement['printed_label']}) but its own rows total "
+                    f"{disagreement['rows']}. Both figures are recorded as printed; "
+                    "neither has been corrected."
+                ),
+            )
+        )
+
+
 def process_document(session: Session, document: Document) -> ProcessingRun:
     """Run native-first PDF analysis and persist pages, invoices, lines and checks."""
 
@@ -496,10 +628,7 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
             page_rows[page.page_number] = page_row
         session.flush()
 
-        engineer_pages = [
-            page for page in analysis.pages
-            if page.page_type.value == PageType.ENGINEER_ASSESSMENT.value
-        ]
+        engineer_pages = _assessment_pages_with_continuations(analysis.pages)
         if document_metadata.get("paired_document_id"):
             engineer_pages = analysis.pages
             for page_row in page_rows.values():
@@ -509,7 +638,12 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
             # additional repair invoice or a reference price observation.
             analysis.invoices = []
         has_benchmarkable_lines = any(
-            extracted.has_benchmarkable_part_lines() for extracted in analysis.invoices
+            # `ExtractedLine.benchmarkable` already excludes section totals;
+            # the clause is repeated here because this is the governance
+            # boundary that decides whether a document can be benchmarked.
+            line.benchmarkable and not line.is_section_total
+            for extracted in analysis.invoices
+            for line in extracted.line_items
         )
         assessment_fields = None
         if engineer_pages:
@@ -525,12 +659,37 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
                 assessment_fields = dict(parsed.fields)
                 assessment_operations = parsed.operations
                 assessment_confidence = parsed.confidence
+                assessment_disagreements = _printed_row_disagreements(parsed)
                 assessment_payload = {
                     "fields": {
                         key: value.isoformat() if hasattr(value, "isoformat") else str(value)
                         for key, value in parsed.fields.items()
                     },
                     "operation_count": len(parsed.operations),
+                    # Printed figures and row sums are kept side by side and
+                    # never reconciled: `assessment_operations` has no column
+                    # for either, and the disagreement between them is the
+                    # finding, not a value to correct.
+                    "printed_work_units": _json_amounts(parsed.printed_work_units),
+                    "printed_totals": _json_amounts(parsed.printed_totals),
+                    "row_work_units": {
+                        code: str(amount) for code, amount in parsed.row_work_units.items()
+                    },
+                    "row_totals": {
+                        code: str(amount) for code, amount in parsed.row_totals.items()
+                    },
+                    "printed_row_disagreements": assessment_disagreements,
+                    # Per-operation detail with no column of its own.
+                    "operations": [
+                        {
+                            "sequence_no": operation.sequence_no,
+                            "line_item_type": operation.line_item_type,
+                            "raw_category": operation.raw_category,
+                            "price_derived": operation.price_derived,
+                            "part_number_raw": operation.part_number_raw,
+                        }
+                        for operation in parsed.operations
+                    ],
                 }
             elif analysis.engineer_assessments:
                 extracted_assessment = analysis.engineer_assessments[0]
@@ -538,6 +697,9 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
                 assessment_operations = extracted_assessment.operations
                 assessment_confidence = extracted_assessment.extraction_confidence
                 assessment_payload = extracted_assessment.model_dump(mode="json")
+                # The LLM tiers report no printed section figures, so there is
+                # nothing to disagree with.
+                assessment_disagreements = []
             else:
                 # Deterministic parsing, vision, and the text-only LLM tier all failed to
                 # produce usable repair operations. This must never dead-end the document:
@@ -546,6 +708,7 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
                 assessment_operations = []
                 assessment_confidence = None
                 assessment_payload = None
+                assessment_disagreements = []
 
             if assessment_fields is not None:
                 assessment_fields["damage_areas_json"] = assessment_fields.pop(
@@ -567,11 +730,22 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
                 session.flush()
                 for operation in assessment_operations:
                     page_row = page_rows.get(operation.page_number)
+                    # `category` is the canonical section code; the heading as
+                    # printed is kept beside it. The LLM tiers report their
+                    # section in `category` and leave `line_item_type` unset,
+                    # so whichever one carries the heading is normalised.
+                    section = getattr(operation, "line_item_type", None)
+                    if not section or section == UNKNOWN_LINE_ITEM_TYPE:
+                        section = operation.category
+                    raw_category = (
+                        getattr(operation, "raw_category", None) or operation.category
+                    )
                     session.add(
                         AssessmentOperation(
                             assessment_id=assessment.id,
                             sequence_no=operation.sequence_no,
-                            category=operation.category,
+                            category=ensure_line_item_type(section),
+                            raw_category=raw_category[:160] if raw_category else None,
                             operation_code=operation.code,
                             part_number=getattr(operation, "part_number", None),
                             raw_description=operation.description,
@@ -585,6 +759,12 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
                             extraction_confidence=assessment_confidence,
                         )
                     )
+                _persist_assessment_arithmetic_findings(
+                    session,
+                    case=case,
+                    assessment=assessment,
+                    disagreements=assessment_disagreements,
+                )
                 session.flush()
             elif not has_benchmarkable_lines:
                 # Manual review only when NEITHER a usable assessment NOR any
@@ -666,10 +846,16 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
                 supplier_name=header.supplier_name,
                 supplier_vat_number=header.supplier_vat_number,
                 customer_name=header.customer_name,
+                claim_reference=header.claim_reference,
+                policy_number=header.policy_number,
                 currency=header.currency,
                 vehicle_id=vehicle.id,
                 parts_net=extracted.totals.parts_net,
                 labour_net=extracted.totals.labour_net,
+                paint_net=extracted.totals.paint_net,
+                # "Additional charges" / EXTRAS: the existing, until now
+                # unwritten, column rather than a new one.
+                other_net=extracted.totals.extras_net,
                 subtotal_net=extracted.totals.subtotal_net,
                 vat_rate=extracted.totals.vat_rate,
                 vat_total=extracted.totals.vat_amount,
@@ -688,6 +874,15 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
             )
             session.add(invoice)
             session.flush()
+            if header.assessment_reference and not document_metadata.get(
+                "assessment_reference"
+            ):
+                # There is no column for this and there must not be one: the
+                # reference an invoice prints matches no assessment on the
+                # paired report (Format 2 prints "BOY1537"), so it is display
+                # evidence only and must never be keyed on. It also survives in
+                # extraction_payload_json["header"]["assessment_reference"].
+                document_metadata["assessment_reference"] = header.assessment_reference
             session.execute(
                 invoice_page_links.insert(),
                 [
@@ -711,6 +906,12 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
                     raw_description=line.raw_description,
                     normalised_description=line.normalised_description,
                     item_kind=_enum_or(LineItemKind, line.item_kind, LineItemKind.UNKNOWN),
+                    # The printed section the row sat in, its heading verbatim,
+                    # and whether the row is the section's rolled-up total
+                    # rather than a priced item.
+                    line_item_type=line.line_item_type,
+                    raw_category=line.raw_category,
+                    is_section_total=line.is_section_total,
                     part_number=line.part_number,
                     quantity=line.quantity,
                     unit=line.unit,
@@ -772,7 +973,13 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
                 case=case,
                 document=document,
                 invoice=invoice,
-                invoice_descriptions=tuple(line.raw_description for line in extracted.line_items),
+                # A section total is a heading with a number on it, never a
+                # repair description, so it is no evidence of what was done.
+                invoice_descriptions=tuple(
+                    line.raw_description
+                    for line in extracted.line_items
+                    if not line.is_section_total
+                ),
             )
 
         if not analysis.invoices and analysis.manual_review_reason:
