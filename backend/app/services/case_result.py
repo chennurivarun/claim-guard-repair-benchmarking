@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.config import get_settings
-from app.domain.line_item_type import ensure_line_item_type
+from app.domain.normalisation import normalise_description
 from app.domain.price_decision import (
     DEFAULT_POLICY as DEFAULT_P90_POLICY,
 )
@@ -29,6 +29,7 @@ from app.enums import (
     ReviewStatus,
 )
 from app.models import (
+    AssessmentOperation,
     AuditEvent,
     Case,
     ChallengeResult,
@@ -432,7 +433,12 @@ def _serialise_uploaded_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _serialise_assessment_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
-    """Expose one contributing past-assessment row: assessment, description, total."""
+    """Expose one contributing past-assessment row: assessment, description, total.
+
+    ``sectionCategory`` is the assessment's own section code for the row
+    (``parts``, ``labour``, ``paint``, ...), which is what makes a reviewer
+    able to see *why* the row was admitted -- its section total matched.
+    """
 
     return {
         "assessmentNumber": row.get("assessmentNumber"),
@@ -440,6 +446,7 @@ def _serialise_assessment_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
         "invoiceId": row.get("invoiceId"),
         "invoiceNumber": row.get("invoiceNumber"),
         "description": row.get("description"),
+        "sectionCategory": row.get("sectionCategory"),
         "total": row.get("total"),
         "vehicle": row.get("vehicle") or {},
     }
@@ -893,15 +900,15 @@ def build_case_result(
     client_in_house: dict[str, dict[str, Any]] = {}
     assessment_benchmarks: dict[str, dict[str, Any]] = {}
     for uploaded_invoice in graph["invoices"]:
+        # Each helper only ever returns keys for lines of ``uploaded_invoice``,
+        # so the three maps are disjoint per pass and one loop suffices.
         uploaded_p90_benchmarks.update(
             _uploaded_line_p90_benchmarks(graph, current_invoice=uploaded_invoice)
         )
-    for uploaded_invoice in graph["invoices"]:
         if _client_intake_group(uploaded_invoice):
             client_in_house.update(_uploaded_line_p90_benchmarks(
                 graph, current_invoice=uploaded_invoice, source_group="in_house"
             ))
-    for uploaded_invoice in graph["invoices"]:
         assessment_benchmarks.update(
             _assessment_line_benchmarks(graph, current_invoice=uploaded_invoice)
         )
@@ -1286,17 +1293,21 @@ def build_case_result(
                 # input to decide_line_price, hence the zeroed weights.
                 "pastAssessments": {
                     "available": assessment_benchmark is not None,
-                    "value": (
+                    "eligible": assessment_benchmark is not None,
+                    "valueNet": (
                         assessment_benchmark["value"] if assessment_benchmark else None
                     ),
-                    "method": "Past assessments mean (same make and model)",
+                    "configuredWeight": 0.0,
+                    "effectiveWeight": 0.0,
+                    "method": (
+                        assessment_benchmark["method"] if assessment_benchmark else None
+                    ),
+                    "scope": assessment_benchmark["scope"] if assessment_benchmark else None,
                     "sampleCount": (
                         assessment_benchmark["sampleCount"] if assessment_benchmark else 0
                     ),
-                    "scope": assessment_benchmark["scope"] if assessment_benchmark else None,
-                    "configuredWeight": 0.0,
-                    "effectiveWeight": 0.0,
-                    "rows": (
+                    "currentInvoiceExcluded": True,
+                    "observations": (
                         [
                             _serialise_assessment_evidence_row(row)
                             for row in assessment_benchmark["observations"]
@@ -1796,16 +1807,97 @@ def _uploaded_line_p90_benchmarks(
     return results
 
 
+#: The stored section total each comparable section is printed on, invoice
+#: side and assessment side.  ``Invoice.other_net`` holds the "Additional
+#: charges" / EXTRAS figure, and the assessment's ``paint_net`` is paint
+#: *materials* only -- paintwork labour is inside ``labour_net``.
+ASSESSMENT_SECTION_TOTAL_PAIRS: tuple[tuple[str, str, str], ...] = (
+    ("parts", "parts_net", "parts_net"),
+    ("labour", "labour_net", "labour_net"),
+    ("paint_materials", "paint_net", "paint_net"),
+    ("extras", "other_net", "extras_net"),
+)
+
+#: The assessment section total an operation of each category rolls up into.
+#: Used only by the total-lookalike guard, so an unrecognised category simply
+#: has no printed total to be confused with.
+ASSESSMENT_OPERATION_SECTION_TOTALS: dict[str, str] = {
+    "parts": "parts_net",
+    "labour": "labour_net",
+    "paint": "labour_net",
+    "paint_materials": "paint_net",
+    "extras": "extras_net",
+}
+
+
 def _assessment_section_categories(line_item_type: str) -> tuple[str, ...]:
-    # ponytail: mirrors app.services.engineer_assessment._section_categories
-    # (private, session-bound via section_breakdown_for_invoice). Duplicated
-    # here as two lookups against the same frozen constants so this benchmark
-    # can be computed purely from the in-memory graph, with no query per line.
+    # ponytail: a copy of app.services.engineer_assessment._section_categories,
+    # which is a pure lookup against these same frozen constants -- nothing
+    # about it is session-bound. It is duplicated rather than imported only
+    # because engineer_assessment.py is outside this task's file boundary.
     if line_item_type in SECTION_OPERATION_CATEGORIES:
         return SECTION_OPERATION_CATEGORIES[line_item_type]
     if line_item_type in SECTION_TOTAL_FIELDS:
         return (line_item_type,)
     return ()
+
+
+def _assessment_section_verdicts(
+    invoice: Invoice, assessment: EngineerAssessment
+) -> dict[str, bool | None]:
+    """Per-section "did this invoice agree with its assessment?", or ``None``.
+
+    ``None`` means one side did not print the total at all -- "not captured"
+    is not the same answer as "does not match", exactly as
+    ``section_breakdown_for_invoice`` reports it.
+    """
+
+    verdicts: dict[str, bool | None] = {}
+    for section, invoice_field, assessment_field in ASSESSMENT_SECTION_TOTAL_PAIRS:
+        billed = _decimal_or_none(getattr(invoice, invoice_field, None))
+        assessed = _decimal_or_none(getattr(assessment, assessment_field, None))
+        verdicts[section] = (
+            None
+            if billed is None or assessed is None
+            else abs(billed - assessed) <= SECTION_TOTAL_TOLERANCE
+        )
+    return verdicts
+
+
+def _assessment_admitted_categories(verdicts: dict[str, bool | None]) -> set[str]:
+    """Operation categories a prior pair may contribute, from its verdicts."""
+
+    admitted: set[str] = set()
+    for section, matched in verdicts.items():
+        if matched:
+            admitted.update(_assessment_section_categories(section))
+    if verdicts.get("paint_materials") is False:
+        # A matched "Total Labour" covers panel labour *and* paintwork, but
+        # the invoice's own paint & materials total contradicting the
+        # assessment is a direct statement that the paint side does not
+        # agree. Panel labour survives; paintwork does not.
+        admitted.discard("paint")
+    return admitted
+
+
+def _is_assessment_total_lookalike(
+    operation: AssessmentOperation, assessment: EngineerAssessment, total_net: Decimal
+) -> bool:
+    """Is this "operation" really a misread section-total row?
+
+    A printed "Total Parts 1,234.00" that the parser filed as an operation
+    would otherwise be averaged in beside the individual parts it sums.  Two
+    independent tells catch it: the row repeats its own section's printed
+    total, or it is literally headed "Total ...".
+    """
+
+    section_field = ASSESSMENT_OPERATION_SECTION_TOTALS.get(operation.category)
+    section_total = (
+        _decimal_or_none(getattr(assessment, section_field, None)) if section_field else None
+    )
+    if section_total is not None and total_net == section_total:
+        return True
+    return normalise_description(operation.raw_description or "").startswith("total ")
 
 
 def _assessment_line_benchmarks(
@@ -1817,23 +1909,53 @@ def _assessment_line_benchmarks(
     """Second, separately labelled benchmark built from prior engineer assessments.
 
     Modelled directly on ``_uploaded_line_p90_benchmarks``: the same
-    ``_uploaded_line_identity`` keys, the same ``_normalised_vehicle_value``
-    make+model gate -- exact make and model only, no broad-category fallback,
-    because same price does not imply same vehicle -- and the same exclusion
-    of the current invoice (and, by construction, its own paired assessment).
+    ``_normalised_vehicle_value`` make+model gate -- exact make and model
+    only, no broad-category fallback, because same price does not imply same
+    vehicle -- and the same exclusion of the current invoice (and, by
+    construction, its own paired assessment).
 
     Population: ``AssessmentOperation`` rows belonging to assessments paired
     to *other* invoices in the case, restricted to the sections whose invoice
-    total matched its assessment total (the same £0.01 tolerance
-    ``section_breakdown_for_invoice`` uses) -- an unresolved or mismatched
-    section is "not comparable" and contributes nothing.  Section-total rows
-    themselves are never part of the population; they live on
-    ``EngineerAssessment``, not ``AssessmentOperation``.
+    total matched its assessment total.
+
+    **Which section totals.**  The verdict is read from the *stored* totals on
+    both sides -- ``Invoice.parts_net`` / ``labour_net`` / ``paint_net`` /
+    ``other_net`` against the assessment's ``parts_net`` / ``labour_net`` /
+    ``paint_net`` / ``extras_net``, at ``SECTION_TOTAL_TOLERANCE`` -- and a
+    section is admitted only when both figures exist and agree.  Those columns
+    are populated for an itemised invoice exactly as they are for a rolled-up
+    one, so one rule serves both, and the parts benchmark becomes reachable on
+    the client's own formats, whose invoices itemise their parts.
+
+    A matched "Total Labour" covers both work-unit sections (the ``labour``
+    -> ``labour`` + ``paint`` mapping of ``_section_categories``), but
+    paintwork is withdrawn again when the invoice's own paint & materials
+    total is present and contradicts the assessment.
+
+    Assessment section totals are never themselves part of the population:
+    they live on ``EngineerAssessment``, not ``AssessmentOperation``.  A row
+    that merely *looks* like one -- a misread "Total ..." heading, or a row
+    repeating its section's printed total -- is dropped by
+    ``_is_assessment_total_lookalike``.
+
+    Identity: assessment rows are keyed in the *invoice* description space
+    (``normalise_description``), never in ``normalise_operation``'s
+    alias-collapsed space, so "O/S Front Door Skin" printed on both sides
+    matches, and a labour "R/R Front Bumper" is never averaged together with
+    a paint "Paint Front Bumper".  Assessment rows carry no
+    ``OntologyMapping``, so the description key is the whole identity and
+    nothing is lost.
 
     Statistic: the plain mean of the individual row totals ("take the average
     of those"), never P90 and never a mean of section totals.
     """
 
+    # ponytail: the plan's §E said to reuse ``section_breakdown_for_invoice``'s
+    # per-row ``matches``, i.e. derive the verdict only from the invoice's
+    # ``is_section_total`` rows. Deviated from deliberately: an itemised prior
+    # prints no such row, so that rule admits nothing at all on the client's
+    # own invoice formats. The stored section totals above say the same thing
+    # for rolled-up and itemised priors alike.
     assessments: list[EngineerAssessment] = graph.get("assessments") or []
     if not assessments:
         return {}
@@ -1843,11 +1965,6 @@ def _assessment_line_benchmarks(
     current_model = _normalised_vehicle_value(getattr(current_vehicle, "model", None))
     if not current_make or not current_model:
         return {}
-
-    section_totals_by_invoice: dict[str, list[InvoiceLineItem]] = {}
-    for line in graph["lines"]:
-        if line.is_section_total:
-            section_totals_by_invoice.setdefault(line.invoice_id, []).append(line)
 
     latest_mappings = _latest_by(graph["mappings"], "invoice_line_item_id")
     ontology: dict[str, OntologyItem] = graph["ontology"]
@@ -1866,23 +1983,8 @@ def _assessment_line_benchmarks(
         ):
             continue
 
-        matched_categories: set[str] = set()
-        for total_line in section_totals_by_invoice.get(paired_invoice.id, []):
-            line_item_type = total_line.line_item_type or ensure_line_item_type(
-                total_line.raw_category
-            )
-            section_field = SECTION_TOTAL_FIELDS.get(line_item_type)
-            billed = _decimal_or_none(total_line.line_total_net)
-            assessed = (
-                _decimal_or_none(getattr(assessment, section_field, None))
-                if section_field
-                else None
-            )
-            if billed is None or assessed is None:
-                continue
-            if abs(billed - assessed) > SECTION_TOTAL_TOLERANCE:
-                continue
-            matched_categories.update(_assessment_section_categories(line_item_type))
+        verdicts = _assessment_section_verdicts(paired_invoice, assessment)
+        matched_categories = _assessment_admitted_categories(verdicts)
         if not matched_categories:
             continue
 
@@ -1894,9 +1996,16 @@ def _assessment_line_benchmarks(
             total_net = _decimal(operation.total_net)
             if total_net <= 0:
                 continue
-            keys, category, _ = _uploaded_line_identity(
-                operation, latest_mappings=latest_mappings, ontology=ontology
+            if _is_assessment_total_lookalike(operation, assessment, total_net):
+                continue
+            # Keyed in the invoice's own description space -- see the identity
+            # paragraph above. An operation is not an ``InvoiceLineItem`` and
+            # must not be handed to ``_uploaded_line_identity``.
+            category = canonical_benchmark_category(
+                operation.raw_description,
+                normalise_description(operation.raw_description),
             )
+            keys = {f"description:{category.casefold()}"}
             observation = {
                 "assessmentOperationId": operation.id,
                 "assessmentId": assessment.id,
