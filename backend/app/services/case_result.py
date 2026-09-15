@@ -6,9 +6,10 @@ from typing import Any
 from urllib.parse import urlparse
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.config import get_settings
+from app.domain.line_item_type import ensure_line_item_type
 from app.domain.price_decision import (
     DEFAULT_POLICY as DEFAULT_P90_POLICY,
 )
@@ -35,6 +36,7 @@ from app.models import (
     ComparisonComparable,
     Document,
     DocumentPage,
+    EngineerAssessment,
     ExternalEvidence,
     HistoricalObservation,
     Invoice,
@@ -59,6 +61,11 @@ from app.services.benchmarking import (
     calculate_benchmark_statistics,
     canonical_benchmark_category,
 )
+from app.services.engineer_assessment import (
+    SECTION_OPERATION_CATEGORIES,
+    SECTION_TOTAL_FIELDS,
+    SECTION_TOTAL_TOLERANCE,
+)
 
 settings = get_settings()
 
@@ -75,6 +82,10 @@ def _decimal(value: Any, default: str = "0") -> Decimal:
     if value in (None, ""):
         return Decimal(default)
     return Decimal(str(value))
+
+
+def _decimal_or_none(value: Any) -> Decimal | None:
+    return None if value in (None, "") else Decimal(str(value))
 
 
 def _money_float(value: Any) -> float:
@@ -420,6 +431,20 @@ def _serialise_uploaded_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _serialise_assessment_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Expose one contributing past-assessment row: assessment, description, total."""
+
+    return {
+        "assessmentNumber": row.get("assessmentNumber"),
+        "assessmentId": row.get("assessmentId"),
+        "invoiceId": row.get("invoiceId"),
+        "invoiceNumber": row.get("invoiceNumber"),
+        "description": row.get("description"),
+        "total": row.get("total"),
+        "vehicle": row.get("vehicle") or {},
+    }
+
+
 def _effective_source_weights(
     *, in_house: bool, historical: bool, external: bool
 ) -> dict[str, float]:
@@ -745,6 +770,16 @@ def _load_case_graph(session: Session, case_reference: str) -> dict[str, Any]:
             else []
         )
     }
+    # ponytail: loaded case-wide (not scoped to invoice_ids) because an
+    # EngineerAssessment can pair to an invoice that failed to load above only
+    # in pathological data; the case_id filter is the governed boundary.
+    assessments = list(
+        session.scalars(
+            select(EngineerAssessment)
+            .where(EngineerAssessment.case_id == case.id)
+            .options(selectinload(EngineerAssessment.operations))
+        ).all()
+    )
     return {
         "case": case,
         "context": context,
@@ -767,6 +802,7 @@ def _load_case_graph(session: Session, case_reference: str) -> dict[str, Any]:
         "audit": audit,
         "ontology": ontology,
         "vehicles": vehicles,
+        "assessments": assessments,
     }
 
 
@@ -855,6 +891,7 @@ def build_case_result(
     graph = _graph or _load_case_graph(session, case_reference)
     uploaded_p90_benchmarks: dict[str, dict[str, Any]] = {}
     client_in_house: dict[str, dict[str, Any]] = {}
+    assessment_benchmarks: dict[str, dict[str, Any]] = {}
     for uploaded_invoice in graph["invoices"]:
         uploaded_p90_benchmarks.update(
             _uploaded_line_p90_benchmarks(graph, current_invoice=uploaded_invoice)
@@ -864,6 +901,10 @@ def build_case_result(
             client_in_house.update(_uploaded_line_p90_benchmarks(
                 graph, current_invoice=uploaded_invoice, source_group="in_house"
             ))
+    for uploaded_invoice in graph["invoices"]:
+        assessment_benchmarks.update(
+            _assessment_line_benchmarks(graph, current_invoice=uploaded_invoice)
+        )
     case: Case = graph["case"]
     context: ClaimContext | None = graph["context"]
     liability: LiabilityAssessment | None = graph["liability"]
@@ -1040,6 +1081,9 @@ def build_case_result(
         # available as audit evidence, but must never leak an obsolete
         # supported price into the reviewer-facing result.
         benchmark = None if operationally_excluded else uploaded_p90_benchmarks.get(line.id)
+        assessment_benchmark = (
+            None if operationally_excluded else assessment_benchmarks.get(line.id)
+        )
         invoice = invoices_by_id.get(line.invoice_id)
         vehicle = vehicles.get(invoice.vehicle_id or "") if invoice else None
         uploaded_historical_evidence = (
@@ -1237,6 +1281,29 @@ def build_case_result(
                     "effectiveWeight": effective_weights["externalReference"],
                     "method": external_price_method,
                     "sources": external_audit_sources,
+                },
+                # Informational second benchmark (client spec Step 5): never an
+                # input to decide_line_price, hence the zeroed weights.
+                "pastAssessments": {
+                    "available": assessment_benchmark is not None,
+                    "value": (
+                        assessment_benchmark["value"] if assessment_benchmark else None
+                    ),
+                    "method": "Past assessments mean (same make and model)",
+                    "sampleCount": (
+                        assessment_benchmark["sampleCount"] if assessment_benchmark else 0
+                    ),
+                    "scope": assessment_benchmark["scope"] if assessment_benchmark else None,
+                    "configuredWeight": 0.0,
+                    "effectiveWeight": 0.0,
+                    "rows": (
+                        [
+                            _serialise_assessment_evidence_row(row)
+                            for row in assessment_benchmark["observations"]
+                        ]
+                        if assessment_benchmark
+                        else []
+                    ),
                 },
             },
         }
@@ -1725,6 +1792,169 @@ def _uploaded_line_p90_benchmarks(
             "method": "Interpolated percentile (PERCENTILE.INC)",
             "vehicleScope": vehicle_scope,
             "currentInvoiceExcluded": True,
+        }
+    return results
+
+
+def _assessment_section_categories(line_item_type: str) -> tuple[str, ...]:
+    # ponytail: mirrors app.services.engineer_assessment._section_categories
+    # (private, session-bound via section_breakdown_for_invoice). Duplicated
+    # here as two lookups against the same frozen constants so this benchmark
+    # can be computed purely from the in-memory graph, with no query per line.
+    if line_item_type in SECTION_OPERATION_CATEGORIES:
+        return SECTION_OPERATION_CATEGORIES[line_item_type]
+    if line_item_type in SECTION_TOTAL_FIELDS:
+        return (line_item_type,)
+    return ()
+
+
+def _assessment_line_benchmarks(
+    graph: dict[str, Any],
+    *,
+    current_invoice: Invoice,
+    minimum_count: int = 3,
+) -> dict[str, dict[str, Any]]:
+    """Second, separately labelled benchmark built from prior engineer assessments.
+
+    Modelled directly on ``_uploaded_line_p90_benchmarks``: the same
+    ``_uploaded_line_identity`` keys, the same ``_normalised_vehicle_value``
+    make+model gate -- exact make and model only, no broad-category fallback,
+    because same price does not imply same vehicle -- and the same exclusion
+    of the current invoice (and, by construction, its own paired assessment).
+
+    Population: ``AssessmentOperation`` rows belonging to assessments paired
+    to *other* invoices in the case, restricted to the sections whose invoice
+    total matched its assessment total (the same £0.01 tolerance
+    ``section_breakdown_for_invoice`` uses) -- an unresolved or mismatched
+    section is "not comparable" and contributes nothing.  Section-total rows
+    themselves are never part of the population; they live on
+    ``EngineerAssessment``, not ``AssessmentOperation``.
+
+    Statistic: the plain mean of the individual row totals ("take the average
+    of those"), never P90 and never a mean of section totals.
+    """
+
+    assessments: list[EngineerAssessment] = graph.get("assessments") or []
+    if not assessments:
+        return {}
+    invoices_by_id = {invoice.id: invoice for invoice in graph["invoices"]}
+    current_vehicle = getattr(current_invoice, "vehicle", None)
+    current_make = _normalised_vehicle_value(getattr(current_vehicle, "make", None))
+    current_model = _normalised_vehicle_value(getattr(current_vehicle, "model", None))
+    if not current_make or not current_model:
+        return {}
+
+    section_totals_by_invoice: dict[str, list[InvoiceLineItem]] = {}
+    for line in graph["lines"]:
+        if line.is_section_total:
+            section_totals_by_invoice.setdefault(line.invoice_id, []).append(line)
+
+    latest_mappings = _latest_by(graph["mappings"], "invoice_line_item_id")
+    ontology: dict[str, OntologyItem] = graph["ontology"]
+
+    observations_by_key: dict[str, list[dict[str, Any]]] = {}
+    for assessment in assessments:
+        paired_invoice = invoices_by_id.get(assessment.paired_invoice_id or "")
+        if paired_invoice is None or paired_invoice.id == current_invoice.id:
+            # Excludes both other-claim assessments and the current invoice's
+            # own paired assessment in one check.
+            continue
+        source_vehicle = getattr(paired_invoice, "vehicle", None)
+        if (
+            _normalised_vehicle_value(getattr(source_vehicle, "make", None)) != current_make
+            or _normalised_vehicle_value(getattr(source_vehicle, "model", None)) != current_model
+        ):
+            continue
+
+        matched_categories: set[str] = set()
+        for total_line in section_totals_by_invoice.get(paired_invoice.id, []):
+            line_item_type = total_line.line_item_type or ensure_line_item_type(
+                total_line.raw_category
+            )
+            section_field = SECTION_TOTAL_FIELDS.get(line_item_type)
+            billed = _decimal_or_none(total_line.line_total_net)
+            assessed = (
+                _decimal_or_none(getattr(assessment, section_field, None))
+                if section_field
+                else None
+            )
+            if billed is None or assessed is None:
+                continue
+            if abs(billed - assessed) > SECTION_TOTAL_TOLERANCE:
+                continue
+            matched_categories.update(_assessment_section_categories(line_item_type))
+        if not matched_categories:
+            continue
+
+        for operation in assessment.operations:
+            if operation.category not in matched_categories:
+                continue
+            if operation.total_net in (None, ""):
+                continue
+            total_net = _decimal(operation.total_net)
+            if total_net <= 0:
+                continue
+            keys, category, _ = _uploaded_line_identity(
+                operation, latest_mappings=latest_mappings, ontology=ontology
+            )
+            observation = {
+                "assessmentOperationId": operation.id,
+                "assessmentId": assessment.id,
+                "assessmentNumber": assessment.assessment_number or assessment.id,
+                "invoiceId": paired_invoice.id,
+                "invoiceNumber": paired_invoice.invoice_number or paired_invoice.id,
+                "description": operation.raw_description,
+                "category": category,
+                "sectionCategory": operation.category,
+                "total": _money_float(total_net),
+                "vehicle": {
+                    "make": getattr(source_vehicle, "make", None),
+                    "model": getattr(source_vehicle, "model", None),
+                    "variant": getattr(source_vehicle, "variant", None),
+                },
+            }
+            for key in keys:
+                observations_by_key.setdefault(key, []).append(observation)
+
+    if not observations_by_key:
+        return {}
+
+    results: dict[str, dict[str, Any]] = {}
+    for line in graph["lines"]:
+        if line.invoice_id != current_invoice.id or line.status == ReviewStatus.REJECTED:
+            continue
+        if line.is_section_total:
+            # No benchmark is ever computed from -- or for -- a total row.
+            continue
+        current_price = _decimal(line.line_total_net)
+        if current_price <= 0:
+            continue
+        keys, category, _ = _uploaded_line_identity(
+            line, latest_mappings=latest_mappings, ontology=ontology
+        )
+        observations = {
+            row["assessmentOperationId"]: row
+            for key in keys
+            for row in observations_by_key.get(key, [])
+        }
+        ordered_observations = sorted(
+            observations.values(),
+            key=lambda row: (row["assessmentNumber"], row["assessmentOperationId"]),
+        )
+        if len(ordered_observations) < minimum_count:
+            continue
+        statistics = calculate_benchmark_statistics(
+            Decimal(str(row["total"])) for row in ordered_observations
+        )
+        if statistics.mean is None:
+            continue
+        results[line.id] = {
+            "category": category,
+            "value": _money_float(statistics.mean),
+            "sampleCount": statistics.count,
+            "scope": "exact make and model",
+            "observations": ordered_observations,
+            "method": "Past assessments mean (same make and model)",
         }
     return results
 
