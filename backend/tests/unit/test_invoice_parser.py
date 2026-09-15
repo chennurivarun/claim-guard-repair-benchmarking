@@ -1,7 +1,14 @@
+import tempfile
 from datetime import date
 from decimal import Decimal
+from functools import cache
 from pathlib import Path
+from unittest import mock
 
+import fitz
+import pytest
+
+import app.services.document_processing as document_processing
 from app.extraction.invoice_parser import InvoiceParser, _guess_item_kind
 from app.extraction.schemas import (
     ExtractedInvoice,
@@ -12,6 +19,9 @@ from app.extraction.schemas import (
     PageAnalysis,
     PageType,
 )
+
+CLIENT_FORMATS_DIR = Path(__file__).resolve().parents[3] / "sample-data" / "client-formats"
+_CONVERTED_DIRS: list[tempfile.TemporaryDirectory] = []
 
 
 class _TablePage:
@@ -41,6 +51,67 @@ def _page() -> PageAnalysis:
         page_type=PageType.INVOICE,
         classification_confidence=0.98,
     )
+
+
+@cache
+def _client_invoice(filename: str) -> ExtractedInvoice:
+    """Parse a client `.docx` invoice through the real upload-normalisation path.
+
+    `shutil.which` is forced to `None` so the deterministic pure-Python
+    reportlab conversion is used rather than LibreOffice if it happens to be
+    installed, exactly as `test_client_format_fixtures` does.
+    """
+
+    source = CLIENT_FORMATS_DIR / filename
+    if not source.is_file():
+        pytest.skip(f"Client-format fixture {filename} is not available")
+    with mock.patch.object(document_processing.shutil, "which", return_value=None):
+        normalised = document_processing.normalise_document_upload(
+            source.name, source.read_bytes()
+        )
+    directory = tempfile.TemporaryDirectory()
+    _CONVERTED_DIRS.append(directory)
+    pdf_path = Path(directory.name) / normalised.stored_filename
+    pdf_path.write_bytes(normalised.content)
+
+    document = fitz.open(pdf_path)
+    try:
+        pages = [
+            PageAnalysis(
+                page_number=number,
+                width=page.rect.width,
+                height=page.rect.height,
+                rotation=0,
+                native_character_count=len(page.get_text("text")),
+                positioned_word_count=len(page.get_text("words")),
+                image_count=0,
+                extraction_method="native",
+                extraction_confidence=0.98,
+                text=page.get_text("text"),
+                page_type=PageType.INVOICE,
+                classification_confidence=0.98,
+            )
+            for number, page in enumerate(document, start=1)
+        ]
+    finally:
+        document.close()
+    return InvoiceParser().parse_group(pdf_path, pages)
+
+
+def _of_type(invoice: ExtractedInvoice, line_item_type: str) -> list[ExtractedLine]:
+    return [
+        line
+        for line in invoice.line_items
+        if line.line_item_type == line_item_type and not line.is_section_total
+    ]
+
+
+def _section_totals(invoice: ExtractedInvoice) -> dict[str, Decimal | None]:
+    return {
+        line.line_item_type: line.line_total_net
+        for line in invoice.line_items
+        if line.is_section_total
+    }
 
 
 def test_native_parser_reads_generic_description_quantity_unit_subtotal_table() -> None:
@@ -266,3 +337,123 @@ def test_unknown_priced_line_triggers_vision_enrichment_even_when_totals_match(
     assert vision.calls == 1
     assert invoice.extraction_method == "vision"
     assert invoice.line_items[0].line_total_net == Decimal("76.00")
+
+
+def test_format_1_invoice_itemises_parts_specialist_operations_and_two_section_totals() -> None:
+    invoice = _client_invoice("DL_Repair_Invoice_format_1.docx")
+
+    header = invoice.header
+    assert header.invoice_number == "343653726836/1~3538"
+    assert header.claim_reference == "245338996/1"
+    assert header.customer_name == "John Doe"
+    assert header.registration == "AB12XYZ"
+
+    parts = _of_type(invoice, "parts")
+    assert [line.raw_description for line in parts] == [
+        "L/R DOOR",
+        "L/SILL PANEL COVER",
+        "Door Fitting Kit",
+        "DOOR FOIL X1",
+        "SOUND PAD X1",
+        "Door Fitting Kit",
+        "Light Moulding Clip",
+    ]
+    assert [line.part_number for line in parts] == [
+        "7700332300",
+        "8775132000",
+        None,
+        None,
+        None,
+        None,
+        None,
+    ]
+    assert all(line.item_kind == "part" for line in parts)
+    # The guide number is stripped from the description, but the printed row
+    # survives whole in the provenance the reviewer sees.
+    assert "L/R DOOR 1781" in (parts[0].source.raw_text or "")
+
+    sundry = _of_type(invoice, "sundry")
+    assert len(sundry) == 1
+    assert sundry[0].line_total_net == Decimal("41.85")
+    assert sundry[0].quantity is None
+    assert sundry[0].item_kind == "fee"
+
+    specialist = _of_type(invoice, "specialist_operation")
+    assert len(specialist) == 12
+    assert sum(line.line_total_net for line in specialist) == Decimal("136.32")
+    assert all(line.item_kind == "fee" for line in specialist)
+
+    assert _section_totals(invoice) == {
+        "labour": Decimal("2509.20"),
+        "paint_materials": Decimal("1029.57"),
+    }
+
+    totals = invoice.totals
+    assert totals.parts_net == Decimal("1237.50")
+    assert totals.extras_net == Decimal("136.32")
+    assert totals.paint_net == Decimal("1029.57")
+    assert totals.labour_net == Decimal("2509.20")
+    assert totals.vat_amount == Decimal("982.52")
+    assert totals.total_gross == Decimal("5895.11")
+
+
+def test_format_2_request_for_payment_is_four_rolled_up_section_totals() -> None:
+    invoice = _client_invoice("DL_Invoice_2_request_for_payment.docx")
+
+    header = invoice.header
+    assert header.invoice_number == "22564547648/1~AJ123456"
+    assert header.claim_reference == "123456/1"
+    assert header.policy_number == "103466899"
+    assert header.registration == "A30DRY"
+    assert header.vehicle_make == "SKODA"
+    assert header.vehicle_model == "KAROQ SE TSI 115]"
+    # Captured for display only: "BOY1537" matches no assessment number on the
+    # paired report, so it must never be used to pair the two documents.
+    assert header.assessment_reference == "BOY1537"
+
+    assert _section_totals(invoice) == {
+        "parts": Decimal("448.91"),
+        "paint_materials": Decimal("1034.02"),
+        "labour": Decimal("2008.00"),
+        "extras": Decimal("627.00"),
+    }
+    assert [line for line in invoice.line_items if not line.is_section_total] == []
+    assert invoice.totals.total_gross == Decimal("4941.52")
+
+
+def test_format_7_validation_note_paragraph_produces_no_line_or_total() -> None:
+    invoice = _client_invoice("DL_Repair_Invoice_format_7.docx")
+
+    header = invoice.header
+    assert header.claim_reference == "426953180/3"
+    assert header.registration == "JK21MNO"
+    assert header.vehicle_make is None
+    assert header.vehicle_model is None
+    assert invoice.totals.parts_net == Decimal("939.00")
+
+    # The embedded prose quotes every total on the invoice; none of it is a row.
+    assert not any("validation" in line.raw_description.casefold() for line in invoice.line_items)
+    assert not any(
+        "verified against" in (line.source.raw_text or "").casefold()
+        for line in invoice.line_items
+    )
+    assert _section_totals(invoice) == {
+        "labour": Decimal("1910.00"),
+        "paint_materials": Decimal("785.00"),
+    }
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "DL_Repair_Invoice_format_1.docx",
+        "DL_Invoice_2_request_for_payment.docx",
+        "DL_Repair_Invoice_format_7.docx",
+    ],
+)
+def test_section_total_rows_are_never_benchmarkable(filename: str) -> None:
+    invoice = _client_invoice(filename)
+    section_totals = [line for line in invoice.line_items if line.is_section_total]
+
+    assert section_totals
+    assert not any(line.benchmarkable for line in section_totals)
