@@ -150,18 +150,19 @@ def test_format_2_invoice_rolled_up_totals() -> None:
     assert parse_money(values["labour_net"]) == Decimal("2008.00")
     assert parse_money(values["paint_net"]) == Decimal("1034.02")
     assert parse_money(values["extras_net"]) == Decimal("627.00")
-    # "Total" alone is a subtotal synonym and must not swallow the longer
-    # section labels printed on the same document.
+    # The bare "Total" line is deliberately not a subtotal synonym: it heads
+    # every schedule on these documents, so the parsers own section totals.
     assert parse_money(values["parts_net"]) == Decimal("448.91")
-    assert parse_money(values["subtotal_net"]) == Decimal("3490.93")
+    assert "subtotal_net" not in values
     assert parse_money(values["gross_total"]) == Decimal("4941.52")
 
 
-def test_longer_label_wins_over_total_without_column_spacing() -> None:
-    values = read_label_values("Total 3490.93\nTotal Parts Amount 448.91\n")
+def test_longer_label_wins_over_shorter_prefix_without_column_spacing() -> None:
+    values = read_label_values("Total 136.32\nSubtotal 3490.93\nTotal Parts Amount 448.91\n")
 
     assert parse_money(values["subtotal_net"]) == Decimal("3490.93")
     assert parse_money(values["parts_net"]) == Decimal("448.91")
+    assert not any(value == "136.32" for value in values.values())
 
 
 def test_format_7_gross_total_from_either_label() -> None:

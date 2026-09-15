@@ -74,7 +74,10 @@ FIELD_SYNONYMS: dict[str, tuple[str, ...]] = {
         "Additional Items",
         "Additional Total Items",
     ),
-    "subtotal_net": ("Grand Total Excl. VAT", "Repair Grand Total Excl. VAT", "Subtotal", "Total"),
+    # ponytail: the bare label "Total" is deliberately NOT a subtotal synonym; it
+    # heads every schedule ("Total   136.32" under Specialist Operation) and the
+    # parsers own section totals themselves.
+    "subtotal_net": ("Grand Total Excl. VAT", "Repair Grand Total Excl. VAT", "Subtotal"),
     "vat_total": (
         "VAT 20%",
         "An amount equivalent to VAT @20%",
