@@ -40,6 +40,7 @@ SECTION_SYNONYMS: dict[str, tuple[str, ...]] = {
     "parts": ("Parts", "Total Parts", "Total Parts Amount", "Parts Total"),
     "extras": (
         "Extras",
+        "Extra",
         "Total Extras",
         "Additional",
         "Additional Items",

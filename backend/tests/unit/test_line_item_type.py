@@ -21,6 +21,7 @@ from app.enums import LineItemKind
         ("PARTS", "parts"),
         ("Parts", "parts"),
         ("EXTRAS", "extras"),
+        ("Extra", "extras"),
         ("Paint and Materials", "paint_materials"),
         ("Paint & Materials", "paint_materials"),
         ("Total Paint & Materials Amount", "paint_materials"),
