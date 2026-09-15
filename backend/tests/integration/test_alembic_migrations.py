@@ -35,3 +35,46 @@ def test_upgrade_head_creates_review_briefing_column(alembic_config: Config) -> 
     finally:
         engine.dispose()
         get_settings.cache_clear()
+
+
+def test_extract_columns_round_trip_through_20260915_0010(alembic_config: Config) -> None:
+    database_url = alembic_config.get_main_option("sqlalchemy.url")
+
+    def extract_schema() -> tuple[set[str], set[str], set[str], set[str], set[str]]:
+        engine = sa.create_engine(database_url)
+        try:
+            inspector = sa.inspect(engine)
+            return (
+                {column["name"] for column in inspector.get_columns("invoices")},
+                {column["name"] for column in inspector.get_columns("invoice_line_items")},
+                {column["name"] for column in inspector.get_columns("assessment_operations")},
+                {index["name"] for index in inspector.get_indexes("invoices")},
+                {index["name"] for index in inspector.get_indexes("engineer_assessments")},
+            )
+        finally:
+            engine.dispose()
+
+    try:
+        command.upgrade(alembic_config, "head")
+        invoices, lines, operations, invoice_indexes, assessment_indexes = extract_schema()
+        assert {"policy_number", "paint_net"} <= invoices
+        assert {"line_item_type", "is_section_total"} <= lines
+        assert "raw_category" in operations
+        assert "ix_invoices_claim_policy" in invoice_indexes
+        assert "ix_engineer_assessment_claim_policy" in assessment_indexes
+
+        command.downgrade(alembic_config, "-1")
+        invoices, lines, operations, invoice_indexes, assessment_indexes = extract_schema()
+        assert not {"policy_number", "paint_net"} & invoices
+        assert not {"line_item_type", "is_section_total"} & lines
+        assert "raw_category" not in operations
+        assert "ix_invoices_claim_policy" not in invoice_indexes
+        assert "ix_engineer_assessment_claim_policy" not in assessment_indexes
+
+        command.upgrade(alembic_config, "head")
+        invoices, lines, operations, _, _ = extract_schema()
+        assert {"policy_number", "paint_net"} <= invoices
+        assert {"line_item_type", "is_section_total"} <= lines
+        assert "raw_category" in operations
+    finally:
+        get_settings.cache_clear()

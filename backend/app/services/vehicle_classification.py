@@ -11,6 +11,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.domain.normalisation import normalise_identifier
 from app.services.vehicle_category_lookup import lookup_vehicle_category
 
 OFFICIAL_VEHICLE_CLASSES = {
@@ -94,8 +95,9 @@ def apply_vehicle_classification(record: Any, classification: VehicleClassificat
 
 
 def normalise_registration(value: str | None) -> str | None:
-    normalised = "".join(character for character in (value or "").upper() if character.isalnum())
-    return normalised or None
+    """A registration is an identifier; there is one normaliser for all of them."""
+
+    return normalise_identifier(value)
 
 
 def select_vehicle_category_history(

@@ -184,13 +184,14 @@ def classify_page(text: str, *, image_only: bool) -> tuple[PageType, float, list
 def _group_key(page_type: PageType, text: str, page_number: int) -> str | None:
     if page_type not in {PageType.INVOICE, PageType.ESTIMATE, PageType.CREDIT_NOTE}:
         return None
+    # ponytail: `~` must survive inside an invoice number (e.g. "343653726836/1~3538");
+    # widen the character class rather than adding a second pattern.
     patterns = (
-        r"Invoice\s*(?:No\.?|Number)?\s*[:#]?\s*([A-Z0-9][A-Z0-9/-]{2,})",
-        r"Document No\.?\s*[:#]?\s*([A-Z0-9/-]{3,})",
+        r"Invoice\s*(?:No\.?|Number)?\s*[:#]?\s*([A-Z0-9][A-Z0-9/~-]{2,})",
+        r"Document No\.?\s*[:#]?\s*([A-Z0-9/~-]{3,})",
     )
     for pattern in patterns:
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-        if match:
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
             candidate = match.group(1).upper()
             if any(character.isdigit() for character in candidate):
                 return f"{page_type.value}:{candidate}"
@@ -227,11 +228,27 @@ def _label_rotated_service_sequences(pages: list[PageAnalysis]) -> None:
 _SCHEDULE_HEADING_PATTERN = re.compile(r"(?im)^\s*(?:parts|extras)\b")
 _PRICED_ROW_AMOUNT_PATTERN = re.compile(r"(?:£|gbp)?\s*\d[\d,]*\.\d{2}\s*$", re.IGNORECASE)
 _GOVERNED_OPERATION_ROW_PATTERN = re.compile(r"(?im)^\s*op\|")
+_ASSESSMENT_IDENTITY_PATTERN = re.compile(
+    r"(?im)^\s*(?:summary information|assessment report|assessment number|"
+    r"report type\s*:?\s*full report|engineer report|estimate details|estimate id)"
+)
 _NON_LINE_ROW_TOKENS = ("total", "deduction", "discount", "vat", "balance", "payment")
+#: A schedule row's trailing figure is not always money: a LABOUR schedule
+#: prints work units ("REPAIR REAR BUMPER   30.0"), so the continuation test
+#: accepts any trailing number, not just a two-decimal amount.
+_SCHEDULE_ROW_NUMBER_PATTERN = re.compile(
+    r"(?:£|gbp)?\s*\d[\d,]*(?:\.\d+)?\s*$", re.IGNORECASE
+)
+#: Wording that makes a page a document in its own right rather than the tail
+#: of the schedule on the page before it.
+_STANDALONE_DOCUMENT_PATTERN = re.compile(
+    r"(?i)\b(?:invoice|credit note|remittance|payment advice|statement of account|"
+    r"quotation|estimate\s*/\s*order|amount due|please pay|sort code)\b"
+)
 
 
-def _priced_row_count(text: str) -> int:
-    """Count rows that read as individually priced schedule lines, not totals."""
+def _schedule_row_count(text: str, pattern: re.Pattern[str]) -> int:
+    """Count rows that read as individual schedule lines, not totals."""
 
     count = 0
     for raw_line in text.splitlines():
@@ -241,9 +258,30 @@ def _priced_row_count(text: str) -> int:
             continue
         if not re.search(r"[A-Za-z]{3}", line):
             continue
-        if _PRICED_ROW_AMOUNT_PATTERN.search(line):
+        if pattern.search(line):
             count += 1
     return count
+
+
+def _priced_row_count(text: str) -> int:
+    """Count rows that read as individually priced schedule lines, not totals."""
+
+    return _schedule_row_count(text, _PRICED_ROW_AMOUNT_PATTERN)
+
+
+def _is_schedule_continuation(text: str) -> bool:
+    """Does this page read as the tail of the schedule on the page before it?
+
+    A repair schedule runs onto pages that carry no identity marker of their
+    own -- a bare continuation of the table and nothing else -- which the
+    classifier can only call OTHER. Such a page is recognised by its shape:
+    several code/description rows ending in a number, and none of the wording
+    that would make it a document in its own right.
+    """
+
+    if _STANDALONE_DOCUMENT_PATTERN.search(text):
+        return False
+    return _schedule_row_count(text, _SCHEDULE_ROW_NUMBER_PATTERN) >= 2
 
 
 def _reclassify_priced_assessment_pages(pages: list[PageAnalysis]) -> None:
@@ -251,35 +289,84 @@ def _reclassify_priced_assessment_pages(pages: list[PageAnalysis]) -> None:
 
     Audatex-style "Full Report" documents repeat the assessment header on every
     page, so genuinely priced pages (a PARTS schedule, an EXTRAS charge list)
-    classify as ENGINEER_ASSESSMENT and never reach invoice extraction. Flip
-    those pages — plus OTHER pages carrying multiple currency amounts — to
-    INVOICE so they enter the standard invoice extraction ladder with correct
-    page provenance. Pages holding governed ``OP|`` operation rows remain
-    assessment evidence for the deterministic assessment parser.
+    classify as ENGINEER_ASSESSMENT and never reach invoice extraction. For a
+    genuinely mixed bundle (assessment content alongside unrelated priced
+    pages that are not part of an authorised estimate) those pages are
+    flipped to INVOICE — plus OTHER pages carrying multiple currency
+    amounts — so they enter the standard invoice extraction ladder with
+    correct page provenance. Pages holding governed ``OP|`` operation rows
+    remain assessment evidence for the deterministic assessment parser.
+
+    An authorised Audatex estimate (identified by a "Summary Information" /
+    "Assessment Report" / "Assessment Number" / "Report Type: Full Report" /
+    "Engineer Report" / "Estimate Details" / "Estimate ID" heading on any
+    page) is a different case entirely: its PARTS/EXTRAS/LABOUR schedules
+    are assessment evidence, not invoice units, and must never be flipped —
+    see the client requirement recorded in
+    tests/acceptance/test_auda_style_documents.py. That check only ever
+    skips ENGINEER_ASSESSMENT pages, though: the OTHER-page rescue below
+    must keep running for the rest of the document, because a genuinely
+    mixed bundle can carry both an authorised assessment and unrelated
+    priced pages.
+
+    The reverse case is settled here too. An authorised assessment's schedule
+    runs onto pages with no identity marker of their own, which classify as
+    OTHER; left that way the page is fed to the assessment parser while the
+    document says it is something else, so its operations point at an OTHER
+    page and a configured vision extractor reads the same page a second time
+    as an invoice. An OTHER page directly following an assessment page in an
+    authorised assessment, that reads as a continuation of the schedule, is
+    therefore reclassified ENGINEER_ASSESSMENT -- page type, source page,
+    the invoice ladder and the vision-candidate list then all agree.
     """
 
     if not any(page.page_type == PageType.ENGINEER_ASSESSMENT for page in pages):
         return
+    is_authorised_assessment = any(
+        _ASSESSMENT_IDENTITY_PATTERN.search(page.text) for page in pages
+    )
+    previous_type: PageType | None = None
     for page in pages:
         if _GOVERNED_OPERATION_ROW_PATTERN.search(page.text):
+            previous_type = page.page_type
             continue
         if page.page_type == PageType.ENGINEER_ASSESSMENT:
+            if is_authorised_assessment:
+                previous_type = page.page_type
+                continue
             if (
                 not _SCHEDULE_HEADING_PATTERN.search(page.text)
                 or _priced_row_count(page.text) < 3
             ):
+                previous_type = page.page_type
                 continue
             signal = "priced schedule in assessment document"
         elif page.page_type == PageType.OTHER:
             if _priced_row_count(page.text) < 2:
+                # ponytail: the priced-row rescue is tried first, so a genuinely
+                # unrelated priced page (a garage receipt bound behind the
+                # report) keeps going to INVOICE. Only a page that rescue does
+                # not want is considered as a schedule continuation.
+                if (
+                    is_authorised_assessment
+                    and previous_type == PageType.ENGINEER_ASSESSMENT
+                    and _is_schedule_continuation(page.text)
+                ):
+                    page.page_type = PageType.ENGINEER_ASSESSMENT
+                    page.classification_signals.append("assessment continuation")
+                    page.classification_confidence = max(page.classification_confidence, 0.72)
+                    page.group_key = None
+                previous_type = page.page_type
                 continue
             signal = "priced rows in assessment document"
         else:
+            previous_type = page.page_type
             continue
         page.page_type = PageType.INVOICE
         page.classification_signals.append(signal)
         page.classification_confidence = max(page.classification_confidence, 0.72)
         page.group_key = _group_key(PageType.INVOICE, page.text, page.page_number)
+        previous_type = page.page_type
 
 
 def _merge_assessment_batches(

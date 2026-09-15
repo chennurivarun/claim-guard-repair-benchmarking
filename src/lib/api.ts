@@ -334,6 +334,102 @@ export interface EngineerAssessmentPayload {
   }>
 }
 
+export interface InvoiceExtractLine {
+  id: string
+  sequence_no: number
+  line_item_type: string | null
+  raw_category: string | null
+  description: string
+  quantity: string | number | null
+  unit_price: string | number | null
+  line_total: string | number | null
+  is_section_total: boolean
+  item_kind: string
+}
+
+export interface InvoiceExtractPayload {
+  invoice_id: string
+  invoice_number: string | null
+  vehicle_make: string | null
+  vehicle_model: string | null
+  vehicle_registration: string | null
+  claim_number: string | null
+  policy_number: string | null
+  field_sources: Record<
+    string,
+    { document_id: string; label: string; value: string | number }
+  >
+  lines: InvoiceExtractLine[]
+}
+
+export interface AssessmentExtractLine {
+  sequence_no: number
+  line_item_type: string | null
+  raw_category: string | null
+  description: string
+  work_units: string | number | null
+  hours: string | number | null
+  unit_price: string | number | null
+  line_total: string | number | null
+  price_derived: boolean | null
+}
+
+export interface AssessmentExtractPayload {
+  assessment_id: string
+  assessment_number: string | null
+  vehicle_make: string | null
+  vehicle_model: string | null
+  vehicle_registration: string | null
+  claim_number: string | null
+  policy_number: string | null
+  paired_invoice_number: string | null
+  pair_status: "paired" | "unpaired"
+  pair_confidence: number | null
+  pair_reasons: string[]
+  /** Optional: per-field pairing verdicts, if the pairing engine emits them. */
+  pair_key_verdicts?: string[]
+  lines: AssessmentExtractLine[]
+}
+
+export interface SectionBreakdownRow {
+  id: string
+  category: string
+  raw_category: string | null
+  description: string
+  work_units: string | number | null
+  hours: string | number | null
+  unit_price_net: string | number | null
+  total_net: string | number | null
+}
+
+export interface SectionBreakdownPayload {
+  invoice_id: string
+  invoice_number: string | null
+  invoice_line_item_id: string
+  line_item_type: string
+  raw_category: string | null
+  description: string
+  invoice_total: string | number | null
+  assessment_id: string | null
+  assessment_total: string | number | null
+  matches: boolean | null
+  difference: string | null
+  breakdown_source: string
+  rows: SectionBreakdownRow[]
+  /** Optional: false means the assessment has no rows for this section at all
+   * (distinct from an empty `rows` array meaning "not captured yet"). */
+  breakdown_available?: boolean
+  /** Optional: the assessment's own printed rows total, shown beside the
+   * section total when the client format prints one. */
+  rows_total?: string | number | null
+}
+
+export interface ClaimExtractsPayload {
+  invoice_extracts: InvoiceExtractPayload[]
+  assessment_extracts: AssessmentExtractPayload[]
+  section_breakdowns: SectionBreakdownPayload[]
+}
+
 export interface LineCorrectionInput {
   actor: string
   reason: string
@@ -497,6 +593,12 @@ export function fetchEngineerAssessments(
   return requestJson(
     `/api/v1/claims/${encodeURIComponent(caseReference)}/engineer-assessments`
   )
+}
+
+export function fetchClaimExtracts(
+  caseReference = DEFAULT_CASE_REFERENCE
+): Promise<ClaimExtractsPayload> {
+  return requestJson(`/api/v1/claims/${encodeURIComponent(caseReference)}/extracts`)
 }
 
 export function fetchDataReadiness(): Promise<DataReadinessPayload> {

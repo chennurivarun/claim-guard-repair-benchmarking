@@ -1,0 +1,120 @@
+[
+  {
+    "filename": "DL_Auda_format_1_assessment.docx",
+    "document_kind": "engineer_assessment",
+    "pair_id": 1,
+    "claim_reference": "245338996/1",
+    "policy_number": "PH",
+    "registration": "AB12XYZ",
+    "vehicle_make": "HYUNDAI",
+    "vehicle_model": "140 SE Nav",
+    "assessment_number": "D7576879",
+    "assessment_ref": null,
+    "invoice_number": null,
+    "section_totals": {
+      "labour": "2509.20",
+      "paint_materials": "1029.57",
+      "parts": "1237.50",
+      "extras": "136.32"
+    },
+    "gross_total": "5895.11"
+  },
+  {
+    "filename": "DL_Repair_Invoice_format_1.docx",
+    "document_kind": "repair_invoice",
+    "pair_id": 1,
+    "claim_reference": "245338996/1",
+    "policy_number": null,
+    "registration": "AB12XYZ",
+    "vehicle_make": null,
+    "vehicle_model": null,
+    "assessment_number": null,
+    "assessment_ref": null,
+    "invoice_number": "343653726836/1~3538",
+    "section_totals": {
+      "parts": "1237.50",
+      "extras": "136.32",
+      "labour": "2509.20",
+      "paint_materials": "1029.57"
+    },
+    "gross_total": "5895.11"
+  },
+  {
+    "filename": "DL_Auda_format_2_assessment.docx",
+    "document_kind": "engineer_assessment",
+    "pair_id": 2,
+    "claim_reference": "123456/1",
+    "policy_number": "103466899",
+    "registration": "A30DRY",
+    "vehicle_make": "SKODA",
+    "vehicle_model": "KAROQ SE TSI 115]",
+    "assessment_number": "D7576879",
+    "assessment_ref": null,
+    "invoice_number": null,
+    "section_totals": {
+      "labour": "1112.00"
+    },
+    "gross_total": null
+  },
+  {
+    "filename": "DL_Invoice_2_request_for_payment.docx",
+    "document_kind": "repair_invoice",
+    "pair_id": 2,
+    "claim_reference": "123456/1",
+    "policy_number": "103466899",
+    "registration": "A30DRY",
+    "vehicle_make": "SKODA",
+    "vehicle_model": "KAROQ SE TSI 115]",
+    "assessment_number": null,
+    "assessment_ref": "BOY1537",
+    "invoice_number": "22564547648/1~AJ123456",
+    "section_totals": {
+      "parts": "448.91",
+      "paint_materials": "1034.02",
+      "labour": "2008.00",
+      "additional": "627.00"
+    },
+    "gross_total": "4941.52"
+  },
+  {
+    "filename": "DL_Auda_format_7_assessment.docx",
+    "document_kind": "engineer_assessment",
+    "pair_id": 7,
+    "claim_reference": "426953180/3",
+    "policy_number": "PL-739284",
+    "registration": "JK21MNO",
+    "vehicle_make": "HYUNDAI",
+    "vehicle_model": "140 SE Nav",
+    "assessment_number": "T4592861",
+    "assessment_ref": null,
+    "invoice_number": null,
+    "section_totals": {
+      "labour": "1910.00",
+      "paint_materials": "785.00",
+      "parts": "939.00",
+      "extras": "104.00"
+    },
+    "gross_total": "4485.60"
+  },
+  {
+    "filename": "DL_Repair_Invoice_format_7.docx",
+    "document_kind": "repair_invoice",
+    "pair_id": 7,
+    "claim_reference": "426953180/3",
+    "policy_number": null,
+    "registration": "JK21MNO",
+    "vehicle_make": null,
+    "vehicle_model": null,
+    "assessment_number": null,
+    "validation_note_assessment_number": "T4592861",
+    "assessment_ref": null,
+    "invoice_number": "343653726836/1~3538",
+    "section_totals": {
+      "parts": "939.00",
+      "extras": "104.00",
+      "labour": "1910.00",
+      "paint_materials": "785.00"
+    },
+    "gross_total": "4485.60"
+  }
+]

@@ -63,6 +63,13 @@ class ExtractedLine(BaseModel):
     gross_amount: Decimal | None = None
     vat_applicable: bool = True
     derived_net: bool = False
+    # The printed section the row sat in: an open vocabulary code
+    # (app.domain.line_item_type) plus the heading exactly as printed.
+    line_item_type: str | None = None
+    raw_category: str | None = None
+    # A rolled-up section total printed instead of the section's rows. It is
+    # evidence of the section's value, never a priced item in its own right.
+    is_section_total: bool = False
     source: FieldSource
 
     @property
@@ -71,6 +78,7 @@ class ExtractedLine(BaseModel):
 
         return (
             bool(self.raw_description.strip())
+            and not self.is_section_total
             and (self.item_kind.casefold() == "part" or bool(self.part_number))
             and self.line_total_net is not None
             and self.line_total_net > 0
@@ -82,6 +90,8 @@ class InvoiceTotals(BaseModel):
 
     labour_net: Decimal | None = None
     parts_net: Decimal | None = None
+    paint_net: Decimal | None = None
+    extras_net: Decimal | None = None
     subtotal_net: Decimal | None = None
     vat_rate: Decimal | None = None
     vat_amount: Decimal | None = None
@@ -110,6 +120,8 @@ class InvoiceTotals(BaseModel):
             for value in (
                 self.labour_net,
                 self.parts_net,
+                self.paint_net,
+                self.extras_net,
                 self.subtotal_net,
                 self.total_gross,
             )
@@ -126,6 +138,12 @@ class InvoiceHeader(BaseModel):
     supplier_name: str | None = None
     supplier_vat_number: str | None = None
     customer_name: str | None = None
+    claim_reference: str | None = None
+    policy_number: str | None = None
+    # Captured for display only. Format 2's invoice prints "BOY1537", which
+    # matches no assessment on the paired report, so this must never be used
+    # as a pairing key.
+    assessment_reference: str | None = None
     registration: str | None = None
     vin: str | None = None
     vehicle_make: str | None = None
@@ -247,6 +265,9 @@ class ExtractedAssessmentOperation(BaseModel):
     category: str
     code: str | None = None
     part_number: str | None = None
+    #: The literal printed in the part-number column, including the "Renew"
+    #: placeholder that `part_number` drops.
+    part_number_raw: str | None = None
     description: str
     work_units: Decimal | None = None
     hours: Decimal | None = None
@@ -254,6 +275,13 @@ class ExtractedAssessmentOperation(BaseModel):
     unit_price: Decimal | None = None
     total: Decimal | None = None
     page_number: int
+    #: Canonical code for the printed section the row sat in, and the heading
+    #: verbatim -- see `app.domain.line_item_type`.
+    line_item_type: str = "unknown"
+    raw_category: str | None = None
+    #: True when the price was computed from work units and a printed rate
+    #: rather than read off the row.
+    price_derived: bool = False
 
 
 class ExtractedEngineerAssessment(BaseModel):

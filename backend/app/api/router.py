@@ -106,7 +106,11 @@ from app.services.case_result import (
 )
 from app.services.comparison_workflow import run_case_comparison
 from app.services.document_processing import process_document, serialise_document, store_pdf
-from app.services.engineer_assessment import engineer_assessment_payload
+from app.services.engineer_assessment import (
+    engineer_assessment_payload,
+    run_case_gap_fill,
+    section_breakdown_for_invoice,
+)
 from app.services.extraction_review import (
     recalculate_invoice_findings,
     review_extraction_line,
@@ -764,6 +768,145 @@ def get_engineer_assessments(case_reference: str, db: DatabaseSession) -> list[d
         .order_by(EngineerAssessment.created_at)
     ).all()
     return [engineer_assessment_payload(assessment) for assessment in assessments]
+
+
+def _invoice_extract_line_payload(line: InvoiceLineItem) -> dict[str, Any]:
+    return {
+        "id": line.id,
+        "sequence_no": line.sequence_no,
+        "line_item_type": line.line_item_type,
+        "raw_category": line.raw_category,
+        "description": line.raw_description,
+        "quantity": line.quantity,
+        "unit_price": line.unit_price_net,
+        "line_total": line.line_total_net,
+        "is_section_total": line.is_section_total,
+        "item_kind": line.item_kind.value,
+    }
+
+
+def _invoice_extract_payload(invoice: Invoice) -> dict[str, Any]:
+    field_sources = (
+        (invoice.document.metadata_json or {}).get("field_sources", {})
+        if invoice.document
+        else {}
+    )
+    return {
+        "invoice_id": invoice.id,
+        "invoice_number": invoice.invoice_number,
+        "vehicle_make": invoice.vehicle.make if invoice.vehicle else None,
+        "vehicle_model": invoice.vehicle.model if invoice.vehicle else None,
+        "vehicle_registration": invoice.vehicle.registration if invoice.vehicle else None,
+        "claim_number": invoice.claim_reference,
+        "policy_number": invoice.policy_number,
+        "field_sources": field_sources,
+        "lines": [
+            _invoice_extract_line_payload(line)
+            for line in sorted(invoice.line_items, key=lambda item: item.sequence_no)
+        ],
+    }
+
+
+def _assessment_price_derived_map(assessment: EngineerAssessment) -> dict[int, bool]:
+    """``price_derived`` has no column; it lives on the raw extraction payload,
+    keyed by the operation's sequence number, and is only present when the
+    native parser (not an LLM tier) produced the operations.
+    """
+
+    payload = assessment.extraction_payload_json or {}
+    return {
+        operation["sequence_no"]: operation.get("price_derived")
+        for operation in payload.get("operations", [])
+        if isinstance(operation, dict) and operation.get("sequence_no") is not None
+    }
+
+
+def _assessment_extract_line_payload(
+    operation: AssessmentOperation, price_derived_map: dict[int, bool]
+) -> dict[str, Any]:
+    return {
+        "sequence_no": operation.sequence_no,
+        "line_item_type": operation.category,
+        "raw_category": operation.raw_category,
+        "description": operation.raw_description,
+        "work_units": operation.work_units,
+        "hours": operation.hours,
+        "unit_price": operation.unit_price_net,
+        "line_total": operation.total_net,
+        "price_derived": price_derived_map.get(operation.sequence_no),
+    }
+
+
+def _assessment_extract_payload(assessment: EngineerAssessment) -> dict[str, Any]:
+    price_derived_map = _assessment_price_derived_map(assessment)
+    return {
+        "assessment_id": assessment.id,
+        "assessment_number": assessment.assessment_number,
+        "vehicle_make": assessment.vehicle_make,
+        "vehicle_model": assessment.vehicle_model,
+        "vehicle_registration": assessment.registration,
+        "claim_number": assessment.claim_reference,
+        "policy_number": assessment.policy_number,
+        "paired_invoice_number": (
+            assessment.paired_invoice.invoice_number if assessment.paired_invoice else None
+        ),
+        "pair_status": assessment.pair_status,
+        "pair_confidence": assessment.pair_confidence,
+        "pair_reasons": assessment.pair_reasons_json or [],
+        "lines": [
+            _assessment_extract_line_payload(operation, price_derived_map)
+            for operation in sorted(assessment.operations, key=lambda item: item.sequence_no)
+        ],
+    }
+
+
+@router.get("/claims/{case_reference}/extracts", tags=["documents"])
+def get_claim_extracts(case_reference: str, db: DatabaseSession) -> dict[str, Any]:
+    """The two standardised, read-only tables the client asked for: one row
+    per invoice/assessment identity, one line row per invoice/assessment line,
+    and the section breakdowns that link a rolled-up invoice total to the
+    assessment rows behind it. The two arrays are never merged.
+    """
+
+    case = db.scalar(select(Case).where(Case.case_reference == case_reference))
+    if case is None:
+        raise _not_found("Claim not found")
+    invoices = (
+        db.scalars(
+            select(Invoice)
+            .where(Invoice.case_id == case.id)
+            .options(
+                selectinload(Invoice.vehicle),
+                selectinload(Invoice.line_items),
+                selectinload(Invoice.document),
+            )
+            .order_by(Invoice.invoice_date, Invoice.id)
+        )
+        .unique()
+        .all()
+    )
+    assessments = db.scalars(
+        select(EngineerAssessment)
+        .where(EngineerAssessment.case_id == case.id)
+        .options(
+            selectinload(EngineerAssessment.operations),
+            selectinload(EngineerAssessment.paired_invoice),
+        )
+        .order_by(EngineerAssessment.created_at, EngineerAssessment.id)
+    ).all()
+    section_breakdowns: list[dict[str, Any]] = []
+    for invoice in invoices:
+        for breakdown in section_breakdown_for_invoice(db, invoice):
+            section_breakdowns.append(
+                {"invoice_id": invoice.id, "invoice_number": invoice.invoice_number, **breakdown}
+            )
+    return {
+        "invoice_extracts": [_invoice_extract_payload(invoice) for invoice in invoices],
+        "assessment_extracts": [
+            _assessment_extract_payload(assessment) for assessment in assessments
+        ],
+        "section_breakdowns": section_breakdowns,
+    }
 
 
 @router.patch("/pages/{page_id}", tags=["documents"])
@@ -1486,6 +1629,10 @@ def compare_claim(case_reference: str, db: DatabaseSession) -> dict[str, Any]:
     if case is None:
         raise _not_found("Claim not found")
     try:
+        # Comparison is the "after all documents are loaded" moment, so the
+        # assessment gap-fill sweep runs here before anything reads the
+        # invoice's vehicle or claim identity.
+        run_case_gap_fill(db, case.id)
         ontology_count = db.scalar(select(func.count(OntologyItem.id))) or 0
         history_count = db.scalar(select(func.count(HistoricalObservation.id))) or 0
         if ontology_count == 0:

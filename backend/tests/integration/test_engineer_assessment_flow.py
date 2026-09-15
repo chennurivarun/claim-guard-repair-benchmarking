@@ -61,7 +61,13 @@ def test_five_assessments_pair_safely_without_entering_p90_history(engineer_engi
         assessments = session.scalars(select(EngineerAssessment)).all()
         assert len(assessments) == 5
         assert all(assessment.pair_status == "paired" for assessment in assessments)
-        assert all((assessment.pair_confidence or 0) >= 0.70 for assessment in assessments)
+        # pair_confidence is now matched pairing keys over three, not the old
+        # weighted score whose registration term happened to be worth 0.70.
+        # These fixtures print a registration on both documents and a claim
+        # reference on neither invoice, so exactly one key is comparable.
+        assert all(
+            assessment.pair_confidence == pytest.approx(1 / 3) for assessment in assessments
+        )
         assert session.scalar(select(func.count()).select_from(AssessmentOperation)) == 25
         assert session.scalar(select(func.count()).select_from(AssessmentInvoiceVariance)) == 25
         assert session.scalar(select(func.count()).select_from(InvoiceLineItem)) == 25

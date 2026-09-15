@@ -550,6 +550,7 @@ class EngineerAssessment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint("document_id", name="uq_engineer_assessment_document"),
         Index("ix_engineer_assessment_case_claim", "case_id", "claim_reference"),
+        Index("ix_engineer_assessment_claim_policy", "claim_reference", "policy_number"),
         Index("ix_engineer_assessment_registration", "registration"),
     )
 
@@ -619,6 +620,7 @@ class AssessmentOperation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
     category: Mapped[str] = mapped_column(String(40), nullable=False)
+    raw_category: Mapped[str | None] = mapped_column(String(160), nullable=True)
     operation_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
     part_number: Mapped[str | None] = mapped_column(String(120), nullable=True)
     raw_description: Mapped[str] = mapped_column(Text, nullable=False)
@@ -779,6 +781,7 @@ class Invoice(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             name="extraction_confidence_range",
         ),
         Index("ix_invoices_case_date", "case_id", "invoice_date"),
+        Index("ix_invoices_claim_policy", "claim_reference", "policy_number"),
         Index("ix_invoices_number", "invoice_number"),
         Index("ix_invoices_document_role", "document_role"),
         Index("ix_invoices_review_status", "review_status"),
@@ -804,12 +807,14 @@ class Invoice(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     customer_name: Mapped[str | None] = mapped_column(String(300), nullable=True)
     customer_reference: Mapped[str | None] = mapped_column(String(160), nullable=True)
     claim_reference: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    policy_number: Mapped[str | None] = mapped_column(String(160), nullable=True)
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="GBP")
     vehicle_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("vehicles.id", ondelete="SET NULL"), nullable=True
     )
     parts_net: Mapped[str | None] = mapped_column(MoneyString, nullable=True)
     labour_net: Mapped[str | None] = mapped_column(MoneyString, nullable=True)
+    paint_net: Mapped[str | None] = mapped_column(MoneyString, nullable=True)
     other_net: Mapped[str | None] = mapped_column(MoneyString, nullable=True)
     subtotal_net: Mapped[str | None] = mapped_column(MoneyString, nullable=True)
     vat_rate: Mapped[str | None] = mapped_column(RateString, nullable=True)
@@ -874,6 +879,10 @@ class InvoiceLineItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     raw_description: Mapped[str] = mapped_column(Text, nullable=False)
     normalised_description: Mapped[str | None] = mapped_column(Text, nullable=True)
     raw_category: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    # The section the row sat in, as an open vocabulary (app.domain.line_item_type).
+    # Deliberately not a database enum: new section headings must not need a migration.
+    line_item_type: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    is_section_total: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     item_kind: Mapped[LineItemKind] = mapped_column(
         enum_type(LineItemKind, "invoice_line_item_kind"),
         nullable=False,
