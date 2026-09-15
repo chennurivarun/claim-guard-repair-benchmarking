@@ -558,8 +558,9 @@ def _governed_operation(line: str, sequence: int, page_number: int) -> ParsedOpe
         unit_price=parse_money(parts[7]),
         total=parse_money(parts[8]),
         page_number=page_number,
-        # ponytail: the governed format's singular "extra" has no synonym, so it
-        # slugs to its own code rather than joining "extras".
+        # The governed format's singular "Extra" is a listed synonym of
+        # "extras", so it lands on the same code as the invoice's "Additional
+        # charges" and the two sides can be matched.
         line_item_type=ensure_line_item_type(parts[1]),
         raw_category=parts[1],
     )

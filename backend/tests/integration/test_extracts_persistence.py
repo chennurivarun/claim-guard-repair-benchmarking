@@ -24,18 +24,36 @@ from sqlalchemy.orm import Session, sessionmaker
 
 import app.models  # noqa: F401  -- register every mapper before create_all
 from app.database import get_db
-from app.enums import CheckStatus, Severity
+from app.enums import (
+    CheckStatus,
+    LineItemKind,
+    MappingDecision,
+    MappingStatus,
+    PageType,
+    RunStatus,
+    Severity,
+)
 from app.init_db import initialize_database
 from app.main import app
 from app.models import (
     AssessmentOperation,
+    Case,
     ClaimConsistencyFinding,
     Document,
+    DocumentPage,
     EngineerAssessment,
+    HistoricalObservation,
     Invoice,
     InvoiceLineItem,
+    MappingRun,
     MathFinding,
+    OntologyItem,
+    OntologyMapping,
+    OntologyVersion,
+    PriceComparison,
 )
+from app.services.benchmarking import sync_finalised_case_to_benchmarks
+from app.services.comparison_workflow import run_case_comparison
 
 FIXTURES = Path(__file__).resolve().parents[3] / "sample-data" / "client-formats"
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -194,7 +212,9 @@ def test_format_1_pair_persists_every_extract_column(extracts_client) -> None:
         # Printed and row figures are kept side by side and never reconciled.
         assert payload["printed_work_units"]["labour"]["total_work_units"] == "218"
         assert payload["row_work_units"]["labour"] == "101"
-        assert payload["operations"][0]["price_derived"] is True
+        # Namespaced: the LLM tiers write their own "operations" key with an
+        # entirely different shape, so the deterministic detail has its own.
+        assert payload["deterministic_operations"][0]["price_derived"] is True
 
         disagreements = session.scalars(
             select(ClaimConsistencyFinding).where(
@@ -265,6 +285,189 @@ def test_format_2_rolled_up_invoice_and_its_labour_schedule(extracts_client) -> 
         assert sum(
             (_money(operation.total_net) for operation in operations), Decimal("0")
         ) == Decimal("1112.00")
+
+
+def test_format_2_schedule_continuation_page_is_stored_as_assessment(
+    extracts_client,
+) -> None:
+    """The report's labour schedule runs onto page 2, which carries no
+    identity marker and classifies as OTHER. It is reclassified before
+    anything reads it, so the page type the document stores, the page the
+    operations point at, and the pages the parser read are one and the same."""
+
+    _process_pair(extracts_client, 2)
+
+    with _session(extracts_client) as session:
+        assessment = session.scalars(select(EngineerAssessment)).one()
+        pages = list(
+            session.scalars(
+                select(DocumentPage)
+                .where(DocumentPage.document_id == assessment.document_id)
+                .order_by(DocumentPage.page_number)
+            ).all()
+        )
+        continuation = next(page for page in pages if page.page_number == 2)
+        assert continuation.page_type == PageType.ENGINEER_ASSESSMENT
+
+        operations = _operations(session, assessment)
+        # Every operation is sourced from a page the document also calls an
+        # assessment page -- 15 of the 17 from the continuation.
+        assert all(
+            session.get(DocumentPage, operation.source_page_id).page_type
+            == PageType.ENGINEER_ASSESSMENT
+            for operation in operations
+        )
+        assert (
+            sum(
+                1
+                for operation in operations
+                if operation.source_page_id == continuation.id
+            )
+            == 15
+        )
+
+
+def test_format_2_section_totals_are_never_mapped_priced_or_compared(
+    extracts_client,
+) -> None:
+    """Pair 2's invoice is rolled up into four section totals and nothing
+    else. A section total is the value of a whole section, never a priced
+    repair item, so comparison must produce no mapping and no price
+    comparison for one -- here that leaves nothing comparable at all."""
+
+    _process_pair(extracts_client, 2)
+
+    with _session(extracts_client) as session:
+        case = session.scalars(
+            select(Case).where(Case.case_reference == "EXTRACTS-2")
+        ).one()
+        section_total_ids = {
+            line.id
+            for line in session.scalars(
+                select(InvoiceLineItem).where(InvoiceLineItem.is_section_total.is_(True))
+            ).all()
+        }
+        assert len(section_total_ids) == 4
+
+        with pytest.raises(ValueError, match="Extraction is incomplete"):
+            run_case_comparison(session, case)
+        session.rollback()
+
+        mapped = set(session.scalars(select(OntologyMapping.invoice_line_item_id)).all())
+        compared = set(session.scalars(select(PriceComparison.invoice_line_item_id)).all())
+        assert section_total_ids & mapped == set()
+        assert section_total_ids & compared == set()
+
+
+def test_no_historical_observation_is_ever_written_from_a_section_total(
+    extracts_client,
+) -> None:
+    """Governance: a rolled-up section total that somehow reached a mapping
+    must still never become a historical observation. One in the P90 history
+    would price every future claim for that item against a whole section."""
+
+    _process_pair(extracts_client, 1)
+
+    with _session(extracts_client) as session:
+        case = session.scalars(
+            select(Case).where(Case.case_reference == "EXTRACTS-1")
+        ).one()
+        invoice = session.scalars(select(Invoice)).one()
+        section_totals = [
+            line for line in _lines(session, invoice) if line.is_section_total
+        ]
+        assert section_totals
+
+        version = session.scalars(
+            select(OntologyVersion).where(OntologyVersion.sequence_number == 0)
+        ).one()
+        ontology_item = OntologyItem(
+            canonical_code="TEST-SECTION-TOTAL",
+            canonical_name="Any mapped item",
+            item_type=LineItemKind.PART,
+            category="body",
+            unit="each",
+            created_by="pytest.handler",
+            created_in_version_id=version.id,
+        )
+        session.add(ontology_item)
+        mapping_run = MappingRun(
+            processing_run_id=case.current_processing_run_id,
+            ontology_version_id=version.id,
+            prompt_version="test",
+            status=RunStatus.SUCCEEDED,
+        )
+        session.add(mapping_run)
+        session.flush()
+        for line in section_totals:
+            session.add(
+                OntologyMapping(
+                    mapping_run_id=mapping_run.id,
+                    invoice_line_item_id=line.id,
+                    selected_ontology_item_id=ontology_item.id,
+                    decision=MappingDecision.MANUAL,
+                    final_status=MappingStatus.APPROVED,
+                )
+            )
+        session.commit()
+
+        created = sync_finalised_case_to_benchmarks(session, case)
+        session.flush()
+
+        observed_line_ids = set(
+            session.scalars(select(HistoricalObservation.source_line_item_id)).all()
+        )
+        assert created == 0
+        assert observed_line_ids & {line.id for line in section_totals} == set()
+
+
+def test_forced_reprocess_does_not_duplicate_printed_total_findings(
+    extracts_client,
+) -> None:
+    """A forced reprocess deletes the engineer_assessments row and writes a
+    new one. Nothing has a foreign key onto it from the findings table, so
+    without an explicit sweep the disagreements accumulate on every run and
+    the old ones point at an id that no longer resolves."""
+
+    _process_pair(extracts_client, 1)
+
+    def _findings() -> list[ClaimConsistencyFinding]:
+        with _session(extracts_client) as session:
+            return list(
+                session.scalars(
+                    select(ClaimConsistencyFinding).where(
+                        ClaimConsistencyFinding.finding_code
+                        == "ASSESSMENT_PRINTED_TOTAL_DISAGREEMENT"
+                    )
+                ).all()
+            )
+
+    first = _findings()
+    assert first
+
+    with _session(extracts_client) as session:
+        assessment = session.scalars(select(EngineerAssessment)).one()
+        document_id = assessment.document_id
+
+    for _ in range(2):
+        with _session(extracts_client) as session:
+            document = session.get(Document, document_id)
+            metadata = dict(document.metadata_json or {})
+            metadata["reprocess_required"] = True
+            document.metadata_json = metadata
+            session.commit()
+        processed = extracts_client.post(
+            f"/api/v1/documents/{document_id}/process", params={"force": True}
+        )
+        assert processed.status_code == 200, processed.text
+
+    repeated = _findings()
+    assert len(repeated) == len(first)
+
+    with _session(extracts_client) as session:
+        live = session.scalars(select(EngineerAssessment.id)).all()
+    # No finding is left pointing at an assessment row that has been deleted.
+    assert {finding.source_entity_id for finding in repeated} <= set(live)
 
 
 def test_format_7_invoice_without_a_vehicle_is_not_manual_review(extracts_client) -> None:
