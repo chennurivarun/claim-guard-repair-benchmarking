@@ -195,6 +195,79 @@ def test_format_2_invoice_has_four_section_totals_and_labour_breakdown_mismatch(
     assert len(labour_breakdown["rows"]) == 17
 
 
+def _process_pair_into_case(client: TestClient, reference: str, pair_id: int) -> None:
+    """Upload and process one client pair's documents into an existing case."""
+
+    for filename in PAIRS[pair_id]:
+        uploaded = client.post(
+            f"/api/v1/claims/{reference}/documents",
+            files={"file": (filename, (FIXTURES / filename).read_bytes(), DOCX_MIME)},
+            data={"role": "current"},
+        )
+        assert uploaded.status_code == 200, uploaded.text
+        processed = client.post(f"/api/v1/documents/{uploaded.json()['id']}/process")
+        assert processed.status_code == 200, processed.text
+
+
+def test_two_invoices_sharing_an_invoice_number_keep_separate_ids_and_breakdowns(
+    extracts_client,
+):
+    """Formats 1 and 7 both print invoice number "343653726836/1~3538" -- a
+    non-unique identity. Loading both into one case must not let one
+    invoice's section breakdown (or its lines) bleed into the other's; each
+    row must carry the invoice's own database id.
+    """
+
+    reference = "EXTRACTS-API-SHARED"
+    created = extracts_client.post(
+        "/api/v1/claims",
+        json={
+            "case_reference": reference,
+            "claim_number": "2026/EXTRACTS-API/SHARED",
+            "created_by": "pytest.handler",
+        },
+    )
+    assert created.status_code == 201, created.text
+    _process_pair_into_case(extracts_client, reference, 1)
+    _process_pair_into_case(extracts_client, reference, 7)
+
+    response = extracts_client.get(f"/api/v1/claims/{reference}/extracts")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+
+    invoice_extracts = payload["invoice_extracts"]
+    assert len(invoice_extracts) == 2
+    invoice_numbers = {extract["invoice_number"] for extract in invoice_extracts}
+    assert invoice_numbers == {"343653726836/1~3538"}, (
+        "fixture regression: formats 1 and 7 are expected to share one invoice_number"
+    )
+
+    invoice_ids = [extract["invoice_id"] for extract in invoice_extracts]
+    assert all(invoice_ids), "every invoice extract must carry its own invoice_id"
+    assert len(set(invoice_ids)) == 2, "shared invoice_number must not collapse distinct invoices"
+
+    for invoice_extract in invoice_extracts:
+        assert invoice_extract["lines"], "expected line items on every invoice extract"
+        for line in invoice_extract["lines"]:
+            assert line["id"], f"invoice line missing id: {line}"
+
+    labour_breakdowns_by_invoice_id = {
+        breakdown["invoice_id"]: breakdown
+        for breakdown in payload["section_breakdowns"]
+        if breakdown["line_item_type"] == "labour"
+    }
+    assert set(labour_breakdowns_by_invoice_id) == set(invoice_ids), (
+        "each invoice must keep its own labour breakdown, keyed by invoice_id"
+    )
+    totals_by_invoice_id = {
+        invoice_id: Decimal(breakdown["invoice_total"])
+        for invoice_id, breakdown in labour_breakdowns_by_invoice_id.items()
+    }
+    assert sorted(totals_by_invoice_id.values()) == [Decimal("1910.00"), Decimal("2509.20")], (
+        "each invoice's labour breakdown must keep its own total, not the other invoice's"
+    )
+
+
 def test_unknown_case_returns_404(extracts_client):
     response = extracts_client.get("/api/v1/claims/DOES-NOT-EXIST/extracts")
     assert response.status_code == 404

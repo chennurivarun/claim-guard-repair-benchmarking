@@ -77,21 +77,38 @@ function formatMaybeMoney(value: string | number | null | undefined) {
   return numeric == null ? "—" : formatMoney(numeric)
 }
 
+/** Quantities, work units and hours are printed with up to 4 decimal places
+ * (e.g. "1.0000", "14.0000") but that precision is noise to a reviewer.
+ * Trim trailing zeros so 1.0000 reads as 1, 14.0000 as 14, and 1.4000 as
+ * 1.4, while still showing genuine fractional values. Money keeps its own
+ * formatter (`formatMaybeMoney`) since it must never drop trailing zeros. */
+function formatQuantity(value: string | number | null | undefined) {
+  const numeric = toNumber(value)
+  if (numeric == null) return "—"
+  return new Intl.NumberFormat("en-GB", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 4,
+  }).format(numeric)
+}
+
 function breakdownSummaryLine(breakdown: SectionBreakdownPayload) {
   const label = lineItemTypeLabel(breakdown.line_item_type)
   const billed = formatMaybeMoney(breakdown.invoice_total)
   const assessedNumeric = toNumber(breakdown.assessment_total)
+  const rowsTotalNumeric = toNumber(breakdown.rows_total)
+  const rowsTotalSuffix =
+    rowsTotalNumeric == null ? "" : ` (rows total ${formatMoney(rowsTotalNumeric)})`
   if (assessedNumeric == null) {
-    return `Total ${label} ${billed} billed · not captured on the assessment`
+    return `Total ${label} ${billed} billed · not captured on the assessment${rowsTotalSuffix}`
   }
   const assessed = formatMoney(assessedNumeric)
   const difference = toNumber(breakdown.difference)
   if (difference == null || difference === 0) {
-    return `Total ${label} ${billed} billed · ${assessed} assessed · matches`
+    return `Total ${label} ${billed} billed · ${assessed} assessed${rowsTotalSuffix} · matches`
   }
   const direction = difference > 0 ? "over" : "under"
   const magnitude = formatMoney(Math.abs(difference))
-  return `Total ${label} ${billed} billed · ${assessed} assessed · ${magnitude} ${direction}`
+  return `Total ${label} ${billed} billed · ${assessed} assessed${rowsTotalSuffix} · ${magnitude} ${direction}`
 }
 
 function FieldSourceBadge({
@@ -105,6 +122,7 @@ function FieldSourceBadge({
       <TooltipTrigger asChild>
         <Badge
           variant="outline"
+          tabIndex={0}
           className="border-sky-300 px-1.5 py-0 text-[10px] font-normal text-sky-700 dark:border-sky-900 dark:text-sky-300"
         >
           from assessment
@@ -138,6 +156,7 @@ function SectionTotalBadge() {
       <TooltipTrigger asChild>
         <Badge
           variant="outline"
+          tabIndex={0}
           className="border-amber-300 text-amber-700 dark:border-amber-900 dark:text-amber-300"
         >
           Rolled-up total
@@ -150,11 +169,12 @@ function SectionTotalBadge() {
   )
 }
 
-function SectionBreakdownDetail({
+export function SectionBreakdownDetail({
   breakdown,
 }: {
   breakdown: SectionBreakdownPayload
 }) {
+  const noBreakdownRows = breakdown.breakdown_available === false
   return (
     <div className="my-2 rounded-md border bg-background p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -178,7 +198,11 @@ function SectionBreakdownDetail({
       <p className="mt-1 text-sm text-muted-foreground">
         {breakdownSummaryLine(breakdown)}
       </p>
-      {breakdown.rows.length > 0 ? (
+      {noBreakdownRows ? (
+        <p className="mt-2 text-sm text-muted-foreground">
+          No breakdown rows on the assessment
+        </p>
+      ) : breakdown.rows.length > 0 ? (
         <div className="mt-2 overflow-x-auto">
           <Table>
             <TableHeader>
@@ -195,10 +219,10 @@ function SectionBreakdownDetail({
                 <TableRow key={row.id}>
                   <TableCell>{row.description}</TableCell>
                   <TableCell className="text-right tabular-nums">
-                    {row.work_units ?? "—"}
+                    {formatQuantity(row.work_units)}
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
-                    {row.hours ?? "—"}
+                    {formatQuantity(row.hours)}
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
                     {formatMaybeMoney(row.unit_price_net)}
@@ -216,7 +240,7 @@ function SectionBreakdownDetail({
   )
 }
 
-function InvoiceLinesTable({
+export function InvoiceLinesTable({
   lines,
   breakdownsByType,
 }: {
@@ -241,7 +265,7 @@ function InvoiceLinesTable({
             ? breakdownsByType.get(line.line_item_type ?? "")
             : undefined
           return (
-            <Fragment key={line.sequence_no}>
+            <Fragment key={line.id}>
               <TableRow>
                 <TableCell className="text-muted-foreground">
                   {line.sequence_no}
@@ -254,7 +278,7 @@ function InvoiceLinesTable({
                 </TableCell>
                 <TableCell>{line.description}</TableCell>
                 <TableCell className="text-right tabular-nums">
-                  {line.quantity ?? "—"}
+                  {formatQuantity(line.quantity)}
                 </TableCell>
                 <TableCell className="text-right tabular-nums">
                   {formatMaybeMoney(line.unit_price)}
@@ -278,7 +302,7 @@ function InvoiceLinesTable({
   )
 }
 
-function AssessmentLinesTable({ lines }: { lines: AssessmentExtractLine[] }) {
+export function AssessmentLinesTable({ lines }: { lines: AssessmentExtractLine[] }) {
   return (
     <Table>
       <TableHeader>
@@ -307,6 +331,7 @@ function AssessmentLinesTable({ lines }: { lines: AssessmentExtractLine[] }) {
                     <TooltipTrigger asChild>
                       <Badge
                         variant="outline"
+                        tabIndex={0}
                         className="px-1.5 py-0 text-[10px] font-normal"
                       >
                         rate-derived
@@ -321,10 +346,10 @@ function AssessmentLinesTable({ lines }: { lines: AssessmentExtractLine[] }) {
               </span>
             </TableCell>
             <TableCell className="text-right tabular-nums">
-              {line.work_units ?? "—"}
+              {formatQuantity(line.work_units)}
             </TableCell>
             <TableCell className="text-right tabular-nums">
-              {line.hours ?? "—"}
+              {formatQuantity(line.hours)}
             </TableCell>
             <TableCell className="text-right tabular-nums">
               {formatMaybeMoney(line.unit_price)}
@@ -339,11 +364,17 @@ function AssessmentLinesTable({ lines }: { lines: AssessmentExtractLine[] }) {
   )
 }
 
-function useRowExpansion() {
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
-  const isExpanded = (key: string) => !collapsed.has(key)
+/** Row-level disclosures default to collapsed: a claim can carry 120+
+ * reference rows across invoice and assessment lines, and expanding every
+ * one by default would push the reviewer's price challenges below the
+ * fold. Pass `defaultExpanded` to render pre-opened for tests, where
+ * there is no pointer to click the toggle. */
+function useRowExpansion(defaultExpanded = false) {
+  const [toggled, setToggled] = useState<Set<string>>(new Set())
+  const isExpanded = (key: string) =>
+    defaultExpanded ? !toggled.has(key) : toggled.has(key)
   const toggle = (key: string) => {
-    setCollapsed((previous) => {
+    setToggled((previous) => {
       const next = new Set(previous)
       if (next.has(key)) next.delete(key)
       else next.add(key)
@@ -357,16 +388,20 @@ function ExpandToggleButton({
   expanded,
   onToggle,
   label,
+  controls,
 }: {
   expanded: boolean
   onToggle: () => void
   label: string
+  controls: string
 }) {
   return (
     <button
       type="button"
       onClick={onToggle}
       aria-label={expanded ? `Collapse ${label}` : `Expand ${label}`}
+      aria-expanded={expanded}
+      aria-controls={controls}
       className="text-muted-foreground transition-colors hover:text-foreground"
     >
       {expanded ? (
@@ -378,19 +413,31 @@ function ExpandToggleButton({
   )
 }
 
-function InvoiceExtractsTable({
+function pairReasonsText(assessment: AssessmentExtractPayload) {
+  const reasons = [
+    ...assessment.pair_reasons,
+    ...(assessment.pair_key_verdicts ?? []),
+  ]
+  return reasons.length > 0 ? reasons.join("; ") : "No pairing evidence recorded."
+}
+
+export function InvoiceExtractsTable({
   invoices,
   breakdowns,
+  defaultExpanded,
 }: {
   invoices: InvoiceExtractPayload[]
   breakdowns: SectionBreakdownPayload[]
+  defaultExpanded?: boolean
 }) {
-  const { isExpanded, toggle } = useRowExpansion()
+  const { isExpanded, toggle } = useRowExpansion(defaultExpanded)
   return (
     <Table>
       <TableHeader>
         <TableRow>
-          <TableHead className="w-8" />
+          <TableHead className="w-8">
+            <span className="sr-only">Expand line items</span>
+          </TableHead>
           <TableHead>Invoice number</TableHead>
           <TableHead>Vehicle make</TableHead>
           <TableHead>Vehicle model</TableHead>
@@ -400,14 +447,13 @@ function InvoiceExtractsTable({
         </TableRow>
       </TableHeader>
       <TableBody>
-        {invoices.map((invoice, index) => {
-          const key = invoice.invoice_number ?? `invoice-${index}`
+        {invoices.map((invoice) => {
+          const key = invoice.invoice_id
           const expanded = isExpanded(key)
+          const detailId = `invoice-extract-detail-${key}`
           const breakdownsByType = new Map(
             breakdowns
-              .filter(
-                (breakdown) => breakdown.invoice_number === invoice.invoice_number
-              )
+              .filter((breakdown) => breakdown.invoice_id === invoice.invoice_id)
               .map((breakdown) => [breakdown.line_item_type, breakdown] as const)
           )
           return (
@@ -417,7 +463,8 @@ function InvoiceExtractsTable({
                   <ExpandToggleButton
                     expanded={expanded}
                     onToggle={() => toggle(key)}
-                    label={`lines for invoice ${invoice.invoice_number ?? index}`}
+                    label={`lines for invoice ${invoice.invoice_number ?? key}`}
+                    controls={detailId}
                   />
                 </TableCell>
                 <TableCell className="font-medium">
@@ -455,7 +502,7 @@ function InvoiceExtractsTable({
                 </TableCell>
               </TableRow>
               {expanded ? (
-                <TableRow>
+                <TableRow id={detailId}>
                   <TableCell colSpan={7} className="bg-muted/30 p-3">
                     {invoice.lines.length > 0 ? (
                       <InvoiceLinesTable
@@ -478,17 +525,21 @@ function InvoiceExtractsTable({
   )
 }
 
-function AssessmentExtractsTable({
+export function AssessmentExtractsTable({
   assessments,
+  defaultExpanded,
 }: {
   assessments: AssessmentExtractPayload[]
+  defaultExpanded?: boolean
 }) {
-  const { isExpanded, toggle } = useRowExpansion()
+  const { isExpanded, toggle } = useRowExpansion(defaultExpanded)
   return (
     <Table>
       <TableHeader>
         <TableRow>
-          <TableHead className="w-8" />
+          <TableHead className="w-8">
+            <span className="sr-only">Expand operations</span>
+          </TableHead>
           <TableHead>Assessment number</TableHead>
           <TableHead>Vehicle make</TableHead>
           <TableHead>Vehicle model</TableHead>
@@ -499,9 +550,10 @@ function AssessmentExtractsTable({
         </TableRow>
       </TableHeader>
       <TableBody>
-        {assessments.map((assessment, index) => {
-          const key = assessment.assessment_number ?? `assessment-${index}`
+        {assessments.map((assessment) => {
+          const key = assessment.assessment_id
           const expanded = isExpanded(key)
+          const detailId = `assessment-extract-detail-${key}`
           return (
             <Fragment key={key}>
               <TableRow>
@@ -509,7 +561,8 @@ function AssessmentExtractsTable({
                   <ExpandToggleButton
                     expanded={expanded}
                     onToggle={() => toggle(key)}
-                    label={`lines for assessment ${assessment.assessment_number ?? index}`}
+                    label={`lines for assessment ${assessment.assessment_number ?? key}`}
+                    controls={detailId}
                   />
                 </TableCell>
                 <TableCell className="font-medium">
@@ -521,30 +574,32 @@ function AssessmentExtractsTable({
                 <TableCell>{assessment.claim_number ?? "—"}</TableCell>
                 <TableCell>{assessment.policy_number ?? "—"}</TableCell>
                 <TableCell>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Badge
-                        variant={
-                          assessment.pair_status === "paired"
-                            ? "success"
-                            : "secondary"
-                        }
-                      >
-                        {assessment.pair_status === "paired"
-                          ? `Paired · ${assessment.paired_invoice_number ?? "invoice"}`
-                          : "Unpaired"}
-                      </Badge>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      {assessment.pair_reasons.length > 0
-                        ? assessment.pair_reasons.join("; ")
-                        : "No pairing evidence recorded."}
-                    </TooltipContent>
-                  </Tooltip>
+                  <div className="flex flex-col items-start gap-1">
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Badge
+                          tabIndex={0}
+                          variant={
+                            assessment.pair_status === "paired"
+                              ? "success"
+                              : "secondary"
+                          }
+                        >
+                          {assessment.pair_status === "paired"
+                            ? `Paired · ${assessment.paired_invoice_number ?? "invoice"}`
+                            : "Unpaired"}
+                        </Badge>
+                      </TooltipTrigger>
+                      <TooltipContent>{pairReasonsText(assessment)}</TooltipContent>
+                    </Tooltip>
+                    <p className="max-w-xs text-xs text-muted-foreground">
+                      {pairReasonsText(assessment)}
+                    </p>
+                  </div>
                 </TableCell>
               </TableRow>
               {expanded ? (
-                <TableRow>
+                <TableRow id={detailId}>
                   <TableCell colSpan={8} className="bg-muted/30 p-3">
                     {assessment.lines.length > 0 ? (
                       <AssessmentLinesTable lines={assessment.lines} />
@@ -574,10 +629,62 @@ export function ExtractsSection({
   error: string | null
 }) {
   const [open, setOpen] = useState(true)
-  const isEmpty =
-    !extracts ||
+  if (
+    extracts == null ||
     (extracts.invoice_extracts.length === 0 &&
       extracts.assessment_extracts.length === 0)
+  ) {
+    return (
+      <Card>
+        <Collapsible open={open} onOpenChange={setOpen}>
+          <CardHeader>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <CardTitle>Invoice and assessment extracts</CardTitle>
+                <CardDescription>
+                  The two standardised tables from the invoice and assessment
+                  documents, kept separate. Line items are nested under each
+                  document.
+                </CardDescription>
+              </div>
+              <CollapsibleTrigger asChild>
+                <button
+                  type="button"
+                  className="group/extracts inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  {open ? "Hide" : "Show"}
+                  <ChevronRightIcon
+                    className="size-4 transition-transform group-data-[state=open]/extracts:rotate-90"
+                    aria-hidden
+                  />
+                </button>
+              </CollapsibleTrigger>
+            </div>
+          </CardHeader>
+          <CollapsibleContent>
+            <CardContent className="space-y-6">
+              {error ? (
+                <Alert variant="destructive">
+                  <AlertCircleIcon />
+                  <AlertTitle>Extracts could not be loaded</AlertTitle>
+                  <AlertDescription>{error}</AlertDescription>
+                </Alert>
+              ) : loading ? (
+                <p className="py-6 text-center text-sm text-muted-foreground">
+                  Loading invoice and assessment extracts…
+                </p>
+              ) : (
+                <p className="py-6 text-center text-sm text-muted-foreground">
+                  No invoice or assessment extracts are available for this
+                  claim yet.
+                </p>
+              )}
+            </CardContent>
+          </CollapsibleContent>
+        </Collapsible>
+      </Card>
+    )
+  }
 
   return (
     <Card>
@@ -608,44 +715,23 @@ export function ExtractsSection({
         </CardHeader>
         <CollapsibleContent>
           <CardContent className="space-y-6">
-            {error ? (
-              <Alert variant="destructive">
-                <AlertCircleIcon />
-                <AlertTitle>Extracts could not be loaded</AlertTitle>
-                <AlertDescription>{error}</AlertDescription>
-              </Alert>
-            ) : loading ? (
-              <p className="py-6 text-center text-sm text-muted-foreground">
-                Loading invoice and assessment extracts…
-              </p>
-            ) : isEmpty ? (
-              <p className="py-6 text-center text-sm text-muted-foreground">
-                No invoice or assessment extracts are available for this claim
-                yet.
-              </p>
-            ) : (
-              <>
-                <div>
-                  <h3 className="text-sm font-semibold">Invoice extracts</h3>
-                  <div className="mt-2 overflow-x-auto rounded-lg border">
-                    <InvoiceExtractsTable
-                      invoices={extracts!.invoice_extracts}
-                      breakdowns={extracts!.section_breakdowns}
-                    />
-                  </div>
-                </div>
-                <div>
-                  <h3 className="text-sm font-semibold">
-                    Assessment extracts
-                  </h3>
-                  <div className="mt-2 overflow-x-auto rounded-lg border">
-                    <AssessmentExtractsTable
-                      assessments={extracts!.assessment_extracts}
-                    />
-                  </div>
-                </div>
-              </>
-            )}
+            <div>
+              <h3 className="text-sm font-semibold">Invoice extracts</h3>
+              <div className="mt-2 overflow-x-auto rounded-lg border">
+                <InvoiceExtractsTable
+                  invoices={extracts.invoice_extracts}
+                  breakdowns={extracts.section_breakdowns}
+                />
+              </div>
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold">Assessment extracts</h3>
+              <div className="mt-2 overflow-x-auto rounded-lg border">
+                <AssessmentExtractsTable
+                  assessments={extracts.assessment_extracts}
+                />
+              </div>
+            </div>
           </CardContent>
         </CollapsibleContent>
       </Collapsible>
