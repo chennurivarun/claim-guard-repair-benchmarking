@@ -22,30 +22,51 @@ CANONICAL_TYPES: tuple[str, ...] = (
     "labour",
     "paint",
     "paint_materials",
-    "additional",
     "specialist_operation",
     "sundry",
     "discount",
     UNKNOWN,
 )
 
-# Canonical code -> the section headings seen in client documents. Matching is
+# Canonical code -> the section headings seen in client documents, including the
+# rolled-up total labels an invoice prints instead of a section. Matching is
 # case-, whitespace- and punctuation-insensitive ("&" reads as "and"), so only
 # genuinely different wordings need an entry here.
+#
+# "extras" is the single code for every extras / additional spelling: the invoice
+# total "Additional charges" must find the assessment's EXTRAS rows, so the two
+# sides cannot carry different codes. "additional" is accepted as an alias.
 SECTION_SYNONYMS: dict[str, tuple[str, ...]] = {
-    "parts": ("Parts",),
-    "extras": ("Extras",),
-    "labour": ("Labour",),
-    "paint": ("Paint Work", "Paint Labour"),
+    "parts": ("Parts", "Total Parts", "Total Parts Amount", "Parts Total"),
+    "extras": (
+        "Extras",
+        "Total Extras",
+        "Additional",
+        "Additional Items",
+        "Additional charges",
+        "Additional Costs",
+        "Total Additional Costs",
+        "Additional Total Items",
+    ),
+    "labour": (
+        "Labour",
+        "Total Labour",
+        "Total Labour Amount",
+        "Total Panel/Mechanical Labour",
+        "Total Panel/Mechanical",
+    ),
+    "paint": ("Paint Work", "Paint Labour", "Total Paintwork"),
     "paint_materials": (
         "Paint and Materials",
         "Paint & Materials",
+        "Total Paint and Materials",
+        "Total Paint & Materials",
         "Total Paint & Materials Amount",
+        "Total Paint / Materials Costs",
     ),
-    "additional": ("Additional Items", "Additional charges", "Additional Costs"),
     "specialist_operation": ("Specialist Operation",),
     "sundry": ("Sundry parts",),
-    "discount": ("Deduction", "Discount"),
+    "discount": ("Deduction", "Discount", "Deductions", "Overall Discount"),
     UNKNOWN: (),
 }
 

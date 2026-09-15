@@ -24,9 +24,19 @@ from app.enums import LineItemKind
         ("Paint and Materials", "paint_materials"),
         ("Paint & Materials", "paint_materials"),
         ("Total Paint & Materials Amount", "paint_materials"),
-        ("Additional Items", "additional"),
-        ("Additional charges", "additional"),
-        ("Additional Costs", "additional"),
+        ("Additional Items", "extras"),
+        ("Additional charges", "extras"),
+        ("Additional Costs", "extras"),
+        ("Total Additional Costs", "extras"),
+        ("additional", "extras"),
+        ("Total Parts Amount", "parts"),
+        ("Total Parts", "parts"),
+        ("Total Labour Amount", "labour"),
+        ("Total Labour", "labour"),
+        ("TOTAL PANEL/MECHANICAL LABOUR", "labour"),
+        ("Total Paintwork", "paint"),
+        ("Total Paint / Materials Costs", "paint_materials"),
+        ("Total Paint & materials", "paint_materials"),
         ("Specialist Operation", "specialist_operation"),
         ("Sundry parts", "sundry"),
         ("Deduction", "discount"),
@@ -74,6 +84,19 @@ def test_canonical_codes_round_trip_through_the_vocabulary() -> None:
 
 def test_every_synonym_group_has_a_canonical_code() -> None:
     assert set(SECTION_SYNONYMS) == set(CANONICAL_TYPES)
+
+
+def test_invoice_total_labels_share_a_code_with_their_assessment_section() -> None:
+    # The invoice-total -> assessment-section breakdown keys on line_item_type,
+    # so both sides of each pair must resolve to the same code.
+    pairs = [
+        ("Total Parts Amount", "PARTS"),
+        ("Additional charges", "EXTRAS"),
+        ("Total Labour Amount", "LABOUR"),
+        ("Total Paint & Materials Amount", "Paint and Materials"),
+    ]
+    for invoice_label, assessment_heading in pairs:
+        assert ensure_line_item_type(invoice_label) == ensure_line_item_type(assessment_heading)
 
 
 def test_ensure_line_item_type_never_raises() -> None:
