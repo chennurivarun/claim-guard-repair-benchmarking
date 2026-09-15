@@ -99,6 +99,61 @@ ROLLED_UP_TOTAL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
     (label, re.compile(rf"^{re.escape(label)}\s*:?\s+{MONEY_PATTERN}", re.IGNORECASE))
     for label in ROLLED_UP_TOTAL_LABELS
 )
+# The same roll-up without the "Total" prefix: "Parts   448.91", "Labour
+# 2008.00", "Paint & Materials   1034.02". Anchored on the section vocabulary
+# and a single trailing amount, so an itemised row ("Corrosion protection
+# 6.00") can never match it.
+BARE_SECTION_TOTAL_PATTERN = re.compile(
+    r"^(?P<label>parts|extras|labour|paint\s*work|paint\s*(?:and|&)\s*materials"
+    rf"|specialist operation|additional items)\s*[:£]?\s+(?:GBP\s*)?{MONEY_PATTERN}\s*$",
+    re.IGNORECASE,
+)
+# "An amount equivalent to VAT @20%: 982.52", "VAT 20%   747.60", "VAT (20%)
+# 97.21": a VAT amount whose own label states the rate is unambiguous. The
+# rate is required, so "Grand Total Excl VAT   GBP 1423.92" is not a VAT.
+EXPLICIT_VAT_AMOUNT_PATTERN = re.compile(
+    rf"VAT\s*[@(]?\s*\d{{1,2}}(?:\.\d+)?\s*%\)?\s*[:£]?\s*(?:GBP\s*)?{MONEY_PATTERN}",
+    re.IGNORECASE,
+)
+# "VAT Reg No. 738 1978 88": a cell that opens with the VAT-total label and is
+# actually the supplier's registration number.
+VAT_REGISTRATION_CELL_PATTERN = re.compile(
+    r"^vat\b.*\b(?:reg|registration|number|no)\b", re.IGNORECASE
+)
+# Values a label reader hands back when the band it read was all column
+# headings: "Registration   Make and Model   Chassis Number" yields the label
+# "Make" and the "value" "and Model".
+COLUMN_HEADING_TOKENS = frozenset(
+    {
+        "chassis",
+        "chassis number",
+        "colour",
+        "description",
+        "make",
+        "make and model",
+        "manufacturer",
+        "model",
+        "number",
+        "reg",
+        "reg no",
+        "registration",
+        "registration number",
+        "variant",
+        "vehicle",
+        "vin",
+    }
+)
+LEADING_CONNECTOR_PATTERN = re.compile(r"^(?:and|&|/)\s*", re.IGNORECASE)
+
+
+def _first_not_none(*values: Decimal | None) -> Decimal | None:
+    """The first value that was actually read, treating a printed 0.00 as read.
+
+    ``a or b`` silently discards ``Decimal("0.00")``, which is how "Total
+    Additional Costs GBP 0.00" used to come back as "not printed".
+    """
+
+    return next((value for value in values if value is not None), None)
 
 
 def _parse_date(value: str | None):
@@ -155,9 +210,18 @@ def _labelled_registration(value: str | None) -> str | None:
 
 
 def _labelled_value(value: str | None) -> str | None:
-    """Drop a label value that opens with punctuation -- a mis-split column band."""
+    """Drop a label value that is really a neighbouring column heading.
 
-    return value if value and re.match(r"[A-Za-z0-9]", value) else None
+    Two shapes: one opening with punctuation (a mis-split column band), and
+    one where the whole band is headings -- "Registration   Make and Model
+    Chassis Number" hands the label reader "Make" and the value "and Model".
+    """
+
+    if not value or not re.match(r"[A-Za-z0-9]", value):
+        return None
+    remainder = LEADING_CONNECTOR_PATTERN.sub("", value.strip()).strip()
+    heading = " ".join(remainder.replace("&", " and ").lower().split()).strip(":")
+    return None if not remainder or heading in COLUMN_HEADING_TOKENS else value
 
 
 def _section_key(heading: str) -> str:
@@ -191,7 +255,13 @@ def _is_prose_line(raw_line: str, line: str) -> bool:
 
 
 def _rolled_up_total(line: str) -> tuple[str, Decimal] | None:
-    """Match a rolled-up section total, returning its label and amount."""
+    """Match a rolled-up section total, returning its label and amount.
+
+    Both spellings count: "Total Labour   2008.00" and the bare "Labour
+    2008.00" a summary-only invoice prints. Either way it is a section, never
+    a priced row, so `_schedule_text_lines` skips it and
+    `_rolled_up_total_lines` emits it once with provenance.
+    """
 
     for label, pattern in ROLLED_UP_TOTAL_PATTERNS:
         match = pattern.match(line)
@@ -201,7 +271,61 @@ def _rolled_up_total(line: str) -> tuple[str, Decimal] | None:
         if amount is None:
             continue
         return label, amount
+    bare = BARE_SECTION_TOTAL_PATTERN.match(line)
+    if bare is not None:
+        amount = money(bare.group(2))
+        if amount is not None:
+            return bare.group("label"), amount
     return None
+
+
+def _explicit_vat_amount(text: str) -> Decimal | None:
+    """The VAT amount whose own label states the rate."""
+
+    match = EXPLICIT_VAT_AMOUNT_PATTERN.search(text)
+    return money(match.group(1)) if match else None
+
+
+def _vat_registration_only(text: str) -> bool:
+    """Whether every "VAT ..." cell in the document is a registration number."""
+
+    cells = [
+        cell.strip()
+        for raw_line in text.splitlines()
+        for cell in CELL_SPLIT_PATTERN.split(raw_line.strip())
+        if re.match(r"vat\b", cell.strip(), re.IGNORECASE)
+    ]
+    return bool(cells) and all(VAT_REGISTRATION_CELL_PATTERN.match(cell) for cell in cells)
+
+
+def _guarded_labelled_vat(
+    text: str, amount: Decimal | None, *, excluded: tuple[Decimal | None, ...]
+) -> Decimal | None:
+    """The label reader's VAT amount, minus the registration cell it mistakes for one.
+
+    "VAT Reg No. 738 1978 88   Labour   266.00" carries the label "VAT" and a
+    trailing amount, so it reads as VAT of 266.00 -- which is also the labour
+    total, the second tell.
+    """
+
+    if amount is None or _vat_registration_only(text):
+        return None
+    return None if any(amount == value for value in excluded if value is not None) else amount
+
+
+def _has_uncertain_lines(lines: list[ExtractedLine]) -> bool:
+    """Whether any priced row is one the deterministic parser did not understand.
+
+    A rolled-up section total is `unknown` by construction -- it is a section,
+    not a row -- so it must not pull a perfectly parsed invoice into the
+    LLM/vision tier.
+    """
+
+    return any(
+        (line.item_kind == "unknown" and not line.is_section_total)
+        or line.source.confidence < 0.75
+        for line in lines
+    )
 
 
 # ponytail: only the two sections whose total no invoice in hand prints as a
@@ -665,10 +789,7 @@ class InvoiceParser:
             ),
             Decimal("0"),
         )
-        uncertain_lines = any(
-            line.item_kind == "unknown" or line.source.confidence < 0.75
-            for line in usable_lines
-        )
+        uncertain_lines = _has_uncertain_lines(usable_lines)
         recover_lines = not usable_lines or uncertain_lines or (
             stated_subtotal is not None
             and abs(extracted_subtotal - stated_subtotal) > Decimal("0.05")
@@ -732,9 +853,17 @@ class InvoiceParser:
             # it; `_rolled_up_total_lines` emits it once, with provenance.
             if _rolled_up_total(line) is not None:
                 continue
+            lower = line.casefold()
+            # A summary row is never a line item, whatever shape it arrives
+            # in. This has to precede every row reader, not just the generic
+            # one: "VAT   20%   982.52", "Overall Discount   10%   50.00" and
+            # "Deductions   0%   0.00" are the same three cells as "Sundry
+            # parts   3.50%   41.85", and `_percentage_row` cannot tell them
+            # apart on shape alone.
+            if any(token in lower for token in NON_SCHEDULE_LINE_TOKENS):
+                continue
             cells = _row_cells(raw_line)
             parts_match = PARTS_SCHEDULE_ROW_PATTERN.match(line)
-            lower = line.casefold()
             quantity: Decimal | None = Decimal("1")
             unit_price: Decimal | None = None
             category = heading_text
@@ -753,8 +882,6 @@ class InvoiceParser:
                 item_kind = "fee"
                 quantity = None
             else:
-                if any(token in lower for token in NON_SCHEDULE_LINE_TOKENS):
-                    continue
                 part_number = None
                 item_kind = SCHEDULE_SECTION_KINDS.get(section or "", "unknown")
                 priced_match = PRICED_SCHEDULE_ROW_PATTERN.match(line)
@@ -769,6 +896,11 @@ class InvoiceParser:
                     line_total = Decimal("0.00")
                 else:
                     continue
+            # ponytail: a credit row ("Goodwill credit   -20.00", "(20.00)")
+            # is dropped, not signed: PRICED_SCHEDULE_ROW_PATTERN reads no
+            # sign and no bracket, and every downstream sum, benchmark and
+            # math finding assumes a non-negative row. Accepting one is a
+            # change to those, not to this regex.
             if (
                 not description
                 or not re.search(r"[A-Za-z]{3}", description)
@@ -856,7 +988,15 @@ class InvoiceParser:
         set and its own total are never both recorded.
         """
 
-        recorded = {line.line_item_type for line in itemised if not line.is_section_total}
+        # paint + paint_materials and extras + specialist_operation are one
+        # bucket each in `SECTION_TOTAL_FIELDS`, so a paint section with rows
+        # must also suppress "Total Paint & Materials Amount", and itemised
+        # specialist operations must suppress a footer "Additional charges".
+        recorded = {
+            SECTION_TOTAL_FIELDS.get(line.line_item_type, line.line_item_type)
+            for line in itemised
+            if not line.is_section_total
+        }
         output: list[ExtractedLine] = []
         sequence = start
         for raw_line in text.splitlines():
@@ -865,9 +1005,10 @@ class InvoiceParser:
                 continue
             label, amount = matched
             line_item_type = ensure_line_item_type(label)
-            if line_item_type in recorded:
+            bucket = SECTION_TOTAL_FIELDS.get(line_item_type, line_item_type)
+            if bucket in recorded:
                 continue
-            recorded.add(line_item_type)
+            recorded.add(bucket)
             vat_amount, gross_amount = _line_tax(amount, Decimal("20"), True)
             source = _total_source(pages, (label,), amount) or FieldSource(
                 page_number=pages[-1].page_number,
@@ -1193,16 +1334,13 @@ class InvoiceParser:
             return parse_money(value) if value else None
 
         subtotal = _search_money(text, r"Sub\s*Total")
-        # "VAT (20%)  97.21" is read by the regex; label_grid is the fallback
-        # for the spelled-out "An amount equivalent to VAT @20%: 982.52", and
-        # must not outrank it -- "VAT Reg No. ... Labour 266.00" also carries
-        # the label "VAT".
-        vat_amount = _search_money(text, r"VAT\s*(?:\([^)]*\))?") or labelled("vat_total")
         non_vatable = _search_money(text, r"MOT")
         total_matches = re.findall(
             rf"(?<!Sub)\bTotal\b\s*[:£]?\s*{MONEY_PATTERN}", text, flags=re.IGNORECASE
         )
-        total = labelled("gross_total") or (money(total_matches[-1]) if total_matches else None)
+        total = _first_not_none(
+            labelled("gross_total"), money(total_matches[-1]) if total_matches else None
+        )
         vat_rate_match = re.search(r"VAT\s*\((\d+(?:\.\d+)?)%\)", text, re.I)
         printed = _printed_section_totals(text)
         section_sums = _section_sums(lines or [])
@@ -1212,24 +1350,38 @@ class InvoiceParser:
 
             All three outrank `_search_money`, whose first match for "Parts"
             on Format 1 is the "Sundry parts 3.50%" rate rather than a total.
+            Each step tests for None rather than truth, so a printed
+            "Total Additional Costs GBP 0.00" stays 0.00 instead of falling
+            through to the next source.
             """
 
-            return labelled(field) or printed.get(field) or section_sums.get(field)
+            return _first_not_none(labelled(field), printed.get(field), section_sums.get(field))
 
-        labour_net = section_net("labour_net") or _search_money(text, r"Labour")
-        parts_net = section_net("parts_net") or _search_money(text, r"Parts")
+        labour_net = _first_not_none(section_net("labour_net"), _search_money(text, r"Labour"))
+        parts_net = _first_not_none(section_net("parts_net"), _search_money(text, r"Parts"))
         paint_net = section_net("paint_net")
         extras_net = section_net("extras_net")
+        # A label reader has to accept the bare label "VAT", which is also how
+        # a VAT registration cell opens, so the rate-carrying spelling wins
+        # outright and the bare one is guarded.
+        vat_amount = _first_not_none(
+            _explicit_vat_amount(text),
+            _search_money(text, r"VAT\s*(?:\([^)]*\))?"),
+            _guarded_labelled_vat(
+                text, labelled("vat_total"), excluded=(labour_net, parts_net)
+            ),
+        )
+        if subtotal is None:
+            # A printed subtotal is the invoice's own answer and beats any
+            # sum derived from the sections it prints beside it.
+            subtotal = labelled("subtotal_net")
         section_nets = [
             value for value in (labour_net, parts_net, paint_net, extras_net) if value is not None
         ]
         if subtotal is None and section_nets:
-            # Section-aware, and deliberately preferred over label_grid's
-            # subtotal: an invoice that prints only section totals has no
-            # printed subtotal to read.
+            # An invoice that prints only section totals has no printed
+            # subtotal to read.
             subtotal = sum(section_nets, Decimal("0"))
-        if subtotal is None:
-            subtotal = labelled("subtotal_net")
         totals = InvoiceTotals(
             labour_net=labour_net,
             parts_net=parts_net,

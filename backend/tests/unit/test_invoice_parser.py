@@ -9,7 +9,12 @@ import fitz
 import pytest
 
 import app.services.document_processing as document_processing
-from app.extraction.invoice_parser import InvoiceParser, _guess_item_kind
+from app.extraction.calculation_validator import validate_invoice
+from app.extraction.invoice_parser import (
+    InvoiceParser,
+    _guess_item_kind,
+    _has_uncertain_lines,
+)
 from app.extraction.schemas import (
     ExtractedInvoice,
     ExtractedLine,
@@ -20,7 +25,8 @@ from app.extraction.schemas import (
     PageType,
 )
 
-CLIENT_FORMATS_DIR = Path(__file__).resolve().parents[3] / "sample-data" / "client-formats"
+SAMPLE_DATA_DIR = Path(__file__).resolve().parents[3] / "sample-data"
+CLIENT_FORMATS_DIR = SAMPLE_DATA_DIR / "client-formats"
 _CONVERTED_DIRS: list[tempfile.TemporaryDirectory] = []
 
 
@@ -74,6 +80,10 @@ def _client_invoice(filename: str) -> ExtractedInvoice:
     pdf_path = Path(directory.name) / normalised.stored_filename
     pdf_path.write_bytes(normalised.content)
 
+    return _parse_pdf(pdf_path)
+
+
+def _parse_pdf(pdf_path: Path) -> ExtractedInvoice:
     document = fitz.open(pdf_path)
     try:
         pages = [
@@ -96,6 +106,25 @@ def _client_invoice(filename: str) -> ExtractedInvoice:
     finally:
         document.close()
     return InvoiceParser().parse_group(pdf_path, pages)
+
+
+@cache
+def _corpus_invoice(relative_path: str) -> ExtractedInvoice:
+    """Parse a corpus PDF that is already a PDF -- no upload normalisation."""
+
+    source = SAMPLE_DATA_DIR / relative_path
+    if not source.is_file():
+        pytest.skip(f"Corpus fixture {relative_path} is not available")
+    return _parse_pdf(source)
+
+
+def _schedule_and_section_totals(text: str) -> list[ExtractedLine]:
+    """Run one page of printed text through both row readers, as `parse_group` does."""
+
+    parser = InvoiceParser()
+    page = _page().model_copy(update={"text": text})
+    lines = parser._schedule_text_lines(page, 1)
+    return lines + parser._rolled_up_total_lines(text, [page], len(lines) + 1, lines)
 
 
 def _of_type(invoice: ExtractedInvoice, line_item_type: str) -> list[ExtractedLine]:
@@ -457,3 +486,166 @@ def test_section_total_rows_are_never_benchmarkable(filename: str) -> None:
 
     assert section_totals
     assert not any(line.benchmarkable for line in section_totals)
+
+
+def test_printed_subtotal_beats_the_sum_of_the_sections_printed_beside_it() -> None:
+    """Item 1: `Grand Total Excl VAT` is the invoice's own answer."""
+
+    invoice = _corpus_invoice("auda-style/Auda7_format_invoice.pdf")
+
+    assert invoice.totals.subtotal_net == Decimal("1423.92")
+    assert invoice.totals.vat_amount == Decimal("284.78")
+    assert invoice.totals.total_gross == Decimal("1708.70")
+
+    findings = {finding.finding_type: finding for finding in validate_invoice(invoice)}
+    assert findings["VAT_MISCALC"].status == "pass"
+    assert findings["TOTAL_MISMATCH"].status == "pass"
+    # The remaining subtotal finding is the document's own arithmetic, not an
+    # invented total: it prints "Total Labour GBP 1488.00" while its grand
+    # total (744.00 panel + 143.92 paint/materials + 536.00 parts) counts the
+    # panel labour once. What matters here is that 1423.92 is what is checked.
+    assert findings["SUBTOTAL_MISMATCH"].found == Decimal("1423.92")
+
+
+def test_engineer_assessment_pdf_reads_its_printed_grand_total_excl_vat() -> None:
+    """Item 1, second corpus proof: 369.80 printed, not 275.60 derived."""
+
+    invoice = _corpus_invoice("engineer-invoice-pairs/CLM-UK-001_Engineer_Assessment.pdf")
+
+    assert invoice.totals.subtotal_net == Decimal("369.80")
+
+
+def test_printed_zero_total_is_a_value_not_a_missing_field() -> None:
+    """Item 3: "Total Additional Costs GBP 0.00" is 0.00, never None."""
+
+    invoice = _corpus_invoice("auda-style/Auda7_format_invoice.pdf")
+
+    assert invoice.totals.extras_net == Decimal("0.00")
+
+
+def test_percentage_summary_rows_are_never_line_items() -> None:
+    """Item 2: a summary row has the same three cells as a sundry row."""
+
+    lines = InvoiceParser()._schedule_text_lines(
+        _page().model_copy(
+            update={
+                "text": (
+                    "Parts\n"
+                    "VAT   20%   982.52\n"
+                    "Overall Discount   10%   50.00\n"
+                    "Deductions   0%   0.00\n"
+                )
+            }
+        ),
+        1,
+    )
+
+    assert lines == []
+
+
+def test_paint_rows_suppress_the_paint_and_materials_rolled_up_total() -> None:
+    """Item 4: paint and paint_materials are one bucket."""
+
+    lines = _schedule_and_section_totals(
+        "Paint Work\n"
+        "Base Coat   40.00\n"
+        "Lacquer   22.00\n"
+        "Total Paint & Materials Amount   62.00\n"
+    )
+
+    assert [line.line_total_net for line in lines if not line.is_section_total] == [
+        Decimal("40.00"),
+        Decimal("22.00"),
+    ]
+    assert [line for line in lines if line.is_section_total] == []
+
+
+def test_specialist_rows_suppress_an_additional_charges_footer() -> None:
+    """Item 4: extras and specialist_operation are one bucket."""
+
+    lines = _schedule_and_section_totals(
+        "Specialist Operation\n"
+        "Corrosion protection   6.00\n"
+        "Car Sanitisation   30.00\n"
+        "Additional charges   36.00\n"
+    )
+
+    assert [line.line_total_net for line in lines if not line.is_section_total] == [
+        Decimal("6.00"),
+        Decimal("30.00"),
+    ]
+    assert [line for line in lines if line.is_section_total] == []
+
+
+def test_rolled_up_section_totals_do_not_make_a_document_uncertain() -> None:
+    """Item 5: a section total is `unknown` by construction, not by failure."""
+
+    invoice = _client_invoice("DL_Repair_Invoice_format_1.docx")
+    usable = [
+        line
+        for line in invoice.line_items
+        if line.line_total_net is not None and line.line_total_net > 0
+    ]
+
+    assert any(line.is_section_total and line.item_kind == "unknown" for line in usable)
+    assert _has_uncertain_lines(usable) is False
+
+
+def test_vat_registration_cell_is_not_a_vat_total() -> None:
+    """Item 6: "VAT Reg No. ...   Labour   266.00" carries the label "VAT"."""
+
+    totals = InvoiceParser()._totals("VAT Reg No. 738 1978 88   Labour   266.00", [_page()])
+
+    assert totals.vat_amount is None
+    assert totals.labour_net == Decimal("266.00")
+
+
+@pytest.mark.parametrize(
+    ("filename", "vat_amount"),
+    [
+        ("DL_Repair_Invoice_format_1.docx", Decimal("982.52")),
+        ("DL_Repair_Invoice_format_7.docx", Decimal("747.60")),
+    ],
+)
+def test_spelled_out_vat_label_still_wins(filename: str, vat_amount: Decimal) -> None:
+    """Item 6: "An amount equivalent to VAT @20%" states its own rate."""
+
+    assert _client_invoice(filename).totals.vat_amount == vat_amount
+
+
+def test_column_heading_is_never_read_as_a_vehicle_make() -> None:
+    """Item 7: the band is all headings; "and Model" is the one to its right."""
+
+    parser = InvoiceParser()
+
+    assert parser._header("Registration   Make and Model   Chassis Number\n").vehicle_make is None
+    assert parser._header("Registration   Make & Model   Chassis Number\n").vehicle_make is None
+    assert parser._header("Vehicle Make   SKODA\n").vehicle_make == "SKODA"
+
+
+def test_unprefixed_rolled_up_totals_are_section_totals_not_unknown_rows() -> None:
+    """Item 8: "Parts   448.91" is a section, not a priced row."""
+
+    lines = _schedule_and_section_totals(
+        "Parts   448.91\nLabour   2008.00\nPaint & Materials   1034.02\n"
+    )
+
+    assert all(line.is_section_total and line.quantity is None for line in lines)
+    assert {line.line_item_type: line.line_total_net for line in lines} == {
+        "parts": Decimal("448.91"),
+        "labour": Decimal("2008.00"),
+        "paint_materials": Decimal("1034.02"),
+    }
+
+
+def test_credit_rows_are_dropped_rather_than_signed() -> None:
+    """Item 9: the documented limit -- a negative row is not read at all."""
+
+    lines = InvoiceParser()._schedule_text_lines(
+        _page().model_copy(
+            update={"text": "Extras\nGoodwill credit   -20.00\nGoodwill refund   (20.00)\n"}
+        ),
+        1,
+    )
+
+    assert lines == []
