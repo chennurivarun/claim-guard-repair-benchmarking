@@ -5,8 +5,6 @@ import {
   ChevronRightIcon,
   ClipboardCheckIcon,
   FileClockIcon,
-  FileScanIcon,
-  ReceiptTextIcon,
   FileTextIcon,
   FolderSearch2Icon,
   GaugeIcon,
@@ -54,17 +52,6 @@ const primaryNavigation = [
     id: "upload-processing",
     label: "Document Intelligence",
     icon: FileTextIcon,
-  },
-  { id: "document-pages", label: "Source documents", icon: FileScanIcon },
-  {
-    id: "extracted-invoice",
-    label: "Review extraction",
-    icon: ReceiptTextIcon,
-  },
-  {
-    id: "review-findings-all",
-    label: "Invoice outcome & evidence",
-    icon: SearchCheckIcon,
   },
   {
     id: "benchmark-dashboard",
@@ -135,8 +122,11 @@ const reviewScreens: ScreenId[] = [
 ]
 
 function primaryActiveId(activeScreen: ScreenId): ScreenId {
-  if (documentScreens.includes(activeScreen)) return activeScreen
-  if (activeScreen === "calculation-checks") return "upload-processing"
+  if (
+    documentScreens.includes(activeScreen) ||
+    activeScreen === "calculation-checks"
+  )
+    return "upload-processing"
   if (reviewScreens.includes(activeScreen)) return "price-comparison"
   return activeScreen
 }

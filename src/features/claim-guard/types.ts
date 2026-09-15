@@ -26,6 +26,18 @@ export type ScreenId =
   | "knowledge-graph"
   | "audit-reports"
 
+// The former "Source documents" and "Review extraction" primary sidebar
+// entries now live inside the Document Intelligence screen as a compact
+// view switcher (see App.tsx's "upload-processing" case).
+export const documentIntelligenceViews: Array<{
+  id: ScreenId
+  label: string
+}> = [
+  { id: "upload-processing", label: "Document Intelligence" },
+  { id: "document-pages", label: "Source documents" },
+  { id: "extracted-invoice", label: "Review extraction" },
+]
+
 export type StageId = "liability" | "documents" | "validation" | "challenge"
 
 export type MappingStatus = "MATCH" | "NO_MATCH" | "PROVISIONAL" | "EXCLUDED"
