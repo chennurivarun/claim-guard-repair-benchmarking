@@ -1,3 +1,29 @@
+"""Upload-to-database document processing.
+
+``EngineerAssessment.extraction_payload_json`` is written by two different
+tiers and readers must not have to know which one produced it, so these keys
+are present either way (null when that tier has nothing to put in them):
+
+``printed_work_units`` / ``printed_totals``
+    ``{line_item_type: {printed label: amount as a string}}`` -- every figure
+    the report printed for a section, kept under the label it was printed
+    beside, because a PARTS band prints a sub-total, a sundry line and a
+    section total and only one of them is the row sum.
+``row_work_units`` / ``row_totals``
+    ``{line_item_type: amount as a string}`` -- the sum of the rows actually
+    read for that section. Never reconciled against the printed figures.
+``printed_row_disagreements``
+    A list of ``{line_item_type, measure, printed_label, printed, rows,
+    difference}``, one per section whose printed figures all differ from its
+    row sum. The same disagreements are filed as
+    ``ASSESSMENT_PRINTED_TOTAL_DISAGREEMENT`` claim consistency findings.
+``deterministic_operations``
+    Deterministic tier only: per-operation detail with no column of its own
+    (``sequence_no``, ``line_item_type``, ``raw_category``, ``price_derived``,
+    ``part_number_raw``). Null on the LLM tiers, whose payload carries its own
+    ``operations`` key holding the full extracted model instead.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -51,7 +77,6 @@ from app.extraction.engineer_assessment_parser import (
     parse_engineer_assessment,
 )
 from app.extraction.pdf_pipeline import PDFPipeline, PipelineConfig
-from app.extraction.schemas import PageAnalysis
 from app.llm.document_briefing import (
     DocumentBriefingPage,
     build_document_briefing,
@@ -434,33 +459,6 @@ def _persist_claim_findings(
         )
 
 
-def _assessment_pages_with_continuations(
-    pages: list[PageAnalysis],
-) -> list[PageAnalysis]:
-    """Return the assessment pages plus the unidentifiable pages they run onto.
-
-    A report's repair schedule continues onto pages that carry no identity
-    marker of their own -- a bare continuation of the table and nothing else --
-    which the classifier can only call OTHER. Feeding the parser the identified
-    pages alone silently truncates the schedule (Format 2 keeps 2 of its 17
-    labour rows), so an OTHER page directly following assessment pages is read
-    as part of the same report. The page's stored classification is left
-    untouched: this widens what the parser reads, not what the document says.
-    """
-
-    selected: list[PageAnalysis] = []
-    inside_report = False
-    for page in pages:
-        if page.page_type.value == PageType.ENGINEER_ASSESSMENT.value:
-            inside_report = True
-            selected.append(page)
-        elif inside_report and page.page_type.value == PageType.OTHER.value:
-            selected.append(page)
-        else:
-            inside_report = False
-    return selected
-
-
 def _json_amounts(bucket: dict[str, dict[str, Decimal]]) -> dict[str, dict[str, str]]:
     """Render a two-level ``{type: {label: amount}}`` map JSON-safe."""
 
@@ -473,6 +471,9 @@ def _json_amounts(bucket: dict[str, dict[str, Decimal]]) -> dict[str, dict[str, 
 #: A printed figure and the rows beneath it are allowed to differ by rounding
 #: without that being a disagreement worth a handler's time.
 _PRINTED_ROW_TOLERANCE = Decimal("0.05")
+
+#: The claim consistency finding a printed-versus-row disagreement is filed as.
+_ASSESSMENT_PRINTED_TOTAL_DISAGREEMENT = "ASSESSMENT_PRINTED_TOTAL_DISAGREEMENT"
 
 
 def _printed_row_disagreements(
@@ -531,16 +532,48 @@ def _persist_assessment_arithmetic_findings(
     must see, but nothing about it is corrected or blocked. The figures also
     live in the assessment's extraction payload, so they survive a case that
     has no claim context to hang a finding on.
+
+    A forced reprocess deletes the ``engineer_assessments`` row and writes a
+    new one, but nothing has a foreign key onto it from here, so the findings
+    it left behind would accumulate on every run and point at an id that no
+    longer resolves. Everything this assessment owns -- its own findings, and
+    the orphans of the assessments it replaced -- is cleared first.
     """
 
     context = case.claim_context
     if context is None:
         return
+    stale = list(
+        session.scalars(
+            select(ClaimConsistencyFinding).where(
+                ClaimConsistencyFinding.claim_context_id == context.id,
+                ClaimConsistencyFinding.finding_code
+                == _ASSESSMENT_PRINTED_TOTAL_DISAGREEMENT,
+                ClaimConsistencyFinding.source_entity_type == "engineer_assessment",
+            )
+        ).all()
+    )
+    if stale:
+        referenced = {
+            finding.source_entity_id for finding in stale if finding.source_entity_id
+        }
+        live_assessment_ids = set(
+            session.scalars(
+                select(EngineerAssessment.id).where(EngineerAssessment.id.in_(referenced))
+            ).all()
+        )
+        for finding in stale:
+            if (
+                finding.source_entity_id == assessment.id
+                or finding.source_entity_id not in live_assessment_ids
+            ):
+                session.delete(finding)
+        session.flush()
     for disagreement in disagreements:
         session.add(
             ClaimConsistencyFinding(
                 claim_context_id=context.id,
-                finding_code="ASSESSMENT_PRINTED_TOTAL_DISAGREEMENT",
+                finding_code=_ASSESSMENT_PRINTED_TOTAL_DISAGREEMENT,
                 severity=_severity("medium"),
                 status=ConsistencyFindingStatus.OPEN,
                 field_name=f"{disagreement['line_item_type']} {disagreement['measure']}",
@@ -628,7 +661,15 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
             page_rows[page.page_number] = page_row
         session.flush()
 
-        engineer_pages = _assessment_pages_with_continuations(analysis.pages)
+        # A report's schedule runs onto pages with no identity marker of their
+        # own; `pdf_pipeline._reclassify_priced_assessment_pages` has already
+        # recognised those as continuations and typed them ENGINEER_ASSESSMENT,
+        # so the page type the document stores and the pages the parser reads
+        # are the same set.
+        engineer_pages = [
+            page for page in analysis.pages
+            if page.page_type.value == PageType.ENGINEER_ASSESSMENT.value
+        ]
         if document_metadata.get("paired_document_id"):
             engineer_pages = analysis.pages
             for page_row in page_rows.values():
@@ -679,8 +720,10 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
                         code: str(amount) for code, amount in parsed.row_totals.items()
                     },
                     "printed_row_disagreements": assessment_disagreements,
-                    # Per-operation detail with no column of its own.
-                    "operations": [
+                    # Per-operation detail with no column of its own. Namespaced
+                    # because the LLM tier's payload has an "operations" key of
+                    # its own with an entirely different shape.
+                    "deterministic_operations": [
                         {
                             "sequence_no": operation.sequence_no,
                             "line_item_type": operation.line_item_type,
@@ -696,10 +739,20 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
                 assessment_fields = extracted_assessment.fields.model_dump()
                 assessment_operations = extracted_assessment.operations
                 assessment_confidence = extracted_assessment.extraction_confidence
-                assessment_payload = extracted_assessment.model_dump(mode="json")
                 # The LLM tiers report no printed section figures, so there is
-                # nothing to disagree with.
+                # nothing to disagree with. The keys are still written, as
+                # nulls, so a reader never has to know which tier produced the
+                # payload to know whether printed figures were found.
                 assessment_disagreements = []
+                assessment_payload = {
+                    **extracted_assessment.model_dump(mode="json"),
+                    "printed_work_units": None,
+                    "printed_totals": None,
+                    "row_work_units": None,
+                    "row_totals": None,
+                    "printed_row_disagreements": [],
+                    "deterministic_operations": None,
+                }
             else:
                 # Deterministic parsing, vision, and the text-only LLM tier all failed to
                 # produce usable repair operations. This must never dead-end the document:

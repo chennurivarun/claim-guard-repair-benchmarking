@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from app.domain.line_item_type import UNKNOWN as UNKNOWN_LINE_ITEM_TYPE
 from app.domain.money import ZERO, money
+from app.extraction.invoice_parser import SECTION_TOTAL_FIELDS
 from app.extraction.schemas import ExtractedInvoice, MathFinding
 
 
@@ -56,20 +58,40 @@ def _not_applicable(finding_type: str, *, explanation: str) -> MathFinding:
     )
 
 
-#: Which printed section a row belongs to, per stated total. A total and the
-#: rows that make it up have to land in the same family, or the row sum is
-#: reconciled against the wrong printed figure: a repairer's "Total Parts"
-#: covers its sundry-parts line, and "Additional charges" covers the
-#: specialist-operation rows printed above it. Codes come from
-#: :mod:`app.domain.line_item_type`, which is an open vocabulary -- an
-#: unrecognised section simply belongs to no family and is only ever counted in
-#: the subtotal.
-SECTION_FAMILIES: dict[str, frozenset[str]] = {
-    "labour": frozenset({"labour"}),
-    "parts": frozenset({"parts", "sundry"}),
-    "paint": frozenset({"paint", "paint_materials"}),
-    "extras": frozenset({"extras", "additional", "specialist_operation"}),
-}
+#: Section codes that print no total of their own and are covered by another
+#: section's stated figure, so they have no entry in ``SECTION_TOTAL_FIELDS``:
+#: a repairer's "Total Parts" already includes its sundry-parts line.
+_FOLDED_SECTION_CODES: dict[str, str] = {"sundry": "parts_net"}
+
+
+def _section_families() -> dict[str, frozenset[str]]:
+    """Invert :data:`SECTION_TOTAL_FIELDS`: the codes behind each stated total.
+
+    A total and the rows that make it up have to land in the same family, or a
+    row sum is reconciled against the wrong printed figure -- "Additional
+    charges" covers the specialist-operation rows printed above it. The parser
+    already records which ``InvoiceTotals`` field each section's printed total
+    belongs to, so that map is the single source of truth and this one is
+    derived from it rather than restating it.
+    """
+
+    families: dict[str, set[str]] = {}
+    for code, field in (SECTION_TOTAL_FIELDS | _FOLDED_SECTION_CODES).items():
+        families.setdefault(field.removesuffix("_net"), set()).add(code)
+    return {name: frozenset(codes) for name, codes in families.items()}
+
+
+#: ``{stated total: the section codes it covers}``, keyed by the
+#: ``InvoiceTotals`` field without its ``_net`` suffix: labour, parts, paint
+#: and extras.
+SECTION_FAMILIES: dict[str, frozenset[str]] = _section_families()
+
+#: Every code some stated total covers. ``line_item_type`` is an open
+#: vocabulary, so a row can carry a code no printed total covers -- a novel
+#: heading, or the "unknown" every unrecognised row is given. Such a row has no
+#: section figure of its own to be reconciled against and keeps its historical
+#: home in the parts sum.
+_FAMILIED_CODES: frozenset[str] = frozenset().union(*SECTION_FAMILIES.values())
 
 
 def validate_invoice(
@@ -114,36 +136,56 @@ def validate_invoice(
         if line.line_total_net is not None and line.vat_applicable
     ]
     # Section codes only exist once the extraction recognised the printed
-    # sections. Without them the historical attribution stands unchanged:
-    # labour is item_kind "labour", parts is every other vatable row. A fully
-    # rolled-up invoice has no itemised rows to read codes off, so its section
-    # totals are the only evidence of its sections there is.
+    # sections. "unknown" is not such a code: the parser stamps it on every row
+    # of an invoice whose headings it did not recognise, so reading it as
+    # evidence of sections splits a correct invoice's rows away from the total
+    # they add up to. Without recognised sections the historical attribution
+    # stands unchanged: labour is item_kind "labour", parts is every other
+    # vatable row. A fully rolled-up invoice has no itemised rows to read codes
+    # off, so its section totals are the only evidence of its sections there is.
     coded = itemised or invoice.line_items
-    sectioned = any(line.line_item_type for line in coded)
+    sectioned = any(
+        line.line_item_type and line.line_item_type != UNKNOWN_LINE_ITEM_TYPE
+        for line in coded
+    )
+
+    def historical_parts_row(line) -> bool:
+        """The parts sum before sections were read: every vatable non-labour row."""
+
+        return bool(line.vat_applicable) and line.item_kind != "labour"
 
     def section_rows(code: str) -> list[Decimal]:
-        if sectioned:
-            family = SECTION_FAMILIES[code]
-            return [
-                line.line_total_net
-                for line in itemised
-                if line.line_total_net is not None and line.line_item_type in family
-            ]
-        if code == "labour":
-            return [
-                line.line_total_net
-                for line in itemised
-                if line.line_total_net is not None and line.item_kind == "labour"
-            ]
-        if code == "parts":
-            return [
-                line.line_total_net
-                for line in itemised
-                if line.line_total_net is not None
-                and line.vat_applicable
-                and line.item_kind != "labour"
-            ]
-        return []
+        if not sectioned:
+            if code == "labour":
+                return [
+                    line.line_total_net
+                    for line in itemised
+                    if line.line_total_net is not None and line.item_kind == "labour"
+                ]
+            if code == "parts":
+                return [
+                    line.line_total_net
+                    for line in itemised
+                    if line.line_total_net is not None and historical_parts_row(line)
+                ]
+            return []
+        family = SECTION_FAMILIES[code]
+        return [
+            line.line_total_net
+            for line in itemised
+            if line.line_total_net is not None
+            and (
+                line.line_item_type in family
+                # A row no stated total covers keeps its historical home, or a
+                # recognised section elsewhere on the invoice would silently
+                # drop it out of every row sum.
+                or (
+                    code == "parts"
+                    and (line.line_item_type or UNKNOWN_LINE_ITEM_TYPE) not in _FAMILIED_CODES
+                    and historical_parts_row(line)
+                )
+            )
+        ]
 
     stated = {
         "labour": invoice.totals.labour_net,
@@ -212,6 +254,59 @@ def validate_invoice(
             ),
         )
     )
+    # Paint and extras get the same reconciliation as labour and parts. Before
+    # sections were read their rows were counted inside the parts sum, so a
+    # wrong paint or extras total was caught there; now that each section's
+    # rows are attributed to its own stated figure, the section that lost them
+    # has to check them itself or nothing checks them at all.
+    for code, check_code, label in (
+        ("paint", "PAINT_TOTAL_MISMATCH", "paint"),
+        ("extras", "EXTRAS_TOTAL_MISMATCH", "extras"),
+    ):
+        if code not in stated:
+            findings.append(
+                _not_applicable(
+                    check_code,
+                    explanation=(
+                        f"No printed section headings were recognised, so no {label} "
+                        f"rows can be attributed and the stated {label} total has "
+                        "nothing to reconcile against."
+                    ),
+                )
+            )
+            continue
+        rows = section_rows(code)
+        if not rows:
+            findings.append(
+                _not_applicable(
+                    check_code,
+                    explanation=(
+                        f"{label.capitalize()} is stated only in the invoice summary, "
+                        f"so there are no detailed {label} lines to reconcile. The "
+                        f"stated {label} amount is included in the subtotal, VAT and "
+                        "gross-total checks."
+                    )
+                    if code in summary_only
+                    else (
+                        f"The invoice prints no {label} section, so there is nothing "
+                        "to reconcile."
+                    ),
+                )
+            )
+            continue
+        findings.append(
+            _finding(
+                check_code,
+                sum(rows, ZERO),
+                stated[code],
+                invoice_tolerance,
+                severity="high",
+                explanation=(
+                    f"Sum of the extracted {label}-section lines against the stated "
+                    f"{label} total."
+                ),
+            )
+        )
     findings.append(
         _finding(
             "SUBTOTAL_MISMATCH",

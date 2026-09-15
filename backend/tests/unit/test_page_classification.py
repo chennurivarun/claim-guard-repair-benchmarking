@@ -165,6 +165,89 @@ def test_other_page_rescue_survives_authorised_assessment_gate() -> None:
     assert other_page.group_key is not None
 
 
+def test_schedule_continuation_page_becomes_assessment_evidence() -> None:
+    """A LABOUR schedule that runs onto a page with no identity marker of its
+    own classifies as OTHER. Leaving it OTHER while the assessment parser
+    reads it makes the document say one thing and the operations another, so
+    the page is reclassified. Its rows end in work units, not money, which is
+    why the priced-row rescue never wanted it."""
+
+    summary_page = _page(
+        1,
+        "Assessment report\nSummary Information\nAssessment Number   D7576879\n"
+        "LABOUR\nTime Basis 10 WU=1HR.Price £80.00/HR\n"
+        "52904A00   REPAIR LOWER TAILGATE   40.0\n",
+        PageType.ENGINEER_ASSESSMENT,
+    )
+    continuation_page = _page(
+        2,
+        "865246R77 ZAX   REPAIR R/R BUMPER   20.0\n"
+        "NO MUMBER   REPAIR REAR BUMPER   30.0\n"
+        "0281   R+R REAR BUMPER CPL   5.0\n"
+        "   Total Work Units   139.0\n",
+        PageType.OTHER,
+    )
+    pages = [summary_page, continuation_page]
+
+    _reclassify_priced_assessment_pages(pages)
+
+    assert continuation_page.page_type == PageType.ENGINEER_ASSESSMENT
+    assert "assessment continuation" in continuation_page.classification_signals
+    assert continuation_page.group_key is None
+
+
+def test_remittance_page_after_an_assessment_is_not_a_continuation() -> None:
+    """A payment page carries no schedule rows at all -- every line it prints
+    is a total, a balance or a payment -- so it is neither rescued to INVOICE
+    nor absorbed into the assessment. It stays OTHER, which keeps it out of
+    the assessment parser and off the vision-invoice candidate list."""
+
+    summary_page = _page(
+        1,
+        "Assessment report\nSummary Information\nAssessment Number   D7576879\n",
+        PageType.ENGINEER_ASSESSMENT,
+    )
+    remittance_page = _page(
+        2,
+        "Payment received on account   250.00\n"
+        "Balance carried forward   120.00\n"
+        "Discount agreed   35.00\n",
+        PageType.OTHER,
+    )
+    pages = [summary_page, remittance_page]
+
+    _reclassify_priced_assessment_pages(pages)
+
+    assert remittance_page.page_type == PageType.OTHER
+    assert remittance_page.classification_signals == []
+
+
+def test_priced_garage_receipt_behind_an_assessment_is_still_an_invoice() -> None:
+    """The continuation rule must not swallow a genuinely separate priced
+    document bound behind the report: the priced-row rescue is tried first."""
+
+    summary_page = _page(
+        1,
+        "Assessment report\nSummary Information\nAssessment Number   D7576879\n",
+        PageType.ENGINEER_ASSESSMENT,
+    )
+    receipt_page = _page(
+        2,
+        "Invoice 88214   Corner Garage Ltd\n"
+        "Wiper blade set   12.00\n"
+        "Screen wash refill   12.00\n"
+        "Bulb kit   12.00\n"
+        "Total   36.00\n",
+        PageType.OTHER,
+    )
+    pages = [summary_page, receipt_page]
+
+    _reclassify_priced_assessment_pages(pages)
+
+    assert receipt_page.page_type == PageType.INVOICE
+    assert receipt_page.group_key is not None
+
+
 def test_group_key_finds_invoice_number_when_date_matches_first() -> None:
     """re.search only ever inspects the first match of the pattern, so on
     real client text with "Invoice Date" printed above "Invoice Number" the

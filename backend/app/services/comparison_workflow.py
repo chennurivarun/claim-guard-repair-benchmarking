@@ -332,6 +332,11 @@ def run_case_comparison(
         for invoice in invoices
         for line in invoice.line_items
         if line.status != ReviewStatus.REJECTED
+        # A rolled-up section total is the printed value of a whole section,
+        # not a priced repair item. Mapping one to an ontology item and pricing
+        # it compares a section against a part, so it must never be mapped,
+        # priced or compared.
+        and not line.is_section_total
         and line.line_total_net is not None
         and Decimal(str(line.line_total_net)) > 0
     }

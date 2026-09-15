@@ -674,6 +674,12 @@ def sync_finalised_case_to_benchmarks(session: Session, case: Case) -> int:
                 Invoice.case_id == case.id,
                 MappingRun.processing_run_id == case.current_processing_run_id,
                 Invoice.document_role == InvoiceDocumentRole.INVOICE,
+                # A rolled-up section total is the value of a whole section,
+                # not the price of one repair item. Letting one into
+                # `historical_observations` would poison every future P90 for
+                # the item it was mapped to, so it is excluded here as well as
+                # at mapping time.
+                InvoiceLineItem.is_section_total.is_(False),
                 OntologyMapping.selected_ontology_item_id.is_not(None),
                 OntologyMapping.final_status.in_({MappingStatus.APPROVED, MappingStatus.EDITED}),
             )
