@@ -1057,6 +1057,13 @@ export function ReviewFindingsScreen({
       cancelled = true
     }
   }, [workspace.claim.id])
+  const extractsSection = (
+    <ExtractsSection
+      extracts={extracts}
+      loading={extractsLoading}
+      error={extractsError}
+    />
+  )
   const line =
     challenged[Math.min(activeIndex, Math.max(challenged.length - 1, 0))]
   const unresolved = challenged.filter(
@@ -1083,11 +1090,7 @@ export function ReviewFindingsScreen({
           </p>
         </div>
         <EngineerAssessmentCard assessment={engineerAssessment} />
-        <ExtractsSection
-          extracts={extracts}
-          loading={extractsLoading}
-          error={extractsError}
-        />
+        {extractsSection}
         <Alert>
           <InfoIcon />
           <AlertTitle>
@@ -1116,11 +1119,7 @@ export function ReviewFindingsScreen({
           </h1>
         </div>
         <EngineerAssessmentCard assessment={engineerAssessment} />
-        <ExtractsSection
-          extracts={extracts}
-          loading={extractsLoading}
-          error={extractsError}
-        />
+        {extractsSection}
         <Alert>
           <CheckIcon />
           <AlertTitle>No price challenges found</AlertTitle>
@@ -1172,11 +1171,7 @@ export function ReviewFindingsScreen({
       </div>
 
       <EngineerAssessmentCard assessment={engineerAssessment} />
-      <ExtractsSection
-        extracts={extracts}
-        loading={extractsLoading}
-        error={extractsError}
-      />
+      {extractsSection}
 
       <div className="grid min-w-0 gap-6 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.65fr)]">
         <Card>

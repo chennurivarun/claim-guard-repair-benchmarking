@@ -772,6 +772,7 @@ def get_engineer_assessments(case_reference: str, db: DatabaseSession) -> list[d
 
 def _invoice_extract_line_payload(line: InvoiceLineItem) -> dict[str, Any]:
     return {
+        "id": line.id,
         "sequence_no": line.sequence_no,
         "line_item_type": line.line_item_type,
         "raw_category": line.raw_category,
@@ -791,6 +792,7 @@ def _invoice_extract_payload(invoice: Invoice) -> dict[str, Any]:
         else {}
     )
     return {
+        "invoice_id": invoice.id,
         "invoice_number": invoice.invoice_number,
         "vehicle_make": invoice.vehicle.make if invoice.vehicle else None,
         "vehicle_model": invoice.vehicle.model if invoice.vehicle else None,
@@ -838,6 +840,7 @@ def _assessment_extract_line_payload(
 def _assessment_extract_payload(assessment: EngineerAssessment) -> dict[str, Any]:
     price_derived_map = _assessment_price_derived_map(assessment)
     return {
+        "assessment_id": assessment.id,
         "assessment_number": assessment.assessment_number,
         "vehicle_make": assessment.vehicle_make,
         "vehicle_model": assessment.vehicle_model,
@@ -877,7 +880,7 @@ def get_claim_extracts(case_reference: str, db: DatabaseSession) -> dict[str, An
                 selectinload(Invoice.line_items),
                 selectinload(Invoice.document),
             )
-            .order_by(Invoice.invoice_date)
+            .order_by(Invoice.invoice_date, Invoice.id)
         )
         .unique()
         .all()
@@ -889,12 +892,14 @@ def get_claim_extracts(case_reference: str, db: DatabaseSession) -> dict[str, An
             selectinload(EngineerAssessment.operations),
             selectinload(EngineerAssessment.paired_invoice),
         )
-        .order_by(EngineerAssessment.created_at)
+        .order_by(EngineerAssessment.created_at, EngineerAssessment.id)
     ).all()
     section_breakdowns: list[dict[str, Any]] = []
     for invoice in invoices:
         for breakdown in section_breakdown_for_invoice(db, invoice):
-            section_breakdowns.append({"invoice_number": invoice.invoice_number, **breakdown})
+            section_breakdowns.append(
+                {"invoice_id": invoice.id, "invoice_number": invoice.invoice_number, **breakdown}
+            )
     return {
         "invoice_extracts": [_invoice_extract_payload(invoice) for invoice in invoices],
         "assessment_extracts": [

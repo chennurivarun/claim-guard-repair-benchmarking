@@ -335,6 +335,7 @@ export interface EngineerAssessmentPayload {
 }
 
 export interface InvoiceExtractLine {
+  id: string
   sequence_no: number
   line_item_type: string | null
   raw_category: string | null
@@ -347,6 +348,7 @@ export interface InvoiceExtractLine {
 }
 
 export interface InvoiceExtractPayload {
+  invoice_id: string
   invoice_number: string | null
   vehicle_make: string | null
   vehicle_model: string | null
@@ -373,6 +375,7 @@ export interface AssessmentExtractLine {
 }
 
 export interface AssessmentExtractPayload {
+  assessment_id: string
   assessment_number: string | null
   vehicle_make: string | null
   vehicle_model: string | null
@@ -383,6 +386,8 @@ export interface AssessmentExtractPayload {
   pair_status: "paired" | "unpaired"
   pair_confidence: number | null
   pair_reasons: string[]
+  /** Optional: per-field pairing verdicts, if the pairing engine emits them. */
+  pair_key_verdicts?: string[]
   lines: AssessmentExtractLine[]
 }
 
@@ -398,6 +403,7 @@ export interface SectionBreakdownRow {
 }
 
 export interface SectionBreakdownPayload {
+  invoice_id: string
   invoice_number: string | null
   invoice_line_item_id: string
   line_item_type: string
@@ -410,6 +416,12 @@ export interface SectionBreakdownPayload {
   difference: string | null
   breakdown_source: string
   rows: SectionBreakdownRow[]
+  /** Optional: false means the assessment has no rows for this section at all
+   * (distinct from an empty `rows` array meaning "not captured yet"). */
+  breakdown_available?: boolean
+  /** Optional: the assessment's own printed rows total, shown beside the
+   * section total when the client format prints one. */
+  rows_total?: string | number | null
 }
 
 export interface ClaimExtractsPayload {
