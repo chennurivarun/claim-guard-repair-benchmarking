@@ -68,16 +68,32 @@ def normalise_unit(value: str | None, *, item_kind: str | None = None) -> str:
     return cleaned or "each"
 
 
+#: The one separator a printed identifier carries meaning in. Everything else
+#: is presentation and is dropped.
+IDENTIFIER_SEPARATOR = "/"
+
+
 def normalise_identifier(value: str | None) -> str | None:
-    """Comparison form of a printed identifier: uppercase, alphanumeric only.
+    """Comparison form of a printed identifier: uppercase, alphanumeric and "/".
 
     Registrations, claim references and policy numbers are printed with
     whatever spacing and punctuation the issuing system uses, so one identity
-    reads two ways across a pair of documents: ``245338996/1`` ->
-    ``2453389961``, ``AB12 XYZ`` -> ``AB12XYZ``, ``PL-739284`` -> ``PL739284``.
+    reads two ways across a pair of documents: ``AB12 XYZ`` -> ``AB12XYZ``,
+    ``PL-739284`` -> ``PL739284``, ``245338996 / 1`` -> ``245338996/1``.
+
+    ``/`` survives because the client's claim references are
+    ``base/incident``: ``123456/1`` and ``123456/2`` are two claims on one
+    policy, and dropping the separator would also collide ``123456/1`` with
+    the unrelated ``1234561``. No registration or policy number prints a
+    ``/``, so ``normalise_registration`` is unaffected by keeping it.
+
     A value with no alphanumeric content is not an identifier, so it
     normalises to ``None`` and is treated as "not printed".
     """
 
-    normalised = "".join(character for character in (value or "").upper() if character.isalnum())
-    return normalised or None
+    normalised = "".join(
+        character
+        for character in (value or "").upper()
+        if character.isalnum() or character == IDENTIFIER_SEPARATOR
+    )
+    return normalised if any(character.isalnum() for character in normalised) else None
