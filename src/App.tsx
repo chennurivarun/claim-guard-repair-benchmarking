@@ -3,6 +3,13 @@ import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Toaster } from "@/components/ui/sonner"
 import { AppShell } from "@/features/claim-guard/app-shell"
 import { demoWorkspace } from "@/features/claim-guard/demo-data"
@@ -37,6 +44,7 @@ import {
   CalculationChecksScreen,
   OntologyMappingScreen,
 } from "@/features/claim-guard/screens-validation"
+import { documentIntelligenceViews } from "@/features/claim-guard/types"
 import type {
   ClaimWorkspace,
   InvoiceLine,
@@ -862,57 +870,84 @@ export function App() {
       break
     case "benchmark-setup":
     case "upload-processing":
-      screen = (
-        <ClientIntakeScreen
-          key={activeScreen}
-          setup={activeScreen === "benchmark-setup"}
-          onOpenManualReview={openManualReview}
-          caseReference={workspace.claim.id}
-          finalised={caseFinalised}
-          onProcessed={async (preferredDocumentId) => {
-            const latestInvoices = await fetchClaimInvoices(
-              workspace.claim.id,
-              p90ThresholdPct
-            )
-            const preferredInvoice = preferredDocumentId
-              ? latestInvoices.find(
-                  (invoice) => invoice.document_id === preferredDocumentId
-                )
-              : undefined
-            setInvoices(latestInvoices)
-            await refreshWorkspace(preferredInvoice?.id)
-          }}
-          onContinue={() =>
-            navigate(
-              activeScreen === "benchmark-setup"
-                ? "upload-processing"
-                : "document-pages"
-            )
-          }
-        />
-      )
-      break
     case "document-pages":
-      screen = (
-        <DocumentPagesScreen
-          invoiceId={workspace.invoice.id}
-          caseReference={workspace.claim.id}
-          documentId={
-            invoices.find((row) => row.id === workspace.invoice.id)?.document_id
-          }
-          onContinue={() => navigate("extracted-invoice")}
-        />
-      )
-      break
     case "extracted-invoice":
       screen = (
-        <ExtractedInvoiceScreen
-          workspace={workspace}
-          onEdit={inspectLine}
-          onDecision={handleExtractionDecision}
-          savingLineId={extractionSavingLineId}
-          onContinue={() => navigate("calculation-checks")}
-        />
+        <>
+          {activeScreen !== "benchmark-setup" && (
+            <div className="flex items-center justify-end gap-2">
+              <span className="text-xs font-medium text-muted-foreground">
+                Viewing
+              </span>
+              <Select
+                value={activeScreen}
+                onValueChange={(value) => navigate(value as ScreenId)}
+              >
+                <SelectTrigger
+                  size="sm"
+                  className="w-[190px]"
+                  aria-label="Document Intelligence view"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {documentIntelligenceViews.map((view) => (
+                    <SelectItem key={view.id} value={view.id}>
+                      {view.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+          {activeScreen === "document-pages" ? (
+            <DocumentPagesScreen
+              invoiceId={workspace.invoice.id}
+              caseReference={workspace.claim.id}
+              documentId={
+                invoices.find((row) => row.id === workspace.invoice.id)
+                  ?.document_id
+              }
+              onContinue={() => navigate("extracted-invoice")}
+            />
+          ) : activeScreen === "extracted-invoice" ? (
+            <ExtractedInvoiceScreen
+              workspace={workspace}
+              onEdit={inspectLine}
+              onDecision={handleExtractionDecision}
+              savingLineId={extractionSavingLineId}
+              onContinue={() => navigate("calculation-checks")}
+            />
+          ) : (
+            <ClientIntakeScreen
+              key={activeScreen}
+              setup={activeScreen === "benchmark-setup"}
+              onOpenManualReview={openManualReview}
+              caseReference={workspace.claim.id}
+              finalised={caseFinalised}
+              onProcessed={async (preferredDocumentId) => {
+                const latestInvoices = await fetchClaimInvoices(
+                  workspace.claim.id,
+                  p90ThresholdPct
+                )
+                const preferredInvoice = preferredDocumentId
+                  ? latestInvoices.find(
+                      (invoice) => invoice.document_id === preferredDocumentId
+                    )
+                  : undefined
+                setInvoices(latestInvoices)
+                await refreshWorkspace(preferredInvoice?.id)
+              }}
+              onContinue={() =>
+                navigate(
+                  activeScreen === "benchmark-setup"
+                    ? "upload-processing"
+                    : "document-pages"
+                )
+              }
+            />
+          )}
+        </>
       )
       break
     case "calculation-checks":
