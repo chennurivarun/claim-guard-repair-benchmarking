@@ -87,6 +87,25 @@ def add_grid_table(doc: DocxDocumentType, rows: list[tuple[str, str, str, str]])
     return table
 
 
+def add_label_grid(doc: DocxDocumentType, rows: list[tuple[str, str]]) -> DocxTable:
+    """Single-column label/value grid (label, value), no colons.
+
+    The DLAS "INVOICE" header and the "Request for Payment" invoice-date block
+    print their identity fields exactly like this -- a label cell beside a
+    value cell, with no colon anywhere on the document. Building them as a real
+    table (rather than the "Label: value" paragraphs this script used to emit)
+    is what makes the fixtures reproduce the client's own layout.
+    """
+
+    table = doc.add_table(rows=0, cols=2)
+    table.style = "Table Grid"
+    for label, value in rows:
+        cells = table.add_row().cells
+        cells[0].text = label
+        cells[1].text = value
+    return table
+
+
 def add_schedule_table(
     doc: DocxDocumentType, header: list[str], rows: list[list[str]]
 ) -> DocxTable:
@@ -345,14 +364,16 @@ def build_repair_invoice_format_1() -> DocxDocumentType:
 
     add_heading_line(doc, "DLAS")
     add_paragraphs(doc, [DLAS_ISSUER_BLOCK, "INVOICE"])
-    add_paragraphs(
+    # No colons: the DLAS header is a label cell beside a value cell. No policy
+    # number and no vehicle make/model are printed anywhere on this invoice.
+    add_label_grid(
         doc,
         [
-            "Invoice Date: 2/3/2023",
-            "Invoice Number: 343653726836/1~3538",
-            "DL Claim number: 245338996/1",
-            "DL policyholder: John Doe",
-            "Vehicle Registration : AB12XYZ",
+            ("Invoice Date", "2/3/2023"),
+            ("Invoice Number", "343653726836/1~3538"),
+            ("DL Claim number", "245338996/1"),
+            ("DL policyholder", "John Doe"),
+            ("Vehicle Registration", "AB12XYZ"),
         ],
     )
 
@@ -390,6 +411,13 @@ def build_repair_invoice_format_1() -> DocxDocumentType:
     ]
     add_schedule_table(doc, ["Specialist Operation", "Cost (£)"], specialist_rows)
 
+    # Page 2 of the client's invoice carries the rolled-up totals and the
+    # repairer footer; the page-1 issuer block names the insurer's invoicing
+    # department, not the repairer. (`docx_ingest` reflows the replica onto its
+    # own pages and does not honour this break, so the extracted text is one
+    # page -- the two company blocks are still in document order, which is what
+    # `invoice_parser._footer_company` reads.)
+    add_page_break(doc)
     add_paragraphs(
         doc,
         [
@@ -517,11 +545,11 @@ def build_invoice_2_request_for_payment() -> DocxDocumentType:
 
     add_heading_line(doc, "DL Assistance")
     add_paragraphs(doc, [DLAS_ISSUER_BLOCK, "** Request for Payment **"])
-    add_paragraphs(
+    add_label_grid(
         doc,
         [
-            "Invoice Date: 26/11/2025",
-            "Invoice Number: 22564547648/1~AJ123456",
+            ("Invoice Date", "26/11/2025"),
+            ("Invoice Number", "22564547648/1~AJ123456"),
         ],
     )
 
@@ -796,20 +824,21 @@ def build_repair_invoice_format_7() -> DocxDocumentType:
 
     add_heading_line(doc, "DLAS")
     add_paragraphs(doc, [DLAS_ISSUER_BLOCK, "INVOICE"])
-    add_paragraphs(
+    add_label_grid(
         doc,
         [
-            "Invoice Date: 2/3/2023",
+            ("Invoice Date", "2/3/2023"),
             # Same invoice number as pair 1's invoice, despite a different
             # claim -- the client's own duplicate, reproduced verbatim.
-            "Invoice Number: 343653726836/1~3538",
-            "DL Claim number: 426953180/3",
-            "DL policyholder: Oliver Reed",
-            "Vehicle Registration : JK21MNO",
+            ("Invoice Number", "343653726836/1~3538"),
+            ("DL Claim number", "426953180/3"),
+            ("DL policyholder", "Oliver Reed"),
+            ("Vehicle Registration", "JK21MNO"),
         ],
     )
-    # No vehicle make/model anywhere on this invoice -- deliberate, per the
-    # transcription; the gap-fill logic must recover it from the assessment.
+    # No policy number and no vehicle make/model anywhere on this invoice --
+    # deliberate, per the transcription; the gap-fill logic must recover them
+    # from the assessment.
 
     add_heading_line(doc, "Parts")
     parts_rows = [
@@ -845,6 +874,9 @@ def build_repair_invoice_format_7() -> DocxDocumentType:
     ]
     add_schedule_table(doc, ["Specialist Operation", "Cost (£)"], specialist_rows)
 
+    # Page 2 carries the totals, the validation note and the repairer footer
+    # (see the note on the same break in `build_repair_invoice_format_1`).
+    add_page_break(doc)
     add_paragraphs(
         doc,
         [

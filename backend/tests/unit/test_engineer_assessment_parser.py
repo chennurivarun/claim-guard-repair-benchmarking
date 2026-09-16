@@ -394,3 +394,71 @@ def test_wrapped_description_joins_and_an_unrated_row_keeps_no_price() -> None:
     assert operation.unit_price is None
     assert operation.total is None
     assert operation.price_derived is False
+
+
+#: The Summary Information and Vehicle Details values each client assessment
+#: prints. Every one of these grids is followed by the free-text Model Options
+#: list, and not one character of that list belongs in any of these values.
+CLIENT_ASSESSMENT_IDENTITY: dict[str, dict[str, object]] = {
+    "DL_Auda_format_1_assessment.docx": {
+        # The page-1 header prints L0987892222 and later running headers print
+        # D38892222; the Summary Information grid wins over both.
+        "assessment_number": "D7576879",
+        "claim_reference": "245338996/1",
+        # The client's own placeholder, kept as printed.
+        "policy_number": "PH",
+        "registration": "AB12XYZ",
+        "vehicle_make": "HYUNDAI",
+        "vehicle_model": "140 SE Nav",
+        "vin": "ABCD1234567",
+    },
+    "DL_Auda_format_2_assessment.docx": {
+        "assessment_number": "D7576879",
+        "claim_reference": "123456/1",
+        "policy_number": "103466899",
+        "registration": "A30DRY",
+        "vehicle_make": "SKODA",
+        "vehicle_model": "KAROQ SE TSI 115]",
+        "vin": "ABCD98765432",
+    },
+    "DL_Auda_format_7_assessment.docx": {
+        "assessment_number": "T4592861",
+        "claim_reference": "426953180/3",
+        "policy_number": "PL-739284",
+        "registration": "JK21MNO",
+        "vehicle_make": "HYUNDAI",
+        "vehicle_model": "140 SE Nav",
+        "vin": "TRN7429685310",
+    },
+}
+
+
+@pytest.mark.parametrize("filename", sorted(CLIENT_ASSESSMENT_IDENTITY))
+def test_client_assessment_identity_is_exactly_what_is_printed(
+    filename: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parsed = parse_engineer_assessment(_fixture_pages(monkeypatch, filename))
+    expected = CLIENT_ASSESSMENT_IDENTITY[filename]
+
+    assert {name: parsed.fields.get(name) for name in expected} == expected
+
+
+@pytest.mark.parametrize("filename", sorted(CLIENT_ASSESSMENT_IDENTITY))
+def test_model_options_never_leak_into_an_identity_value(
+    filename: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No identity value carries a Model Options item as a suffix.
+
+    The running app stored registration "AB12XYZ WITH A/C" and model "140 SE
+    Nav FROM 06/2017" for format 1, and the pair then failed on a registration
+    conflict. Every one of these reports prints a Model Options list and no two
+    print the same items, so this asserts the general shape rather than the
+    strings: an identity value is one printed value and nothing else.
+    """
+
+    parsed = parse_engineer_assessment(_fixture_pages(monkeypatch, filename))
+
+    for name in ("assessment_number", "claim_reference", "policy_number", "registration", "vin"):
+        value = parsed.fields[name]
+        assert isinstance(value, str)
+        assert value.split() == [value], f"{name} carried a second column: {value!r}"

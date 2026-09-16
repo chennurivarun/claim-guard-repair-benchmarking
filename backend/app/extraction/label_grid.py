@@ -109,6 +109,42 @@ MONEY_FIELDS = frozenset(
     }
 )
 
+# ponytail: WHERE A FIELD VALUE ENDS.
+#
+# A grid row normally reaches this module with its columns intact, and the
+# value is simply the first cell after the label -- ``Registration Number``,
+# ``AB12XYZ``, ``WITH A/C`` are three cells and only the second is the value.
+# Some renderers collapse the gap between two columns to a single space, and
+# the reader is then handed one run-on cell carrying the label, its value and
+# whatever the neighbouring column printed on the same row.  That is how the
+# running app stored registration ``AB12XYZ WITH A/C`` and model ``140 SE Nav
+# FROM 06/2017`` for Format 1, whose Vehicle Details grid is printed beside
+# the free-text Model Options list (``FROM 06/2017 · MODEL i30 · HEAT
+# ABSORBING GLASS · WITH A/C · ...``, one item per grid row).
+#
+# The rule: **a value ends at the end of the printed value, never at the end
+# of the line.**  Once the column break is gone the only evidence left is the
+# shape of the value itself, so every field whose printed value is a single
+# token declares that shape once, here, and the remainder of a run-on cell is
+# cut to it.  This is deliberately a shape, not a list of the strings the
+# neighbouring column happens to print: all three assessments carry a Model
+# Options list and no two print the same items.
+#
+# Fields with no fixed shape -- make, model, customer names, addresses, notes
+# -- declare none and keep the whole remainder.  There is nothing to cut them
+# on, and a guess would silently truncate a genuine multi-word value
+# (``140 SE Nav``, ``KAROQ SE TSI 115]``) or a two-line address.  Multi-line
+# values are never affected either way: the reader takes at most one line for
+# a value and never concatenates two.
+VALUE_SHAPES: dict[str, re.Pattern[str]] = {
+    "registration": re.compile(r"[A-Za-z]{1,3}[0-9]{1,3}\s?[A-Za-z]{1,3}"),
+    "vin": re.compile(r"[A-Za-z0-9]{8,20}"),
+    "claim_reference": re.compile(r"\S+"),
+    "policy_number": re.compile(r"\S+"),
+    "assessment_number": re.compile(r"\S+"),
+    "invoice_number": re.compile(r"\S+"),
+}
+
 # ponytail: an amount is recognised only with two decimal places (optionally
 # £-prefixed).  A money total printed without pence falls back to the generic
 # "first non-empty candidate" rule rather than being preferred.
@@ -185,7 +221,23 @@ def _next_line_value(rows: list[list[str]], index: int) -> str | None:
     return None
 
 
+def _trim_to_value(field: str, remainder: str) -> str:
+    """Cut a run-on cell's remainder at the end of the printed value.
+
+    Only the remainder is cut, never a neighbouring cell: a cell boundary is
+    already a value boundary, and a document that prints ``Policy Number`` and
+    ``AB 12 34`` in two cells means all of it.  See ``VALUE_SHAPES``.
+    """
+
+    shape = VALUE_SHAPES.get(field)
+    if shape is None or not remainder:
+        return remainder
+    match = shape.match(remainder)
+    return match.group(0) if match else remainder
+
+
 def _pick_value(field: str, remainder: str, candidates: list[str]) -> str | None:
+    remainder = _trim_to_value(field, remainder)
     options = [value for value in ([remainder, *candidates]) if value and not _is_label(value)]
     if not options:
         return None
@@ -207,6 +259,11 @@ def read_label_values(text: str) -> dict[str, str]:
     a strict (whole-cell or ``Label: value``) match; earliest occurrence.  That
     is what makes Format 1 report ``assessment_number = "D7576879"`` from the
     summary grid rather than ``L0987892222`` from the page-1 header band.
+
+    A value always ends where the printed value ends: it is one cell, or one
+    line, or -- when a renderer collapsed the columns into a single run-on
+    cell -- as much of that cell as the field's ``VALUE_SHAPES`` entry claims.
+    Text from the next column is never appended.
     """
 
     lines = (text or "").splitlines()

@@ -144,6 +144,17 @@ COLUMN_HEADING_TOKENS = frozenset(
     }
 )
 LEADING_CONNECTOR_PATTERN = re.compile(r"^(?:and|&|/)\s*", re.IGNORECASE)
+# A printed company block opens with the company's registered name and runs on
+# into its registration and address: "DL Assistance Accident repair Center Ltd,
+# Registered in England & Wales No 1234, registered Office: St Clare House,
+# ...". The name is everything up to the first company suffix; the lazy
+# quantifier stops at the first one so a block naming two companies keeps the
+# one it opens with.
+COMPANY_BLOCK_PATTERN = re.compile(
+    r"^(?P<name>[A-Za-z0-9][\w&.'’/-]*(?:\s+[\w&.'’/-]+)*?"
+    r"\s+(?:Ltd|Limited|LLP|LLC|PLC|Inc)\.?)\s*(?:,|$)",
+    re.IGNORECASE,
+)
 
 
 def _first_not_none(*values: Decimal | None) -> Decimal | None:
@@ -207,6 +218,29 @@ def _labelled_registration(value: str | None) -> str | None:
 
     cleaned = strip_scan_artifacts(value or "")
     return cleaned if REGISTRATION_PATTERN.fullmatch(cleaned.upper()) else None
+
+
+def _footer_company(text: str) -> str | None:
+    """The repairer named in the document's closing company block.
+
+    Both DLAS layouts print two company blocks and they share one address: the
+    insurer's invoicing department heads page 1 ("DL Insurance Limited, Central
+    Invoicing Dept, St Clare House, ...") and the repairer closes the document
+    in the page-2 footer ("DL Assistance Accident repair Center Ltd, Registered
+    in England & Wales No 1234, ..."). Nothing in the text says which is which,
+    so position decides: the issuer opens the invoice and the repairer closes
+    it, and the last block therefore wins.
+    """
+
+    names = [
+        match.group("name").strip()
+        for match in (
+            COMPANY_BLOCK_PATTERN.match(strip_scan_artifacts(line))
+            for line in text.splitlines()
+        )
+        if match is not None
+    ]
+    return names[-1] if names else None
 
 
 def _labelled_value(value: str | None) -> str | None:
@@ -1288,6 +1322,9 @@ class InvoiceParser:
             if re.search(r"(clinic|garage|autosolutions|mot centre|mini service)", cleaned, re.I):
                 supplier = cleaned
                 break
+        # The DLAS invoices name no garage; their repairer is the closing
+        # company block, which `_footer_company` reads.
+        supplier = supplier or _footer_company(text)
         customer_match = re.search(
             r"(?:Clinic|Garage|Autosolutions|MOT Centre)\s+(.+?)\s+Invoice\s+[A-Z0-9/-]+",
             compact,

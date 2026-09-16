@@ -207,6 +207,68 @@ def test_blank_values_yield_no_key() -> None:
     )
 
 
+# The Vehicle Details grid of every client assessment is printed beside the
+# free-text Model Options list. A renderer that collapses the gap between the
+# two columns to a single space hands the reader one run-on cell per row -- the
+# shape that made the running app store "AB12XYZ WITH A/C" and
+# "140 SE Nav FROM 06/2017" for format 1.
+FORMAT_1_VEHICLE_DETAILS_COLUMNS_COLLAPSED = """Vehicle Details
+Manufacturer: HYUNDAI Model Options
+Model: 140 SE Nav FROM 06/2017
+Model Sheet Number: 3071 MODEL i30
+Engine: 1.7 LTR 85 KW HEAT ABSORBING GLASS
+Registration Number: AB12XYZ WITH A/C
+VIN Number: ABCD1234567 DRIVER SEAT HEIGHT
+Odometer: 576882 miles WITHOUT ALARM
+"""
+
+FORMAT_2_SUMMARY_COLUMNS_COLLAPSED = """Summary Information
+Assessment Number D7576879 Reference Name John Doe
+Claim Reference 123456/1 Able to authorize repairs Yes
+Policy Number 103466899 Are the repairs authorized Yes
+"""
+
+
+def test_a_run_on_cell_value_ends_at_the_printed_value() -> None:
+    values = read_label_values(FORMAT_1_VEHICLE_DETAILS_COLUMNS_COLLAPSED)
+
+    assert values["registration"] == "AB12XYZ"
+    assert values["vin"] == "ABCD1234567"
+
+
+def test_a_run_on_grid_row_keeps_its_own_value_not_the_next_pair() -> None:
+    values = read_label_values(FORMAT_2_SUMMARY_COLUMNS_COLLAPSED)
+
+    assert values["assessment_number"] == "D7576879"
+    assert values["claim_reference"] == "123456/1"
+    assert values["policy_number"] == "103466899"
+
+
+def test_a_value_with_no_declared_shape_is_never_truncated() -> None:
+    """Make, model and mileage have no single-token shape, so they keep it all.
+
+    Cutting them would be a guess, and a guess costs "140 SE Nav" its last two
+    words. The documented consequence is that a collapsed render leaves a
+    visible tail on those fields rather than a silently shortened value.
+    """
+
+    values = read_label_values(
+        "Model   140 SE Nav\nManufacturer   HYUNDAI\nOdometer   576882 miles\n"
+    )
+
+    assert values["vehicle_model"] == "140 SE Nav"
+    assert values["vehicle_make"] == "HYUNDAI"
+    assert values["mileage"] == "576882 miles"
+
+
+def test_a_neighbouring_cell_is_a_value_boundary_and_is_never_trimmed() -> None:
+    """Only a run-on cell is cut; a printed cell means all of what it prints."""
+
+    values = read_label_values("Policy No   AB 12 34   Vehicle Make   SKODA\n")
+
+    assert values["policy_number"] == "AB 12 34"
+
+
 def test_read_label_values_tolerates_empty_input() -> None:
     assert read_label_values("") == {}
 
