@@ -200,6 +200,165 @@ def test_format_2_inline_rate_prices_seventeen_labour_rows(
     }
 
 
+def test_format_3_material_cost_paint_is_money_not_work_units(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bordered "Material cost paint" table is money, never work units.
+
+    Client formats 3 and 4 print it directly under the PAINT WORK work-unit
+    schedule. Until the heading was recognised its seven rows fell through
+    into that open section, were read as work-unit counts and were priced at
+    the document's £83.28/hr -- £603.19 of paint material was rendered to a
+    claims handler as £5,023.45 of labour.
+    """
+
+    parsed = parse_engineer_assessment(
+        _fixture_pages(monkeypatch, "DL_Auda_format_3_assessment.docx")
+    )
+
+    materials = [
+        op for op in parsed.operations if op.line_item_type == "paint_materials"
+    ]
+    assert [(op.description, op.total) for op in materials] == [
+        ("Total paint Cost", Decimal("603.19")),
+        ("Sundry Paint Material", Decimal("114.68")),
+        ("Pre-Painting sundry materials", Decimal("50.50")),
+    ]
+    assert all(op.work_units is None for op in materials)
+    assert all(op.raw_category == "Material cost paint" for op in materials)
+
+    # The work-unit schedule closes at the heading, so PAINT WORK keeps only
+    # the seven painting operations the report prints work units for.
+    paint = [op for op in parsed.operations if op.line_item_type == "paint"]
+    assert len(paint) == 7
+    assert parsed.row_work_units["paint"] == Decimal("103.0")
+    assert parsed.row_totals["paint"] == Decimal("857.78")
+
+    # The table's tail is its own arithmetic -- subtotal, the two adjustments
+    # applied to that subtotal, and the final figure -- so the three cost
+    # components above it are the only rows.
+    assert parsed.printed_totals["paint_materials"] == {
+        "total_excluding_pearlescent_uplift": Decimal("768.37"),
+        "pearlescent_uplift": Decimal("0.00"),
+        "discounted_by": Decimal("0.00"),
+        "total_paint_and_material_cost": Decimal("384.18"),
+    }
+    # The rows sum to the printed subtotal. The printed answer is exactly half
+    # of it, and is kept as printed: it is what the Calculation block, the
+    # Grand Total and the matching invoice all use.
+    assert parsed.row_totals["paint_materials"] == Decimal("768.37")
+    assert parsed.fields["paint_net"] == Decimal("384.18")
+
+
+def test_format_3_additional_costs_never_double_count_extras(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parsed = parse_engineer_assessment(
+        _fixture_pages(monkeypatch, "DL_Auda_format_3_assessment.docx")
+    )
+
+    extras = [op for op in parsed.operations if op.line_item_type == "extras"]
+    # "Cost of specialist" IS "Total Extras" (£4.00 = £4.00) on this report, so
+    # it is filed as a printed total and never becomes a row beside the extras
+    # it restates. Only the corrosion line is money the EXTRAS rows do not
+    # already carry.
+    assert [(op.description, op.total) for op in extras] == [
+        ("ANTI CORROSION PROTE", Decimal("4.00")),
+        ("Corrosion Protection Materials External", Decimal("0.00")),
+    ]
+    assert parsed.printed_totals["extras"] == {
+        "total_extras": Decimal("4.00"),
+        "cost_of_specialist": Decimal("4.00"),
+        "total_additional_cost": Decimal("4.00"),
+    }
+    # extras_net is the wider figure the invoice's "Additional charges" line
+    # pays; it contains Total Extras rather than being added to it.
+    assert parsed.fields["extras_net"] == Decimal("4.00")
+    assert parsed.row_totals["extras"] == Decimal("4.00")
+
+    # "Subject to check", "Overall discount" and "Total Deductions" close the
+    # block; none of them is a line item.
+    descriptions = {op.description.casefold() for op in parsed.operations}
+    assert descriptions.isdisjoint(
+        {"subject to check", "overall discount", "total deductions"}
+    )
+
+
+def test_format_3_parts_row_survives_an_empty_betterment_column(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parsed = parse_engineer_assessment(
+        _fixture_pages(monkeypatch, "DL_Auda_format_3_assessment.docx")
+    )
+
+    parts = [op for op in parsed.operations if op.line_item_type == "parts"]
+    assert len(parts) == 1
+    assert parts[0].code == "1000"
+    assert parts[0].description == "NS door hinge bolts"
+    assert parts[0].part_number is None
+    assert parts[0].part_number_raw == "Renew"
+    assert parts[0].total == Decimal("14.40")
+
+    printed = parsed.printed_totals["parts"]
+    assert printed == {
+        "sub_total": Decimal("14.40"),
+        "deduction_from_rrp": Decimal("1.30"),
+        "sundry_parts": Decimal("0.46"),
+        "total_parts": Decimal("13.56"),
+    }
+    # 14.40 - 1.30 + 0.46 = 13.56. The deduction carries its own rate in its
+    # label ("DEDUCTION FROM RRP (9.00%)"), which is why it has to be read as
+    # a printed figure of its own rather than dropped for being too wordy.
+    assert (
+        printed["sub_total"] - printed["deduction_from_rrp"] + printed["sundry_parts"]
+        == printed["total_parts"]
+    )
+
+
+def test_format_3_totals_are_the_figures_the_invoice_pays(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parsed = parse_engineer_assessment(
+        _fixture_pages(monkeypatch, "DL_Auda_format_3_assessment.docx")
+    )
+
+    assert parsed.fields["labour_net"] == Decimal("1598.97")
+    assert parsed.fields["paint_net"] == Decimal("384.18")
+    assert parsed.fields["parts_net"] == Decimal("13.56")
+    assert parsed.fields["extras_net"] == Decimal("4.00")
+    assert parsed.fields["subtotal_net"] == Decimal("2000.71")
+    # "VAT at 20%: £400.14" -- a loose "VAT" label match hands the reader
+    # "at 20%: £400.14", whose first number is the rate, not the total.
+    assert parsed.fields["vat_total"] == Decimal("400.14")
+    assert parsed.fields["gross_total"] == Decimal("2400.85")
+
+
+def test_format_4_totals_and_sections(monkeypatch: pytest.MonkeyPatch) -> None:
+    parsed = parse_engineer_assessment(
+        _fixture_pages(monkeypatch, "DL_Auda_format_4_assessment.docx")
+    )
+
+    assert parsed.fields["labour_net"] == Decimal("3331.20")
+    assert parsed.fields["paint_net"] == Decimal("1425.72")
+    assert parsed.fields["parts_net"] == Decimal("1104.39")
+    # Total Additional Cost (1161.02) = Corrosion (72.00) + Cost of specialist
+    # (1089.02), and Cost of specialist is Total Extras to the penny. Adding
+    # Total Extras on top of it would bill £1,089.02 twice.
+    assert parsed.fields["extras_net"] == Decimal("1161.02")
+    assert parsed.printed_totals["extras"]["total_extras"] == Decimal("1089.02")
+    assert parsed.printed_totals["extras"]["cost_of_specialist"] == Decimal("1089.02")
+    assert parsed.fields["gross_total"] == Decimal("8426.80")
+
+    counts = Counter(op.line_item_type for op in parsed.operations)
+    # This format's PARTS schedule prints no part-number column at all; its
+    # rows are parts rows regardless.
+    assert counts["parts"] == 11
+    assert counts["paint_materials"] == 3
+    assert parsed.row_totals["parts"] == Decimal("995.39")
+    assert parsed.row_totals["paint_materials"] == Decimal("1425.72")
+    assert parsed.row_work_units["paint"] == Decimal("156.0")
+
+
 def test_format_7_printed_totals_are_never_reconciled_against_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

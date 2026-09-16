@@ -51,6 +51,8 @@ DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.docu
 PAIRS: dict[int, tuple[str, str]] = {
     1: ("DL_Auda_format_1_assessment.docx", "DL_Repair_Invoice_format_1.docx"),
     2: ("DL_Auda_format_2_assessment.docx", "DL_Invoice_2_request_for_payment.docx"),
+    3: ("DL_Auda_format_3_assessment.docx", "DL_Invoice_3_request_for_payment.docx"),
+    4: ("DL_Auda_format_4_assessment.docx", "DL_Invoice_4_request_for_payment.docx"),
     7: ("DL_Auda_format_7_assessment.docx", "DL_Repair_Invoice_format_7.docx"),
 }
 
@@ -1083,6 +1085,123 @@ def test_format_two_reports_its_labour_gap_without_blocking(pairing_client) -> N
             assert entry["rows"] == []
             assert entry["breakdown_available"] is False
             assert entry["rows_total"] is None
+
+
+def test_format_three_resolves_every_section_without_fabricating_labour(
+    pairing_client,
+) -> None:
+    """The defect this pair was built to catch, end to end.
+
+    Client format 3 prints a bordered ``Material cost paint`` table of money
+    straight after the PAINT WORK work-unit schedule. Until that heading was
+    recognised its rows stayed inside PAINT WORK, were read as work units and
+    were priced at £83.28/hr, so the labour breakdown rendered £17,597.07 of
+    fabricated labour underneath an invoice line of £1,598.97.
+    """
+
+    _process_pair(pairing_client, 3)
+
+    with _session(pairing_client) as session:
+        invoice = _only_invoice(session)
+        breakdowns = {
+            entry["line_item_type"]: entry
+            for entry in section_breakdown_for_invoice(session, invoice)
+        }
+        assert sorted(breakdowns) == ["extras", "labour", "paint_materials", "parts"]
+
+        labour = breakdowns["labour"]
+        assert Decimal(labour["invoice_total"]) == Decimal("1598.97")
+        assert Decimal(labour["assessment_total"]) == Decimal("1598.97")
+        assert labour["matches"] is True
+        # 14 labour rows (89 WU) and 7 paint rows (103 WU) at £83.28/hr, and
+        # nothing else. The penny above the printed £1,598.97 is the report's
+        # own per-row rounding (six 0.2-hour rows at £16.656 each), which is
+        # exactly what publishing rows_total beside assessment_total shows.
+        assert len(labour["rows"]) == 21
+        assert Decimal(labour["rows_total"]) == Decimal("1598.98")
+        assert all(row["category"] in {"labour", "paint"} for row in labour["rows"])
+
+        materials = breakdowns["paint_materials"]
+        assert Decimal(materials["invoice_total"]) == Decimal("384.18")
+        assert Decimal(materials["assessment_total"]) == Decimal("384.18")
+        assert materials["matches"] is True
+        assert materials["breakdown_available"] is True
+        assert [row["description"] for row in materials["rows"]] == [
+            "Total paint Cost",
+            "Sundry Paint Material",
+            "Pre-Painting sundry materials",
+        ]
+        # The three components sum to the table's own subtotal; the printed
+        # answer is half of it and is shown as printed, not corrected.
+        assert Decimal(materials["rows_total"]) == Decimal("768.37")
+
+        parts = breakdowns["parts"]
+        assert Decimal(parts["assessment_total"]) == Decimal("13.56")
+        assert parts["matches"] is True
+        assert [row["description"] for row in parts["rows"]] == ["NS door hinge bolts"]
+
+        extras = breakdowns["extras"]
+        # The invoice's "Additional charges" line is Total Additional Cost,
+        # never Total Extras -- adding both would count £4.00 twice.
+        assert Decimal(extras["invoice_total"]) == Decimal("4.00")
+        assert Decimal(extras["assessment_total"]) == Decimal("4.00")
+        assert extras["matches"] is True
+        assert [row["description"] for row in extras["rows"]] == [
+            "ANTI CORROSION PROTE",
+            "Corrosion Protection Materials External",
+        ]
+
+
+def test_format_four_keeps_its_headerless_schedule_page_in_the_assessment(
+    pairing_client,
+) -> None:
+    """Format 4's third page prints no assessment header of its own.
+
+    It opens mid-PAINT WORK and runs through Material cost paint, PARTS and
+    EXTRAS, so it trips the amounts-only invoice heuristic. Left an invoice it
+    took a third of the report's schedule out of the assessment: the paint
+    materials and parts breakdowns came back empty and a numberless phantom
+    invoice appeared on the claim.
+    """
+
+    _process_pair(pairing_client, 4)
+
+    with _session(pairing_client) as session:
+        assert session.scalars(select(Invoice)).all() == [_only_invoice(session)]
+        invoice = _only_invoice(session)
+        breakdowns = {
+            entry["line_item_type"]: entry
+            for entry in section_breakdown_for_invoice(session, invoice)
+        }
+        assert sorted(breakdowns) == ["extras", "labour", "paint_materials", "parts"]
+
+        materials = breakdowns["paint_materials"]
+        assert Decimal(materials["assessment_total"]) == Decimal("1425.72")
+        assert materials["matches"] is True
+        assert len(materials["rows"]) == 3
+        assert Decimal(materials["rows_total"]) == Decimal("1425.72")
+
+        parts = breakdowns["parts"]
+        assert Decimal(parts["assessment_total"]) == Decimal("1104.39")
+        assert parts["matches"] is True
+        # Eleven rows against a printed SUB TOTAL of 1005.39: the report is
+        # £10.00 out with itself, and both figures are published.
+        assert len(parts["rows"]) == 11
+        assert Decimal(parts["rows_total"]) == Decimal("995.39")
+
+        extras = breakdowns["extras"]
+        assert Decimal(extras["invoice_total"]) == Decimal("1161.02")
+        assert Decimal(extras["assessment_total"]) == Decimal("1161.02")
+        assert extras["matches"] is True
+
+        labour = breakdowns["labour"]
+        assert Decimal(labour["assessment_total"]) == Decimal("3331.20")
+        assert labour["matches"] is True
+        # 43 labour rows and 14 paint rows -- the money table is no longer
+        # among them. The rows price to more than the section total because
+        # this report's labour rows sum to 249 WU against a printed 244.
+        assert len(labour["rows"]) == 57
+        assert Decimal(labour["rows_total"]) == Decimal("3372.86")
 
 
 def test_an_unresolved_section_total_gets_no_breakdown_rows(pairing_client) -> None:

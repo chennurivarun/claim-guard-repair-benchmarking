@@ -177,7 +177,7 @@ def classify_page(text: str, *, image_only: bool) -> tuple[PageType, float, list
         return (PageType.PHOTO if image_only else PageType.BLANK), 0.62, ["no readable text"]
     money_count = len(re.findall(r"£?\d+[,.]\d{2}", lower))
     if money_count >= 4 and any(word in lower for word in ("vat", "total", "qty")):
-        return PageType.INVOICE, 0.72, ["financial table", f"{money_count} amounts"]
+        return PageType.INVOICE, 0.72, [_MONEY_TABLE_SIGNAL, f"{money_count} amounts"]
     return PageType.OTHER, 0.55, ["no decisive document keywords"]
 
 
@@ -239,6 +239,11 @@ _NON_LINE_ROW_TOKENS = ("total", "deduction", "discount", "vat", "balance", "pay
 _SCHEDULE_ROW_NUMBER_PATTERN = re.compile(
     r"(?:£|gbp)?\s*\d[\d,]*(?:\.\d+)?\s*$", re.IGNORECASE
 )
+#: The signal ``classify_page`` leaves when a page was called an invoice on
+#: the strength of its amounts alone -- no invoice, credit-note or estimate
+#: wording anywhere on it.  It is the weakest invoice verdict there is, and
+#: the only one an authorised assessment's own schedule can trip.
+_MONEY_TABLE_SIGNAL = "financial table"
 #: Wording that makes a page a document in its own right rather than the tail
 #: of the schedule on the page before it.
 _STANDALONE_DOCUMENT_PATTERN = re.compile(
@@ -341,6 +346,30 @@ def _reclassify_priced_assessment_pages(pages: list[PageAnalysis]) -> None:
                 previous_type = page.page_type
                 continue
             signal = "priced schedule in assessment document"
+        elif (
+            is_authorised_assessment
+            and page.page_type == PageType.INVOICE
+            and _MONEY_TABLE_SIGNAL in page.classification_signals
+            and previous_type == PageType.ENGINEER_ASSESSMENT
+            and _is_schedule_continuation(page.text)
+        ):
+            # The same continuation rescue as below, for the page that carries
+            # so much money it tripped the amounts-only invoice heuristic
+            # instead of landing on OTHER. Client format 4's third page is one:
+            # it opens mid-PAINT WORK and runs through Material cost paint,
+            # PARTS and EXTRAS without reprinting the assessment header, so
+            # left as an invoice it takes a third of the report's schedule out
+            # of the assessment -- the paint-materials and parts breakdowns go
+            # empty and a phantom numberless invoice appears on the claim.
+            # Only the weakest invoice verdict is overturned: a page saying
+            # "invoice", "amount due" or "remittance" anywhere on it fails
+            # ``_is_schedule_continuation`` and stays an invoice.
+            page.page_type = PageType.ENGINEER_ASSESSMENT
+            page.classification_signals.append("assessment continuation")
+            page.classification_confidence = max(page.classification_confidence, 0.72)
+            page.group_key = None
+            previous_type = page.page_type
+            continue
         elif page.page_type == PageType.OTHER:
             if _priced_row_count(page.text) < 2:
                 # ponytail: the priced-row rescue is tried first, so a genuinely
