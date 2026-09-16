@@ -17,9 +17,15 @@ cd backend
 cp .env.example .env
 uv sync --extra dev
 uv run alembic upgrade head
-uv run claimguard-bootstrap
+uv run claimguard-setup
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
+
+`claimguard-setup` imports the reference library and opens one empty case,
+`CG-CLIENT-001`. It creates no demo case and no demo documents, so the machine is
+ready for real client files. Use `--case-reference` to name the case yourself.
+`claimguard-bootstrap` is the separate demo-case path for the sample-data
+walkthrough; do not run it on a client machine.
 
 Second terminal, from the `claim-guard` folder:
 

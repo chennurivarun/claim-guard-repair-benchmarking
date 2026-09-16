@@ -779,8 +779,11 @@ def clear_reset_paths(report: ResetReport) -> ResetReport:
     return report
 
 
-def _create_empty_case(session: Session, case_reference: str, created_by: str) -> dict[str, Any]:
+def create_empty_case(session: Session, case_reference: str, created_by: str) -> dict[str, Any]:
     """Create the one case the client works in next.
+
+    Shared with ``claimguard-setup`` so a fresh install and a post-reset
+    database open on a case in exactly the same state.
 
     ``CLAIM_REVIEW`` with an unconfirmed liability gate is exactly what
     ``POST /claims`` produces, so the new case behaves like a hand-created one.
@@ -901,7 +904,7 @@ def reset_case_data(
         _set_audit_triggers(session, enabled=True)
 
     if new_case_reference:
-        report.new_case = _create_empty_case(session, new_case_reference, actor)
+        report.new_case = create_empty_case(session, new_case_reference, actor)
     # Always recorded, with or without a replacement case: it is the first row
     # of the new chain and the only thing in the database that says the old one
     # was deleted on purpose.  ``claimguard-bootstrap`` reads it to refuse
