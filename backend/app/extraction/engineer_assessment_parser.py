@@ -154,17 +154,79 @@ RESIDUAL_LABELS: dict[str, tuple[str, ...]] = {
     "paint_net": ("Total Paint/Material Costs",),
 }
 
+#: The tail of the client's ``Material cost paint`` table: its subtotal, the
+#: two adjustments applied to that subtotal, and the final figure.  The three
+#: lines above them -- ``Total paint Cost``, ``Sundry Paint Material``,
+#: ``Pre-Painting sundry materials`` -- are the cost components and sum to the
+#: subtotal on both formats that print the table, so those are the section's
+#: rows and these four are its own arithmetic.  Reading it the other way round
+#: would count the same money three times: the subtotal restates the rows and
+#: the final figure restates the subtotal.
+_MATERIAL_COST_TOTALS = frozenset(
+    {
+        "total excluding pearlescent uplift",
+        "pearlescent uplift",
+        "discounted by",
+        "total paint and material cost",
+    }
+)
+
+#: The ``Additional costs`` block restates money already printed under
+#: ``EXTRAS``.  On both client formats that print it ``Cost of specialist``
+#: *is* ``Total Extras`` to the penny (format 3: £4.00 = £4.00; format 4:
+#: £1,089.02 = £1,089.02), and ``Total Additional Cost`` is that figure plus
+#: ``Corrosion Protection Materials External``.  So the specialist line is
+#: filed as a printed total -- a restatement, never a row -- and only the
+#: corrosion line becomes a row.  Adding both views of one pot of money is
+#: exactly the double count this table exists to prevent.
+_ADDITIONAL_COST_TOTALS = frozenset({"cost of specialist", "total additional cost"})
+
+
+@dataclass(frozen=True)
+class _SectionRule:
+    """A heading the parser recognises, and how to read what follows it."""
+
+    pattern: re.Pattern[str]
+    line_item_type: str
+    #: Forced row kind; ``None`` lets the printed column header decide.
+    kind: str | None = None
+    #: Labels this section prints that are its own arithmetic, never rows.  A
+    #: section that declares any is read *only* by this set, because every
+    #: line of a named table is known in advance: three of ``Material cost
+    #: paint``'s seven lines open with "Total"/"Sundry" and only one of those
+    #: is the section's answer, so the generic keyword rule would drop two
+    #: real cost components and keep two restatements.
+    totals: frozenset[str] = frozenset()
+
+
 # Heading -> the section a row sits in.  An unrecognised heading that is
 # followed by a column header becomes a new code via ``ensure_line_item_type``;
 # that is how "add ABC when a new section appears" works without a code change.
-_SECTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"(?i)^paint\s*work\b"), "paint"),
-    (re.compile(r"(?i)^paint\s*(?:and|&)\s*materials\b"), "paint_materials"),
-    (re.compile(r"(?i)^labour\b"), "labour"),
-    (re.compile(r"(?i)^parts\b"), "parts"),
-    (re.compile(r"(?i)^extras\b"), "extras"),
-    (re.compile(r"(?i)^additional\s+items\b"), "extras"),
-    (re.compile(r"(?i)^specialist\s+operation"), "specialist_operation"),
+_SECTIONS: tuple[_SectionRule, ...] = (
+    _SectionRule(re.compile(r"(?i)^paint\s*work\b"), "paint"),
+    _SectionRule(re.compile(r"(?i)^paint\s*(?:and|&)\s*materials\b"), "paint_materials"),
+    # Client formats 3 and 4 print this bordered table of money directly under
+    # the PAINT WORK work-unit schedule.  Recognising it is also what *closes*
+    # PAINT WORK: without it every pound amount in the table fell through into
+    # the open work-unit section, was read as a work-unit count and was priced
+    # at the document's hourly rate.
+    _SectionRule(
+        re.compile(r"(?i)^material\s+costs?\s+paint\b"),
+        "paint_materials",
+        kind="priced",
+        totals=_MATERIAL_COST_TOTALS,
+    ),
+    _SectionRule(re.compile(r"(?i)^labour\b"), "labour"),
+    _SectionRule(re.compile(r"(?i)^parts\b"), "parts"),
+    _SectionRule(re.compile(r"(?i)^extras\b"), "extras"),
+    _SectionRule(re.compile(r"(?i)^additional\s+items\b"), "extras"),
+    _SectionRule(
+        re.compile(r"(?i)^additional\s+costs?\b"),
+        "extras",
+        kind="labelled",
+        totals=_ADDITIONAL_COST_TOTALS,
+    ),
+    _SectionRule(re.compile(r"(?i)^specialist\s+operation"), "specialist_operation"),
 )
 
 _WORK_UNIT_TYPES = {"labour", "paint"}
@@ -191,10 +253,19 @@ _MAX_TOTAL_TRAILING_WORDS = 2
 #: fabricated extras operation.
 _STOP_HEADING = re.compile(
     r"(?i)^(?:calculation|summary(?:\s+(?:calculation|information))?"
-    r"|claims?\s+details|vehicle\s+details|vehicle\s+condition|addresses)"
+    r"|claims?\s+details|vehicle\s+details|vehicle\s+condition|addresses"
+    # The tail client formats 3 and 4 print after ``Additional costs``.
+    # Without these that section stays open across it and "Subject to check:
+    # £0.00" becomes an extras line item of £0.00.
+    r"|subject\s+to\s+check|deductions?|overall\s+discount|grand\s+totals?)"
     r"\s*(?:[:\-—–]|$)"
 )
 _TOTAL_WORK_UNITS = re.compile(r"(?i)^total\s+work\s+units$")
+#: The rate a percentage adjustment prints beside its own name, as in
+#: "DEDUCTION FROM RRP (9.00%)".  Dropped before the trailing-word guard
+#: counts, so the adjustment is recognised as the printed total it is rather
+#: than silently discarded for carrying one word too many.
+_RATE_SUFFIX = re.compile(r"\s*\([^()]*%\s*\)\s*$")
 _HOURS_SUFFIX = re.compile(r"(?i)^(.*?)\s+[\d.]+\s*hours$")
 _NO_NUMBER = re.compile(r"(?i)^no\s*[nm][uo]mber$")
 _TIME_BASIS = re.compile(r"(?i)time\s*basis\s*(\d+)\s*wu\s*=\s*1\s*hr")
@@ -210,6 +281,10 @@ _PARTS_RENEW_ROW_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+#: A parts row's first and betterment columns, for the cell-wise fallback.
+_GUIDE_CELL = re.compile(r"^\d{3,5}(?:\s\d{2})?$")
+_BETTERMENT_CELL = re.compile(r"^\d{1,3}(?:\.\d+)?\s*%$")
+
 _PENNY = Decimal("0.01")
 
 
@@ -220,6 +295,8 @@ class _Section:
     kind: str
     wu_per_hour: Decimal = Decimal("10")
     rate: Decimal | None = None
+    #: See :attr:`_SectionRule.totals`.
+    totals: frozenset[str] = frozenset()
 
 
 #: Every label either reader knows, so a schedule can tell a row from the start
@@ -285,7 +362,7 @@ def _total_label_text(label: str) -> str | None:
     if keyword is None:
         return None
     hours = _HOURS_SUFFIX.match(label)
-    text = hours.group(1) if hours else label
+    text = _RATE_SUFFIX.sub("", hours.group(1) if hours else label)
     trailing = text[min(keyword.end(), len(text)) :].split()
     if len(trailing) > _MAX_TOTAL_TRAILING_WORDS:
         return None
@@ -362,8 +439,17 @@ def _read_fields(combined: str) -> dict[str, object]:
     return fields
 
 
-def _open_section(heading: str, code: str, header: str | None) -> _Section:
-    if header:
+def _open_section(
+    heading: str, code: str, header: str | None, rule: _SectionRule | None = None
+) -> _Section:
+    if rule is not None and rule.kind is not None:
+        kind = rule.kind
+    elif code == "parts":
+        # A PARTS schedule is a parts schedule whatever columns it prints.
+        # Client format 4 omits the part-number column the header used to be
+        # recognised by, and its rows are still parts rows.
+        kind = "parts"
+    elif header:
         lowered = header.lower()
         if re.search(r"\bwu\b", lowered):
             kind = "work_unit"
@@ -374,8 +460,13 @@ def _open_section(heading: str, code: str, header: str | None) -> _Section:
     elif code in _WORK_UNIT_TYPES:
         kind = "work_unit"
     else:
-        kind = "parts" if code == "parts" else "priced"
-    return _Section(heading=heading, line_item_type=code, kind=kind)
+        kind = "priced"
+    return _Section(
+        heading=heading,
+        line_item_type=code,
+        kind=kind,
+        totals=rule.totals if rule is not None else frozenset(),
+    )
 
 
 def _section_start(
@@ -400,12 +491,47 @@ def _section_start(
     if not re.search(r"[A-Za-z]", stripped):
         return None
     header = _next_non_blank(lines, index)
-    for pattern, code in _SECTIONS:
-        if pattern.match(stripped):
-            return _open_section(stripped, code, header)
+    for rule in _SECTIONS:
+        if rule.pattern.match(stripped):
+            return _open_section(stripped, rule.line_item_type, header, rule)
     if allow_fallback and header and _COLUMN_HEADER.match(header):
         return _open_section(stripped, ensure_line_item_type(stripped), header)
     return None
+
+
+def _printed_total_label(
+    section: _Section, cell: str, lines: list[str], index: int
+) -> str | None:
+    """The label of a figure that closes or restates ``section``, else ``None``.
+
+    A section that declared its own total labels is read only by that list --
+    see :attr:`_SectionRule.totals` for why a named table cannot be read by
+    the generic keyword rule.
+    """
+
+    if section.totals:
+        return cell if normalise_label(cell) in section.totals else None
+    label = _total_label_text(cell)
+    if label is not None and _in_totals_band(lines, index):
+        return label
+    return None
+
+
+def _labelled_cells(cell: str) -> list[str] | None:
+    """Split ``Corrosion Protection Materials External: £0.00`` into two cells.
+
+    The client's ``Additional costs`` block prints its label and its amount as
+    one run of text rather than in two columns, so the row reaches the
+    schedule reader as a single cell no row rule can find an amount in.
+    """
+
+    label, separator, value = cell.rpartition(":")
+    if not separator:
+        return None
+    label, value = label.strip(), value.strip()
+    if not label or not _PRICE_CELL.match(value):
+        return None
+    return [label, value]
 
 
 def _rate_for(section: _Section, fields: dict[str, object]) -> Decimal | None:
@@ -500,9 +626,12 @@ def parse_engineer_assessment(pages: list[PageAnalysis]) -> ParsedEngineerAssess
             if section is None:
                 continue
 
+            if section.kind == "labelled" and len(cells) == 1:
+                cells = _labelled_cells(cells[0]) or cells
+
             if len(cells) >= 2:
-                total_label = _total_label_text(cells[0])
-                if total_label is not None and _in_totals_band(lines, index):
+                total_label = _printed_total_label(section, cells[0], lines, index)
+                if total_label is not None:
                     _record_printed_total(parsed, section, total_label, cells[-1])
                     pending = None
                     continue
@@ -531,6 +660,8 @@ def parse_engineer_assessment(pages: list[PageAnalysis]) -> ParsedEngineerAssess
                 )
                 pending = (index, pending[1])
 
+    _resolve_section_totals(parsed)
+
     required = ("assessment_number", "claim_reference", "registration", "gross_total")
     found = sum(1 for field_name in required if parsed.fields.get(field_name) is not None)
     parsed.confidence = min(0.70 + found * 0.05 + min(len(parsed.operations), 5) * 0.02, 0.99)
@@ -540,6 +671,38 @@ def parse_engineer_assessment(pages: list[PageAnalysis]) -> ParsedEngineerAssess
     ):
         raise ValueError("Engineer assessment is missing every identifying reference.")
     return parsed
+
+
+def _resolve_section_totals(parsed: ParsedEngineerAssessment) -> None:
+    """Point ``paint_net`` and ``extras_net`` at the figures the invoice pays.
+
+    Both decisions are about *which* of several printed figures is the
+    section's answer, and both are the client's own, confirmed on formats 3
+    and 4 against their matching invoices:
+
+    * ``Total paint and Material cost`` is what the Calculation block, the
+      Grand Total and the invoice's "Total Paint & Materials Amount" all use,
+      so it is ``paint_net``.  On format 3 it is exactly half the sum of its
+      own three rows and is kept anyway -- the report's arithmetic is the
+      evidence a handler asked to see, and the row sum is published beside it
+      in ``row_totals`` rather than quietly replacing it.
+    * ``Total Additional Cost`` *contains* ``Total Extras`` (via ``Cost of
+      specialist``, which equals it to the penny), and it is what the
+      invoice's "Additional charges" line pays.  So it replaces the narrower
+      ``Total Extras`` as ``extras_net`` and is never added to it.
+    """
+
+    material_total = parsed.printed_totals.get("paint_materials", {}).get(
+        "total_paint_and_material_cost"
+    )
+    if material_total is not None and parsed.fields.get("paint_net") is None:
+        parsed.fields["paint_net"] = material_total
+
+    additional_total = parsed.printed_totals.get("extras", {}).get(
+        "total_additional_cost"
+    )
+    if additional_total is not None:
+        parsed.fields["extras_net"] = additional_total
 
 
 def _governed_operation(line: str, sequence: int, page_number: int) -> ParsedOperation | None:
@@ -589,7 +752,7 @@ def _schedule_operation(
     page_number: int,
 ) -> ParsedOperation | None:
     if section.kind == "parts":
-        return _parts_operation(parsed, section, line, sequence, page_number)
+        return _parts_operation(parsed, section, cells, line, sequence, page_number)
     if section.kind == "work_unit":
         return _work_unit_operation(parsed, section, cells, sequence, page_number)
     return _priced_operation(parsed, section, cells, sequence, page_number)
@@ -642,26 +805,63 @@ def _work_unit_operation(
     )
 
 
+def _parts_columns(cells: list[str]) -> tuple[str, str, str | None, Decimal] | None:
+    """``(guide, description, part number, price)`` read from a row's cells.
+
+    The two regex forms need every column the prototype prints.  Client
+    format 3 leaves the betterment column empty and format 4 omits the
+    part-number column altogether, yet both still print an ordinary parts
+    row: a guide number, a description, and a price in the last column.
+    """
+
+    if len(cells) < 3 or not _GUIDE_CELL.match(cells[0]):
+        return None
+    if "." not in cells[-1] or not _PRICE_CELL.match(cells[-1]):
+        return None
+    description = cells[1].strip()
+    if not re.search(r"[A-Za-z]", description):
+        return None
+    price = _cell_amount(cells[-1])
+    if price is None:
+        return None
+    part_number = next(
+        (cell for cell in cells[2:-1] if cell and not _BETTERMENT_CELL.match(cell)),
+        None,
+    )
+    return cells[0], description, part_number, price
+
+
 def _parts_operation(
     parsed: ParsedEngineerAssessment,
     section: _Section,
+    cells: list[str],
     line: str,
     sequence: int,
     page_number: int,
 ) -> ParsedOperation | None:
     match = PARTS_SCHEDULE_ROW_PATTERN.match(line) or _PARTS_RENEW_ROW_PATTERN.match(line)
-    if match is None:
-        return None
-    price = parse_money(match.group("price"))
-    raw_part_number = match.group("part_number")
-    part_number = None if raw_part_number.casefold() == "renew" else raw_part_number
+    if match is not None:
+        guide = match.group("guide")
+        description = match.group("description").strip()
+        raw_part_number: str | None = match.group("part_number")
+        price = parse_money(match.group("price"))
+    else:
+        columns = _parts_columns(cells)
+        if columns is None:
+            return None
+        guide, description, raw_part_number, price = columns
+    part_number = (
+        None
+        if raw_part_number is None or raw_part_number.casefold() == "renew"
+        else raw_part_number
+    )
     if price is not None:
         _accumulate(parsed.row_totals, section.line_item_type, price)
     return ParsedOperation(
         sequence_no=sequence,
         category=section.line_item_type,
-        code=match.group("guide"),
-        description=match.group("description").strip(),
+        code=guide,
+        description=description,
         work_units=None,
         hours=None,
         quantity=Decimal("1"),

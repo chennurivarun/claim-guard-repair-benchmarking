@@ -354,8 +354,14 @@ def _pick_value(field: str, remainder: str, candidates: list[str]) -> str | None
         if not options:
             return None
         for option in options:
-            if _AMOUNT_PATTERN.search(option):
-                return option
+            amount = _AMOUNT_PATTERN.search(option)
+            if amount:
+                # The amount itself, not the words printed around it.  Client
+                # formats 3 and 4 print "VAT at 20%: £400.14", whose label is
+                # only a loose "VAT" match, so this reader is handed "at 20%:
+                # £400.14" -- and the first number in that string is the rate,
+                # not the total.
+                return amount.group(0).strip()
     return options[0]
 
 
