@@ -58,19 +58,23 @@ PAIRS: dict[int, tuple[str, str]] = {
     7: ("DL_Auda_format_7_assessment.docx", "DL_Repair_Invoice_format_7.docx"),
 }
 
-#: Confidence = matched keys / *comparable* keys. Formats 1 and 7 print no
-#: policy number on the invoice, so that key is not compared at all -- neither
-#: a conflict nor a deduction -- and both pairs agree on the two keys they can
-#: compare; format 2 prints all three and matches on all three.
-EXPECTED_CONFIDENCE: dict[int, float] = {1: 2 / 2, 2: 3 / 3, 7: 2 / 2}
+#: ``(matched keys, comparable keys)`` -- the two numbers ``pair_confidence``
+#: divides, asserted instead of the ratio. Formats 1 and 7 do not compare a
+#: policy number at all (format 1's report prints the placeholder "PH";
+#: format 7's invoice prints none), so both agree on the two keys they can
+#: compare; format 2 prints all three and matches on all three. Every one of
+#: those ratios is 1.0, so asserting the ratio would pass unchanged against a
+#: regression to matched-over-three -- only the denominator catches it.
+EXPECTED_KEY_COUNTS: dict[int, tuple[int, int]] = {1: (2, 2), 2: (3, 3), 7: (2, 2)}
 
 #: The per-key states the payload must carry for each pair, so the UI can show
-#: an absent key as skipped rather than as a silent failure to match.
+#: a skipped key as skipped rather than as a silent failure to match -- and
+#: can tell a key nobody printed from one printed as a placeholder.
 EXPECTED_KEY_STATES: dict[int, dict[str, str]] = {
     1: {
         "registration": "matched",
         "claim_reference": "matched",
-        "policy_number": "not_compared",
+        "policy_number": "placeholder",
     },
     2: {
         "registration": "matched",
@@ -350,16 +354,23 @@ def test_client_pair_end_to_end_through_the_real_api(extracts_client, pair_id: i
         # unrelated "Assessment Ref" as a pairing key.
         assert assessment.pair_status == "paired"
         assert assessment.paired_invoice_id == invoice.id
-        assert assessment.pair_confidence == pytest.approx(EXPECTED_CONFIDENCE[pair_id])
         assert not any("conflict" in reason for reason in assessment.pair_reasons_json)
         joined_reasons = " ".join(assessment.pair_reasons_json)
         assert "BOY1537" not in joined_reasons
         assert invoice.invoice_number not in joined_reasons
 
         payload = engineer_assessment_payload(assessment, session)
-        assert {
-            entry["key"]: entry["state"] for entry in payload["pair_key_verdicts"]
-        } == EXPECTED_KEY_STATES[pair_id]
+        verdicts = payload["pair_key_verdicts"]
+        assert {entry["key"]: entry["state"] for entry in verdicts} == (
+            EXPECTED_KEY_STATES[pair_id]
+        )
+        # The confidence is checked through its own counts, so a denominator
+        # that regressed to a flat three would fail here rather than divide
+        # out to the same 1.0.
+        matched = sum(1 for entry in verdicts if entry["state"] == "matched")
+        compared = sum(1 for entry in verdicts if entry["compared"])
+        assert (matched, compared) == EXPECTED_KEY_COUNTS[pair_id]
+        assert assessment.pair_confidence == pytest.approx(matched / compared)
 
         # -- 5. Gap-fill and manual review, where the client called it out
         # explicitly: format 7's invoice is never held up for a missing
