@@ -30,6 +30,12 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 
 import { formatMoney } from "./format"
+import {
+  isRowExpanded,
+  toggleRowExpansion,
+  NO_EXPANSION_CHOICES,
+  type ExpansionChoices,
+} from "./row-expansion"
 import type {
   AssessmentExtractLine,
   AssessmentExtractPayload,
@@ -111,6 +117,100 @@ function breakdownSummaryLine(breakdown: SectionBreakdownPayload) {
   return `Total ${label} ${billed} billed · ${assessed} assessed${rowsTotalSuffix} · ${magnitude} ${direction}`
 }
 
+/** The invoice sections the backend can resolve to a column the assessment
+ * prints: the keys of `SECTION_TOTAL_FIELDS`
+ * (`backend/app/services/engineer_assessment.py`). An invoice section outside
+ * this set has no assessment counterpart at all; one inside it has a
+ * counterpart column that may still be NULL on the document. Those are two
+ * different answers and must not share a message. */
+const RESOLVABLE_SECTION_TYPES = new Set([
+  "parts",
+  "paint_materials",
+  "extras",
+  "labour",
+])
+
+function hasBreakdownRows(breakdown: SectionBreakdownPayload) {
+  return breakdown.breakdown_available !== false && breakdown.rows.length > 0
+}
+
+/** The four genuinely different reasons a rolled-up total shows no
+ * breakdown rows. A reader has to be able to tell "the tool failed to line
+ * these up" from "the document does not say", and the payload already
+ * carries enough to separate them (backend `section_breakdown_for_invoice`):
+ *
+ * - `assessment_id` is null — nothing is paired to this invoice, so there is
+ *   no document to split the total against;
+ * - paired, but `line_item_type` is not one `SECTION_TOTAL_FIELDS` maps —
+ *   the invoice section resolves to no assessment section at all (e.g. an
+ *   unclassified "Total …" heading). This one really is the tool failing to
+ *   line the two documents up;
+ * - paired, the section *is* resolvable, but the assessment's own column is
+ *   NULL — all four of `parts_net` / `paint_net` / `extras_net` /
+ *   `labour_net` are nullable, so an invoice that prints "Total Extras" and
+ *   an assessment with no extras section land here. Nothing failed: the
+ *   document simply carries no such figure;
+ * - paired, section total present, no rows — the assessment prints the
+ *   section as a total with no line detail behind it. This is the real and
+ *   correct outcome for "Total Paint / Materials Costs" on client formats 1
+ *   and 7: `paint_net` is printed, but no operation carries the
+ *   `paint_materials` code.
+ *
+ * Classification is on `line_item_type`, never on `assessment_total == null`:
+ * the backend emits a null total for the second *and* the third case, so the
+ * null alone cannot tell them apart.
+ *
+ * `breakdown_available` is `bool(rows)` on the backend, so it says *that*
+ * there are no rows, never *why* — hence this second read of the payload. */
+type BreakdownGap = "unpaired" | "unresolved" | "no-section-total" | "total-only"
+
+function breakdownGap(breakdown: SectionBreakdownPayload): BreakdownGap | null {
+  if (hasBreakdownRows(breakdown)) return null
+  if (breakdown.assessment_id == null) return "unpaired"
+  if (!RESOLVABLE_SECTION_TYPES.has(breakdown.line_item_type)) return "unresolved"
+  if (toNumber(breakdown.assessment_total) == null) return "no-section-total"
+  return "total-only"
+}
+
+const BREAKDOWN_GAP_MESSAGES: Record<
+  BreakdownGap,
+  { title: string; body: string }
+> = {
+  unpaired: {
+    title: "No assessment is paired to this invoice",
+    body: "There is no engineer assessment to split this total against. Check the pairing verdict on the assessment extracts table below.",
+  },
+  unresolved: {
+    title: "This section resolves to no assessment category",
+    body: "An assessment is paired, but the tool could not match this invoice section to any section the assessment prints, so it could not build a split.",
+  },
+  "no-section-total": {
+    title: "The paired assessment prints no total for this section",
+    body: "This section does map to one the assessment can print, but the paired document leaves it blank — it assessed nothing under this heading. There is no figure to split against; the extraction did not fail.",
+  },
+  "total-only": {
+    title: "The assessment prints this section as a total only",
+    body: "The paired assessment carries the section total but no line detail behind it. The document does not itemise it — the extraction did not fail.",
+  },
+}
+
+/** `difference_convention` is emitted by the backend as the literal
+ * `"invoice_total - assessment_total"`, but it is not declared on
+ * `SectionBreakdownPayload` in `src/lib/api.ts` (a file this change does not
+ * own). Read it off the payload defensively and say what the sign means in
+ * words; the formula alone tells a claims handler nothing.
+ *
+ * Gated on there actually being a difference. With nothing paired, or a
+ * section the assessment does not print, `difference` is null and the card
+ * would otherwise assert the meaning of a sign on a number it never shows. */
+function differenceConventionText(breakdown: SectionBreakdownPayload) {
+  if (toNumber(breakdown.difference) == null) return null
+  const convention = (breakdown as { difference_convention?: string | null })
+    .difference_convention
+  if (!convention) return null
+  return `Difference is ${convention.replaceAll("_", " ")} — a positive difference means the repairer billed more than the engineer assessed.`
+}
+
 function FieldSourceBadge({
   source,
 }: {
@@ -169,16 +269,33 @@ function SectionTotalBadge() {
   )
 }
 
+/** The split itself: which assessment line items add up to one rolled-up
+ * invoice total. It opens by default -- this is the thing the client asked
+ * to stop hunting for -- and keeps its own toggle so a long section can be
+ * folded away again without collapsing the whole invoice. */
 export function SectionBreakdownDetail({
   breakdown,
 }: {
   breakdown: SectionBreakdownPayload
 }) {
-  const noBreakdownRows = breakdown.breakdown_available === false
+  const [open, setOpen] = useState(true)
+  const gap = breakdownGap(breakdown)
+  const conventionText = differenceConventionText(breakdown)
+  const rowsId = `section-breakdown-rows-${breakdown.invoice_line_item_id}`
   return (
     <div className="my-2 rounded-md border bg-background p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm font-medium">Assessment breakdown</p>
+        <span className="inline-flex items-center gap-2">
+          {gap == null ? (
+            <ExpandToggleButton
+              expanded={open}
+              onToggle={() => setOpen((current) => !current)}
+              label={`the assessment breakdown for ${breakdown.description}`}
+              controls={rowsId}
+            />
+          ) : null}
+          <span className="text-sm font-medium">Assessment breakdown</span>
+        </span>
         <Badge
           variant={
             breakdown.matches == null
@@ -198,12 +315,20 @@ export function SectionBreakdownDetail({
       <p className="mt-1 text-sm text-muted-foreground">
         {breakdownSummaryLine(breakdown)}
       </p>
-      {noBreakdownRows ? (
-        <p className="mt-2 text-sm text-muted-foreground">
-          No breakdown rows on the assessment
-        </p>
-      ) : breakdown.rows.length > 0 ? (
-        <div className="mt-2 overflow-x-auto">
+      {conventionText ? (
+        <p className="mt-1 text-xs text-muted-foreground">{conventionText}</p>
+      ) : null}
+      {gap != null ? (
+        <div className="mt-2 rounded-md border border-dashed p-3">
+          <p className="text-sm font-medium">
+            {BREAKDOWN_GAP_MESSAGES[gap].title}
+          </p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {BREAKDOWN_GAP_MESSAGES[gap].body}
+          </p>
+        </div>
+      ) : open ? (
+        <div id={rowsId} className="mt-2 overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>
@@ -367,20 +492,22 @@ export function AssessmentLinesTable({ lines }: { lines: AssessmentExtractLine[]
 /** Row-level disclosures default to collapsed: a claim can carry 120+
  * reference rows across invoice and assessment lines, and expanding every
  * one by default would push the reviewer's price challenges below the
- * fold. Pass `defaultExpanded` to render pre-opened for tests, where
- * there is no pointer to click the toggle. */
-function useRowExpansion(defaultExpanded = false) {
-  const [toggled, setToggled] = useState<Set<string>>(new Set())
-  const isExpanded = (key: string) =>
-    defaultExpanded ? !toggled.has(key) : toggled.has(key)
-  const toggle = (key: string) => {
-    setToggled((previous) => {
-      const next = new Set(previous)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
-      return next
-    })
-  }
+ * fold. Pass `defaultExpanded` as `true` to render every row pre-opened
+ * (tests have no pointer to click the toggle), or as a predicate to open
+ * only the rows worth opening -- see `AUTO_EXPAND_LINE_LIMIT`.
+ *
+ * State is held as each key's **absolute** choice, never as a "departure from
+ * the default" -- see `row-expansion.ts` for why that distinction is the
+ * whole point. */
+function useRowExpansion(
+  defaultExpanded: boolean | ((key: string) => boolean) = false
+) {
+  const [choices, setChoices] = useState<ExpansionChoices>(NO_EXPANSION_CHOICES)
+  const defaultFor = (key: string) =>
+    typeof defaultExpanded === "function" ? defaultExpanded(key) : defaultExpanded
+  const isExpanded = (key: string) => isRowExpanded(choices, key, defaultFor(key))
+  const toggle = (key: string) =>
+    setChoices((previous) => toggleRowExpansion(previous, key, defaultFor(key)))
   return { isExpanded, toggle }
 }
 
@@ -413,24 +540,88 @@ function ExpandToggleButton({
   )
 }
 
+/** `pair_key_verdicts` entries are objects, not strings -- spreading them into
+ * a joined string printed `[object Object]` the moment anything wired the
+ * field in. Take each verdict's own `text`. */
 function pairReasonsText(assessment: AssessmentExtractPayload) {
   const reasons = [
     ...assessment.pair_reasons,
-    ...(assessment.pair_key_verdicts ?? []),
+    ...(assessment.pair_key_verdicts ?? []).map((verdict) => verdict.text),
   ]
   return reasons.length > 0 ? reasons.join("; ") : "No pairing evidence recorded."
 }
 
+/** Above this many invoice lines an invoice is not opened automatically.
+ * Auto-expansion exists to put the split in front of the reader; dumping a
+ * 300-line itemised invoice into the page would bury the very breakdown it
+ * was opened for, and the reader can still open it by hand. */
+const AUTO_EXPAND_LINE_LIMIT = 40
+
+/** An invoice that rolls its costs up into section totals is exactly the
+ * case the client asked to see without hunting -- "total parts in invoice =
+ * 110 means from the engineer estimate we shud show what all parts line
+ * items r taken exactly to get tht total parts cost". Such a row opens
+ * itself, and `SectionBreakdownDetail` inside it opens too, so the split is
+ * on screen with no clicks. An invoice with no rolled-up total has no split
+ * to show, so it stays collapsed.
+ *
+ * The breakdown must actually *resolve* -- carry rows -- not merely exist.
+ * `get_claim_extracts` emits a breakdown for every `is_section_total` line
+ * unconditionally, including when no assessment is paired to the invoice at
+ * all, so "a breakdown exists" is true of every rolled-up invoice in the
+ * case. Auto-expanding on that alone meant uploading invoices before any
+ * estimate blew every invoice open onto four "No assessment is paired to this
+ * invoice" boxes -- the opposite of putting the split in front of the
+ * reader. */
+function hasVisibleSectionSplit(
+  invoice: InvoiceExtractPayload,
+  breakdowns: SectionBreakdownPayload[]
+) {
+  if (invoice.lines.length > AUTO_EXPAND_LINE_LIMIT) return false
+  return invoice.lines.some(
+    (line) =>
+      line.is_section_total &&
+      breakdowns.some(
+        (breakdown) =>
+          breakdown.invoice_id === invoice.invoice_id &&
+          breakdown.line_item_type === (line.line_item_type ?? "") &&
+          hasBreakdownRows(breakdown)
+      )
+  )
+}
+
+/** How a table decides which rows start open.
+ *
+ * Three named states rather than `defaultExpanded?: boolean`. Under the
+ * boolean there were two different spellings of "not pre-expanded" --
+ * `undefined` meant "apply the auto-expand rule", `false` meant "open
+ * nothing" -- and nothing on the type said which was which, or that they
+ * differed at all. A caller that meant "leave them alone" had to know that
+ * omitting the prop did the opposite of passing `false`. */
+export type ExtractsExpansion = "auto" | "all" | "none"
+
 export function InvoiceExtractsTable({
   invoices,
   breakdowns,
-  defaultExpanded,
+  expansion = "auto",
 }: {
   invoices: InvoiceExtractPayload[]
   breakdowns: SectionBreakdownPayload[]
-  defaultExpanded?: boolean
+  /** `auto` opens only the invoices with a split worth showing; `all` opens
+   * every invoice (tests have no pointer to click a toggle); `none` opens
+   * none. */
+  expansion?: ExtractsExpansion
 }) {
-  const { isExpanded, toggle } = useRowExpansion(defaultExpanded)
+  const autoExpanded = new Set(
+    invoices
+      .filter((invoice) => hasVisibleSectionSplit(invoice, breakdowns))
+      .map((invoice) => invoice.invoice_id)
+  )
+  const { isExpanded, toggle } = useRowExpansion(
+    expansion === "auto"
+      ? (key: string) => autoExpanded.has(key)
+      : expansion === "all"
+  )
   return (
     <Table>
       <TableHeader>
@@ -527,12 +718,15 @@ export function InvoiceExtractsTable({
 
 export function AssessmentExtractsTable({
   assessments,
-  defaultExpanded,
+  expansion = "auto",
 }: {
   assessments: AssessmentExtractPayload[]
-  defaultExpanded?: boolean
+  /** There is no auto-expand rule on this side -- the split already lives on
+   * the invoice, and a 120-operation report would push everything else off
+   * the page -- so `auto` and `none` are the same thing here. */
+  expansion?: ExtractsExpansion
 }) {
-  const { isExpanded, toggle } = useRowExpansion(defaultExpanded)
+  const { isExpanded, toggle } = useRowExpansion(expansion === "all")
   return (
     <Table>
       <TableHeader>

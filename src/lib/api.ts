@@ -302,6 +302,42 @@ export interface EngineerAssessmentVariancePayload {
   explanation: string
 }
 
+/** The document(s) a pairing fact is true of, in the backend's `absent_on` /
+ * `placeholder_on` vocabulary (`_side` in
+ * `backend/app/services/engineer_assessment.py`). */
+export type PairKeySide = "invoice" | "assessment" | "both"
+
+/** The four states a pairing key can be in. Only `matched` and `conflict` are
+ * *compared*: the client's rule is "match what is there", so a key one
+ * document does not usefully print carries no information about the pair.
+ * `not_compared` is an empty box; `placeholder` is a filled-in one that
+ * identifies nothing ("PH", "N/A", "TBC"). */
+export type PairKeyVerdictState =
+  | "matched"
+  | "conflict"
+  | "not_compared"
+  | "placeholder"
+
+/** One pairing key's outcome, exactly as `_KeyVerdict.as_payload` emits it
+ * (`backend/app/services/engineer_assessment.py`). These are **objects**, not
+ * strings: joining them into a sentence prints `[object Object]`. Render
+ * `text`, or drive chips off `state` / `absent_on` / `placeholder_on`. */
+export interface PairKeyVerdict {
+  key: string
+  label: string
+  state: PairKeyVerdictState
+  compared: boolean
+  /** The document(s) that printed nothing for this key; null when both
+   * printed something. */
+  absent_on: PairKeySide | null
+  /** The document(s) that printed something meaningless; null otherwise. The
+   * two fields are independent and can both be set. */
+  placeholder_on: PairKeySide | null
+  assessment_value: string | null
+  invoice_value: string | null
+  text: string
+}
+
 export interface EngineerAssessmentPayload {
   field_sources?: Record<
     string,
@@ -319,6 +355,9 @@ export interface EngineerAssessmentPayload {
   pair_status: "paired" | "unpaired"
   pair_confidence: number | null
   pair_reasons: string[]
+  /** Per-key pairing detail. `engineer_assessment_payload` emits `[]` for an
+   * assessment with no paired invoice, and one entry per key otherwise. */
+  pair_key_verdicts?: PairKeyVerdict[]
   paired_invoice_id: string | null
   totals: Record<string, number | string | null>
   operations: Array<{
@@ -384,8 +423,11 @@ export interface AssessmentExtractPayload {
   pair_status: "paired" | "unpaired"
   pair_confidence: number | null
   pair_reasons: string[]
-  /** Optional: per-field pairing verdicts, if the pairing engine emits them. */
-  pair_key_verdicts?: string[]
+  /** Optional: per-key pairing verdicts. `_assessment_extract_payload` does
+   * not send them today, but `engineer_assessment_payload` does and this
+   * table is fed from both shapes, so the field is typed for what the backend
+   * actually emits -- objects, never strings. */
+  pair_key_verdicts?: PairKeyVerdict[]
   lines: AssessmentExtractLine[]
 }
 

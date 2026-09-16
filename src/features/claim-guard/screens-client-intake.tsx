@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useState, type InputHTMLAttributes } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -18,25 +18,47 @@ import {
 } from "@/components/ui/table"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import {
+  fetchClaimExtracts,
   fetchClaimInvoices,
   getApiErrorMessage,
+  type ClaimExtractsPayload,
   type ClaimInvoiceSummary,
 } from "@/lib/api"
 import {
   fetchCaseDocuments,
   processUploadedDocument,
+  runCaseLinkSweep,
   uploadCurrentDocument,
   type IntakeGroup,
   type UploadedDocument,
 } from "./document-api"
+import { ExtractsSection } from "./extracts-section"
+import { runIntakeBatch, type IntakeBatchEntry } from "./intake-batch"
 import { ScreenHeading, StatusBadge } from "./shared"
 
 const labels: Record<IntakeGroup, string> = {
   historical_claim: "Third-party claims invoices",
   in_house: "In-house repair invoices",
-  live: "New repair invoice",
+  live: "New repair invoices",
 }
 const accept = ".pdf,.doc,.docx"
+
+/** `webkitdirectory` turns a file input into a folder picker in every browser
+ * that ships Chromium or WebKit; React has no typing for it, so it is spread
+ * in as a plain attribute. Same shape as the picker in
+ * `screens-document-workflow.tsx`. */
+const directoryInputProps = {
+  webkitdirectory: "",
+  directory: "",
+} as InputHTMLAttributes<HTMLInputElement>
+
+/** A folder picker hands back everything in the folder -- .DS_Store, stray
+ * spreadsheets, the lot -- so the selection is filtered to what intake can
+ * actually read rather than failing file by file on the server. */
+function isSupportedDocument(file: File) {
+  const name = file.name.toLowerCase()
+  return [".pdf", ".doc", ".docx"].some((extension) => name.endsWith(extension))
+}
 
 export function ClientIntakeScreen({
   caseReference,
@@ -56,15 +78,44 @@ export function ClientIntakeScreen({
   const [documents, setDocuments] = useState<UploadedDocument[]>([])
   const [invoices, setInvoices] = useState<ClaimInvoiceSummary[]>([])
   const [files, setFiles] = useState<Partial<Record<IntakeGroup, File[]>>>({})
-  const [estimate, setEstimate] = useState<File | null>(null)
+  const [estimates, setEstimates] = useState<File[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  /** The per-file failure summary lives in its own state, not in `error`.
+   * It used to be written into `error` and then immediately overwritten by
+   * the outer catch if the refresh that followed threw, so the one message
+   * naming which files failed was the easiest thing on the screen to lose. */
+  const [fileFailures, setFileFailures] = useState<string[]>([])
+  const [sweepNotice, setSweepNotice] = useState<string | null>(null)
+  const [sweepResult, setSweepResult] = useState<string | null>(null)
+  const [sweeping, setSweeping] = useState(false)
   const [results, setResults] = useState<
-    Array<{ name: string; status: string }>
+    Array<{ name: string; role: string; status: string }>
   >([])
+  /** Bumped after every batch so the file inputs drop their DOM selection:
+   * without it, re-picking the same folder fires no `change` event. */
+  const [pickerKey, setPickerKey] = useState(0)
+  const [extracts, setExtracts] = useState<ClaimExtractsPayload | null>(null)
+  const [extractsLoading, setExtractsLoading] = useState(!setup)
+  const [extractsError, setExtractsError] = useState<string | null>(null)
   const groups: IntakeGroup[] = setup
     ? ["historical_claim", "in_house"]
     : ["live"]
+
+  /** The extracts endpoint is case-scoped, so it only means something on the
+   * live screen; see the `!setup` guard on the section itself. */
+  async function loadExtracts() {
+    if (setup) return
+    try {
+      setExtracts(await fetchClaimExtracts(caseReference))
+      setExtractsError(null)
+    } catch (e) {
+      setExtracts(null)
+      setExtractsError(getApiErrorMessage(e))
+    } finally {
+      setExtractsLoading(false)
+    }
+  }
 
   async function refresh() {
     const [docs, rows] = await Promise.all([
@@ -73,7 +124,29 @@ export function ClientIntakeScreen({
     ])
     setDocuments(docs)
     setInvoices(rows)
+    await loadExtracts()
   }
+  useEffect(() => {
+    if (setup) return
+    let active = true
+    void fetchClaimExtracts(caseReference)
+      .then((payload) => {
+        if (!active) return
+        setExtracts(payload)
+        setExtractsError(null)
+      })
+      .catch((e) => {
+        if (!active) return
+        setExtracts(null)
+        setExtractsError(getApiErrorMessage(e))
+      })
+      .finally(() => {
+        if (active) setExtractsLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [caseReference, setup])
   useEffect(() => {
     let active = true
     void Promise.all([
@@ -94,68 +167,105 @@ export function ClientIntakeScreen({
     }
   }, [caseReference])
 
+  function describeProcessed(document: UploadedDocument) {
+    if (document.manual_review) return "Needs review"
+    if (document.kind === "engineer_assessment") {
+      return document.paired ? "Estimate linked" : "Estimate awaiting a safe match"
+    }
+    return "Ingested"
+  }
+
+  /** Re-run the case-wide link / gap-fill sweep on what is already in the
+   * claim. The sweep is idempotent -- `run_case_gap_fill` reverses its own
+   * earlier writes before re-evaluating -- so this is safe to press again,
+   * and it is the only way out of a failed sweep that does not involve
+   * re-uploading every file. It uploads nothing and touches no handler
+   * decision. */
+  async function rerunSweep() {
+    if (sweeping || busy || finalised) return
+    setSweeping(true)
+    setSweepNotice(null)
+    setSweepResult(null)
+    try {
+      const summary = await runCaseLinkSweep(caseReference)
+      setSweepResult(
+        `Pairing sweep finished: ${summary.paired} of ${summary.assessments} engineer estimates are linked to an invoice.`
+      )
+      await refresh()
+      await onProcessed()
+    } catch (e) {
+      setSweepNotice(getApiErrorMessage(e))
+    } finally {
+      setSweeping(false)
+    }
+  }
+
+  /** A whole hand-over at once: a folder of repair invoices and a folder of
+   * engineer estimates. The sequencing, the shared intake group, the per-file
+   * isolation and the exactly-once sweep all live in `runIntakeBatch`, where
+   * they can be tested without a browser; this only supplies the ports and
+   * paints the result. */
   async function upload(group: IntakeGroup) {
-    const selected = files[group] ?? []
-    if (busy || finalised || !selected.length) return
-    const batch = [
-      ...selected,
-      ...(group === "live" && estimate ? [estimate] : []),
+    const invoiceFiles = files[group] ?? []
+    const estimateFiles = group === "live" ? estimates : []
+    // Estimates alone are refused: they would upload with nothing in the case
+    // to pair against, and the label above the picker says invoices are
+    // required.
+    if (busy || finalised || !invoiceFiles.length) return
+    const batch: IntakeBatchEntry[] = [
+      ...invoiceFiles.map((file) => ({ file, role: "invoice" as const })),
+      ...estimateFiles.map((file) => ({ file, role: "estimate" as const })),
     ]
+    const roleLabel = (role: IntakeBatchEntry["role"]) =>
+      role === "estimate"
+        ? "Engineer estimate"
+        : group === "live"
+          ? "Repair invoice"
+          : "Client document"
     setBusy(true)
     setError(null)
-    setResults([])
-    let invoiceDocumentId: string | undefined
+    setFileFailures([])
+    setSweepNotice(null)
+    setSweepResult(null)
+    setResults(
+      batch.map(({ file, role }) => ({
+        name: file.name,
+        role: roleLabel(role),
+        status: "Queued",
+      }))
+    )
     try {
-      for (const file of batch) {
-        setResults((rows) => [
-          ...rows,
-          { name: file.name, status: "Processing" },
-        ])
-        try {
-          const doc = await uploadCurrentDocument(
-            file,
-            caseReference,
-            group,
-            file === estimate ? invoiceDocumentId : undefined
-          )
-          const result = await processUploadedDocument(doc.id)
-          if (result.document.kind === "repair_invoice")
-            invoiceDocumentId = doc.id
+      const outcome = await runIntakeBatch(batch, caseReference, group, {
+        upload: uploadCurrentDocument,
+        process: processUploadedDocument,
+        sweep: runCaseLinkSweep,
+        errorMessage: getApiErrorMessage,
+        describeProcessed,
+        onStatus: (index, status) =>
           setResults((rows) =>
-            rows.map((row) =>
-              row.name === file.name
-                ? {
-                    ...row,
-                    status: result.document.manual_review
-                      ? "Needs review"
-                      : result.document.kind === "engineer_assessment"
-                        ? result.document.paired
-                          ? "Estimate linked"
-                          : "Estimate awaiting a safe match"
-                        : "Ingested",
-                  }
-                : row
+            rows.map((row, position) =>
+              position === index ? { ...row, status } : row
             )
-          )
-        } catch (e) {
-          setResults((rows) =>
-            rows.map((row) =>
-              row.name === file.name
-                ? { ...row, status: getApiErrorMessage(e) }
-                : row
-            )
-          )
-          throw e
-        }
+          ),
+      })
+      // Written before anything that can throw, and into its own state, so
+      // that a failing refresh below cannot replace the one message naming
+      // which files did not make it in.
+      setFileFailures(outcome.failures)
+      setSweepNotice(outcome.sweepError)
+      try {
+        await refresh()
+        await onProcessed(outcome.firstInvoiceDocumentId)
+      } catch (e) {
+        setError(getApiErrorMessage(e))
       }
-      await refresh()
-      await onProcessed(invoiceDocumentId)
-      setFiles((current) => ({ ...current, [group]: [] }))
-      if (group === "live") setEstimate(null)
     } catch (e) {
       setError(getApiErrorMessage(e))
       await refresh().catch(() => undefined)
     } finally {
+      setFiles((current) => ({ ...current, [group]: [] }))
+      if (group === "live") setEstimates([])
+      setPickerKey((current) => current + 1)
       setBusy(false)
     }
   }
@@ -168,7 +278,7 @@ export function ClientIntakeScreen({
         title={setup ? "Benchmark data setup" : "Document Intelligence"}
         description={
           setup
-            ? "Build your reference dataset from client-provided documents. Keep one fresh invoice aside for the live demonstration."
+            ? "Build your reference dataset from client-provided documents. Keep one fresh invoice aside to run through Document Intelligence."
             : "Upload a fresh repair invoice, inspect its source pages, then review the extraction before benchmarking."
         }
         action={
@@ -180,10 +290,44 @@ export function ClientIntakeScreen({
           </Button>
         }
       />
+      {fileFailures.length > 0 && (
+        <Alert variant="destructive">
+          <AlertTitle>
+            {fileFailures.length}{" "}
+            {fileFailures.length === 1 ? "file" : "files"} could not be
+            processed
+          </AlertTitle>
+          <AlertDescription>
+            Everything else in the hand-over was accepted. These were not:
+            <ul className="mt-2 list-disc space-y-1 pl-5">
+              {fileFailures.map((failure, index) => (
+                <li key={index}>{failure}</li>
+              ))}
+            </ul>
+          </AlertDescription>
+        </Alert>
+      )}
       {error && (
         <Alert variant="destructive">
           <AlertTitle>Intake needs attention</AlertTitle>
           <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+      {sweepNotice && (
+        <Alert>
+          <AlertTitle>Documents stored, pairing sweep did not run</AlertTitle>
+          <AlertDescription>
+            Every file that was accepted is stored and extracted, but the
+            case-wide link and gap-fill sweep failed: {sweepNotice} Nothing was
+            lost and nothing needs re-uploading — invoices and estimates may
+            simply stay unpaired until the sweep is re-run below.
+          </AlertDescription>
+        </Alert>
+      )}
+      {sweepResult && (
+        <Alert>
+          <AlertTitle>Pairing sweep complete</AlertTitle>
+          <AlertDescription>{sweepResult}</AlertDescription>
         </Alert>
       )}
       {finalised && (
@@ -201,7 +345,7 @@ export function ClientIntakeScreen({
               <CardTitle>{labels[group]}</CardTitle>
               <CardDescription>
                 {group === "live"
-                  ? "One invoice, with an optional engineer estimate."
+                  ? "Hand over a whole set at once: every repair invoice, and every engineer estimate that goes with them. Pick files or a folder for each."
                   : "Upload client invoices and their corresponding engineer estimates. PDF and Word documents are supported."}
               </CardDescription>
             </CardHeader>
@@ -209,41 +353,104 @@ export function ClientIntakeScreen({
               <label className="block space-y-2 text-sm font-medium">
                 <span>
                   {group === "live"
-                    ? "Repair invoice (required)"
+                    ? "Repair invoices (required)"
                     : labels[group]}
                 </span>
                 <Input
+                  key={`files-${group}-${pickerKey}`}
                   type="file"
                   accept={accept}
-                  multiple={setup}
+                  multiple
                   disabled={busy || finalised}
                   onChange={(e) =>
                     setFiles((current) => ({
                       ...current,
-                      [group]: Array.from(e.target.files ?? []),
+                      [group]: Array.from(e.target.files ?? []).filter(
+                        isSupportedDocument
+                      ),
                     }))
                   }
                 />
+                <Input
+                  key={`folder-${group}-${pickerKey}`}
+                  aria-label={`${labels[group]} folder`}
+                  type="file"
+                  accept={accept}
+                  multiple
+                  disabled={busy || finalised}
+                  {...directoryInputProps}
+                  onChange={(e) =>
+                    setFiles((current) => ({
+                      ...current,
+                      [group]: Array.from(e.target.files ?? []).filter(
+                        isSupportedDocument
+                      ),
+                    }))
+                  }
+                />
+                <span className="block font-normal text-muted-foreground">
+                  {files[group]?.length
+                    ? `${files[group]?.length} selected`
+                    : "Choose files, or a whole folder."}
+                </span>
               </label>
               {group === "live" && (
                 <label className="block space-y-2 text-sm font-medium">
-                  <span>Engineer estimate (optional)</span>
+                  <span>Engineer estimates (optional)</span>
                   <Input
+                    key={`estimates-${pickerKey}`}
                     type="file"
                     accept={accept}
+                    multiple
                     disabled={busy || finalised}
-                    onChange={(e) => setEstimate(e.target.files?.[0] ?? null)}
+                    onChange={(e) =>
+                      setEstimates(
+                        Array.from(e.target.files ?? []).filter(
+                          isSupportedDocument
+                        )
+                      )
+                    }
                   />
+                  <Input
+                    key={`estimates-folder-${pickerKey}`}
+                    aria-label="Engineer estimates folder"
+                    type="file"
+                    accept={accept}
+                    multiple
+                    disabled={busy || finalised}
+                    {...directoryInputProps}
+                    onChange={(e) =>
+                      setEstimates(
+                        Array.from(e.target.files ?? []).filter(
+                          isSupportedDocument
+                        )
+                      )
+                    }
+                  />
+                  <span className="block font-normal text-muted-foreground">
+                    {estimates.length
+                      ? `${estimates.length} selected`
+                      : "Choose files, or a whole folder."}
+                  </span>
                 </label>
               )}
+              {/* Invoices are required, and the gate says so. It used to pass
+                  on estimates alone, which uploaded a folder of engineer
+                  estimates into a case with nothing to pair them against. */}
               <Button
                 disabled={busy || finalised || !files[group]?.length}
                 onClick={() => void upload(group)}
               >
                 {busy
                   ? "Processing documents…"
-                  : `Upload ${group === "live" ? "invoice" : "documents"}`}
+                  : `Upload ${group === "live" ? "invoices and estimates" : "documents"}`}
               </Button>
+              {group === "live" && !files[group]?.length && estimates.length ? (
+                <p className="text-sm text-amber-700 dark:text-amber-300">
+                  Add the repair invoices these estimates belong to. An
+                  estimate uploaded on its own has nothing to pair against.
+                </p>
+              ) : null}
               <p className="text-sm text-muted-foreground">
                 {
                   documents.filter(
@@ -258,23 +465,55 @@ export function ClientIntakeScreen({
           </Card>
         ))}
       </div>
+      {/* The sweep is the one step of the hand-over that can fail on its own
+          without losing a file, so it is the one step that needs its own
+          control. Standing, not only offered after a failure: a sweep that
+          ran before the last estimate finished extracting, or against a case
+          whose invoices arrived in an earlier batch, is re-run from here
+          rather than by uploading everything again. */}
+      {!setup && (
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            variant="outline"
+            disabled={busy || sweeping || finalised}
+            onClick={() => void rerunSweep()}
+          >
+            {sweeping ? "Re-running pairing sweep…" : "Re-run pairing sweep"}
+          </Button>
+          <p className="text-sm text-muted-foreground">
+            Re-pairs every invoice and engineer estimate already in this claim.
+            Uploads nothing, changes no handler decision, and is safe to run
+            again at any time.
+          </p>
+        </div>
+      )}
       {results.length > 0 && (
         <Card>
           <CardHeader>
             <CardTitle>Processing results</CardTitle>
+            <CardDescription>
+              One row per file, in the order they were sent. Invoices go first
+              so the estimates behind them have something to link to.
+            </CardDescription>
           </CardHeader>
           <CardContent>
             <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>File</TableHead>
+                  <TableHead>Handed over as</TableHead>
                   <TableHead>Result</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
+                {/* Keyed by position, not filename: two folders can hand over
+                    the same filename twice in one batch. */}
                 {results.map((row, i) => (
                   <TableRow key={i}>
                     <TableCell>{row.name}</TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {row.role}
+                    </TableCell>
                     <TableCell role="status">{row.status}</TableCell>
                   </TableRow>
                 ))}
@@ -348,6 +587,23 @@ export function ClientIntakeScreen({
           )}
         </CardContent>
       </Card>
+      {/* The two standardised tables and the per-total split, on the screen
+          people actually land on. They used to render only on Review
+          findings, which now sits under Advanced tools, so nobody saw them.
+          Placed directly under the Live invoices table: the upload card is
+          the action, that table is the receipt, and this is what the reviewer
+          then reads. Deliberately not on the Benchmark data setup variant --
+          `/extracts` is case-scoped and unfiltered by intake group, so there
+          it would show the live claim's invoice/assessment pairing on a
+          screen whose every other table is filtered to the reference
+          dataset. */}
+      {!setup && (
+        <ExtractsSection
+          extracts={extracts}
+          loading={extractsLoading}
+          error={extractsError}
+        />
+      )}
       {documents
         .filter(
           (d) =>
