@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.reset import DEFAULT_NEW_CASE_REFERENCE
+
 SAMPLE_DATA_DIR = Path(__file__).resolve().parents[3] / "sample-data"
 
 
@@ -282,3 +284,16 @@ class FinaliseCaseRequest(BaseModel):
 class ReprocessCaseRequest(BaseModel):
     actor: str = Field(min_length=1)
     ontology_version_id: str | None = None
+
+
+class CaseDataResetRequest(BaseModel):
+    """Guarded request body for the destructive clean-slate reset.
+
+    ``confirm`` carries no default on purpose: the reset must never be a
+    zero-argument call that a stray click or a replayed request can trigger.
+    """
+
+    confirm: str = Field(description='Must be exactly "DELETE ALL CASE DATA".')
+    new_case_reference: str | None = Field(default=DEFAULT_NEW_CASE_REFERENCE, max_length=120)
+    purge_derived_history: bool = True
+    actor: str = Field(default="claimguard.reset", min_length=1, max_length=160)

@@ -30,204 +30,6 @@ import { fetchBenchmarkDashboard, fetchBenchmarkObservations } from "@/lib/api"
 import { DataCard, MINIMUM_CHALLENGE_AMOUNT, ScreenHeading } from "./shared"
 import type { ClaimWorkspace } from "./types"
 
-const demoDashboard: BenchmarkDashboardPayload = {
-  summary: {
-    averageRepairCost: 432,
-    averageLabourRate: 68,
-    mostObservedItem: "Windscreen replacement",
-    observationCount: 124,
-    mostExpensiveRepairCategory: "Front bumper repair",
-    mostExpensiveRepairAverage: 1250,
-  },
-  vehicleCategories: [
-    { vehicleClass: "M1 / AB Hatchback", averageCost: 390, count: 28 },
-    { vehicleClass: "M1 / AA Saloon", averageCost: 472, count: 24 },
-    { vehicleClass: "M1 / AC Estate", averageCost: 498, count: 18 },
-    { vehicleClass: "Segment: SUV", averageCost: 520, count: 31 },
-    { vehicleClass: "N1 light goods", averageCost: 541, count: 23 },
-  ],
-  benchmarks: [
-    {
-      ontologyItemId: "PART-WINDSCREEN",
-      item: "Windscreen replacement",
-      vehicleClass: "M1 / AB Hatchback",
-      statistics: {
-        min: 380,
-        max: 500,
-        mean: 432,
-        median: 420,
-        mode: 410,
-        p25: 410,
-        p75: 450,
-        p90: 480,
-        outlierCount: 0,
-        count: 5,
-      },
-      labourStatistics: {
-        min: 62,
-        max: 72,
-        mean: 68,
-        median: 68,
-        mode: null,
-        p25: 66,
-        p75: 70,
-        outlierCount: 0,
-        count: 5,
-      },
-      sourceCount: 5,
-      invoiceCount: 5,
-      exceptionCount: 0,
-      exceptionInvoiceCount: 0,
-      exceptions: [],
-      sampleStrength: "usable",
-      latestObservedAt: "2026-06-18",
-    },
-    {
-      ontologyItemId: "PART-BUMPER",
-      item: "Front bumper repair",
-      vehicleClass: "Segment: SUV",
-      statistics: {
-        min: 920,
-        max: 1480,
-        mean: 1250,
-        median: 1220,
-        mode: null,
-        p25: 1100,
-        p75: 1375,
-        p90: 1445,
-        outlierCount: 0,
-        count: 8,
-      },
-      labourStatistics: {
-        min: 64,
-        max: 76,
-        mean: 70,
-        median: 69,
-        mode: null,
-        p25: 67,
-        p75: 73,
-        outlierCount: 0,
-        count: 8,
-      },
-      sourceCount: 8,
-      invoiceCount: 8,
-      exceptionCount: 2,
-      exceptionInvoiceCount: 2,
-      exceptions: [
-        {
-          observationId: "demo-bumper-1",
-          invoiceNumber: "INV-007",
-          repairer: "Pilot Repair Network",
-          description: "Front bumper repair",
-          amount: 1480,
-          p90: 1220,
-          difference: 260,
-          percentageAboveP90: 21.3,
-          historicalCount: 6,
-        },
-        {
-          observationId: "demo-bumper-2",
-          invoiceNumber: "INV-008",
-          repairer: "Pilot Repair Network",
-          description: "Repair front bumper",
-          amount: 1445,
-          p90: 1215,
-          difference: 230,
-          percentageAboveP90: 18.9,
-          historicalCount: 7,
-        },
-      ],
-      sampleStrength: "usable",
-      latestObservedAt: "2026-07-02",
-    },
-  ],
-  repairerTrends: [
-    {
-      repairer: "Pilot Repair Network",
-      challengeCount: 2,
-      invoiceCount: 2,
-      itemCount: 1,
-      totalDifference: 490,
-      maximumDifference: 260,
-      items: [
-        {
-          ontologyItemId: "PART-BUMPER",
-          item: "Front bumper repair",
-          challengeCount: 2,
-          invoiceCount: 2,
-          totalDifference: 490,
-          maximumDifference: 260,
-          maximumPercentageAboveP90: 18.4,
-          exceptions: [
-            {
-              observationId: "demo-bumper-1",
-              invoiceNumber: "INV-007",
-              repairer: "Pilot Repair Network",
-              description: "Front bumper repair",
-              amount: 1480,
-              p90: 1220,
-              difference: 260,
-              percentageAboveP90: 21.3,
-              historicalCount: 6,
-            },
-            {
-              observationId: "demo-bumper-2",
-              invoiceNumber: "INV-008",
-              repairer: "Pilot Repair Network",
-              description: "Repair front bumper",
-              amount: 1445,
-              p90: 1215,
-              difference: 230,
-              percentageAboveP90: 18.9,
-              historicalCount: 7,
-            },
-          ],
-        },
-      ],
-    },
-  ],
-  filterOptions: {
-    vehicleClasses: [
-      "M1 / AB Hatchback",
-      "M1 / AA Saloon",
-      "M1 / AC Estate",
-      "Segment: SUV",
-      "N1 light goods",
-    ],
-    repairItems: [
-      { id: "PART-WINDSCREEN", name: "Windscreen replacement" },
-      { id: "PART-BUMPER", name: "Front bumper repair" },
-    ],
-  },
-  appliedFilters: {
-    vehicleClass: null,
-    ontologyItemId: null,
-    dateFrom: null,
-    dateTo: null,
-    minimumCount: 1,
-    challengeThresholdPct: 10,
-    minimumChallengeAmount: MINIMUM_CHALLENGE_AMOUNT,
-  },
-  dataQuality: {
-    invoiceObservationCount: 126,
-    validCostCount: 124,
-    invalidOrMissingCostCount: 2,
-    classifiedCount: 109,
-    unclassifiedCount: 15,
-    classifiedCoveragePct: 87.9,
-    latestObservationDate: "2026-07-02",
-  },
-  definitions: {
-    cost: "Invoice net line total, excluding estimates and credit notes.",
-    labour: "Explicit labour rate, or an hourly labour line where available.",
-    challengeGate:
-      "A P90 exception must exceed the selected percentage threshold and the existing £5.00 minimum positive variance.",
-    coverageNote:
-      "Unclassified rows remain visible and are never guessed into a vehicle class.",
-    officialClasses: {},
-  },
-}
-
 const emptyDashboard: BenchmarkDashboardPayload = {
   summary: {
     averageRepairCost: null,
@@ -329,7 +131,6 @@ function benchmarkSortValue(item: BenchmarkRow, key: BenchmarkSortKey) {
 }
 
 export function BenchmarkDashboardScreen({
-  apiMode,
   workspace,
   challengeThreshold,
   onChallengeThresholdChange,
@@ -337,7 +138,6 @@ export function BenchmarkDashboardScreen({
   onOpenKnowledgeGraph,
   sourceGroup,
 }: {
-  apiMode: "api" | "demo"
   workspace: ClaimWorkspace
   challengeThreshold: number
   onChallengeThresholdChange: (value: number) => void
@@ -345,9 +145,10 @@ export function BenchmarkDashboardScreen({
   onOpenKnowledgeGraph: () => void
   sourceGroup: "in_house" | "historical_claim"
 }) {
-  const [dashboard, setDashboard] = useState<BenchmarkDashboardPayload>(
-    apiMode === "demo" ? demoDashboard : emptyDashboard
-  )
+  // Starts genuinely empty: until the live fetch resolves the screen shows no
+  // numbers rather than placeholder ones.
+  const [dashboard, setDashboard] =
+    useState<BenchmarkDashboardPayload>(emptyDashboard)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [vehicleClass, setVehicleClass] = useState("all")
   const [repairItem, setRepairItem] = useState("all")
@@ -368,7 +169,6 @@ export function BenchmarkDashboardScreen({
   const sourcePanelRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (apiMode === "demo") return
     let cancelled = false
     void fetchBenchmarkDashboard({
       caseReference: workspace.claim.id,
@@ -394,7 +194,6 @@ export function BenchmarkDashboardScreen({
       cancelled = true
     }
   }, [
-    apiMode,
     challengeThreshold,
     minimumCount,
     repairItem,
@@ -493,24 +292,6 @@ export function BenchmarkDashboardScreen({
     revealEvidencePanel()
     if (item.sourceObservations) {
       setSourceRows(item.sourceObservations)
-      setSourceLoading(false)
-      return
-    }
-    if (apiMode === "demo") {
-      setSourceRows([
-        {
-          id: "demo-source",
-          invoiceDate: item.latestObservedAt,
-          amount: item.statistics.median,
-          vehicleClass: item.vehicleClass,
-          vehicleMake: "Example",
-          vehicleModel: "Vehicle",
-          rawDescription: item.item,
-          sourceRecordId: "PILOT-EXAMPLE",
-          repairer: "Pilot Repair Network",
-          source: { evidence_label: "Previous repair invoice" },
-        },
-      ])
       setSourceLoading(false)
       return
     }

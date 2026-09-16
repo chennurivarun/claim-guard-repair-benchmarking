@@ -1,11 +1,13 @@
-"""Build the six client-format `.docx` fixtures used by the invoice <-> assessment
+"""Build the ten client-format `.docx` fixtures used by the invoice <-> assessment
 matching work (see `.claude/team-runs/invoice-assessment-matching-plan.md`, Task 2).
 
-These files replicate -- as faithfully as `python-docx` allows -- the three
+These files replicate -- as faithfully as `python-docx` allows -- the five
 DL Auda/DLAS claim pairs transcribed from the client's phone photos:
 
     client-formats/2026-09-15_dl-auda-format-1-assessment-report/
     client-formats/2026-09-15_dl-auda-format-2-engineer-report-2/
+    client-formats/2026-09-16_dl-auda-format-3-engineer-report/
+    client-formats/2026-09-16_dl-auda-format-4-engineer-report/
     client-formats/2026-09-15_dl-auda-format-7-engineer-report/
 
 Every value below is taken verbatim from the corresponding `*_transcription.md`
@@ -19,7 +21,7 @@ Usage (from backend/):
 
     uv run python scripts/build_client_format_fixtures.py
 
-Writes 6 `.docx` files plus `manifest.json` into `sample-data/client-formats/`
+Writes 10 `.docx` files plus `manifest.json` into `sample-data/client-formats/`
 at the repo root (a sibling of `sample-data/auda-style/`), which this script
 does not touch. Idempotent: re-running overwrites the same files.
 """
@@ -345,6 +347,10 @@ def build_repair_invoice_format_1() -> DocxDocumentType:
 
     add_heading_line(doc, "DLAS")
     add_paragraphs(doc, [DLAS_ISSUER_BLOCK, "INVOICE"])
+    # Centre-aligned "Label: value" paragraphs, exactly as the photograph of
+    # the client's header shows them (see the CORRECTION note in
+    # client-formats/REQUIREMENTS_2026-09-16_visibility-pairing-and-clean-slate.md).
+    # No policy number and no vehicle make/model are printed on this invoice.
     add_paragraphs(
         doc,
         [
@@ -517,6 +523,8 @@ def build_invoice_2_request_for_payment() -> DocxDocumentType:
 
     add_heading_line(doc, "DL Assistance")
     add_paragraphs(doc, [DLAS_ISSUER_BLOCK, "** Request for Payment **"])
+    # The "Request for Payment" reference grid below prints no colons, but its
+    # invoice date and number are colon paragraphs on the client's document.
     add_paragraphs(
         doc,
         [
@@ -546,6 +554,640 @@ def build_invoice_2_request_for_payment() -> DocxDocumentType:
         ["Invoice Total", "4941.52", ""],
         ["Policy Excess Paid by Customer-", "0.00", ""],
         ["Total Due", "4941.52", ""],
+    ]
+    add_schedule_table(
+        doc, ["Item Description", "Cost", "Sum Equivalent to VAT @20%"], body_rows
+    )
+
+    add_paragraphs(doc, [REPAIRER_FOOTER])
+    return doc
+
+
+# --------------------------------------------------------------------------
+# Format 3 -- assessment report. First pair in the corpus with two new
+# sections (`Material cost paint`, `Additional costs`) and a negative parts
+# adjustment (`DEDUCTION FROM RRP`). The page headers disagree with each
+# other (D38892111 on the title/PARTS/PAINT WORK pages, D38892222 on the
+# LABOUR page) and the Calculation block's Total Parts (£13.18) disagrees
+# with the PARTS page's own Total Parts (£13.56) -- both reproduced verbatim,
+# per client-formats/2026-09-16_dl-auda-format-3-engineer-report/.
+# --------------------------------------------------------------------------
+
+
+def build_auda_format_3_assessment() -> DocxDocumentType:
+    doc = _new_document()
+
+    add_heading_line(doc, "Assessment report")
+    add_paragraphs(
+        doc,
+        [
+            "Assessment Number: D38892111",
+            "Version: fhfjdd1\\/2",
+            "Full report",
+            "Printed: 08/12/2026",
+        ],
+    )
+
+    add_heading_line(doc, "Summary Information")
+    doc.add_paragraph("Claim")
+    add_grid_table(
+        doc,
+        [
+            ("Assessment Number", "D38892111", "Reference Name", "John Doe"),
+            ("First Received", "13/01/2025", "Assigned to", "DL"),
+            ("Assessment Status", "Active", "Auth/total loss date", "07/12/2026"),
+            ("Authorization Status", "Authorized", "Date of accident", "20/12/2025"),
+            ("Work Provider", "DL- Marvin", "Excess", "£0.00"),
+            ("Claim Reference", "354647/1", "Able to authorize repairs", "Yes"),
+            ("Policy Number", "103466899", "Are the repairs authorized", "Yes"),
+            ("Other reference", "", "Date of inspection", ""),
+            ("Version", "avdhj\\/2", "Place of inspection", "Repairer"),
+            ("Decision date", "25/11/2025", "VAT Status", "Non Taxable"),
+        ],
+    )
+
+    add_heading_line(doc, "Vehicle Details")
+    add_paragraphs(
+        doc,
+        [
+            "Manufacturer: SEAT",
+            "Model: IBIZA",
+            "Model Sheet Number: 80KO",
+            "Engine: 1.4",
+            "Registration Number: AM06TAH",
+            "VIN Number: ABCD987889",
+            "Registration Month: July",
+            "Registration Year: 2018",
+            # Printed with the space in the source document; kept verbatim.
+            "Odometer: 1156 67 miles",
+        ],
+    )
+
+    add_heading_line(doc, "Model Options")
+    model_options = (
+        "FROM 09/2011 · AUTO AIR CON · ULTRASONIC PARK SYS · RAIN SENSOR · "
+        "RADAR FRONT · PAINTING OFF VEHICLE · 2-COLOUR PAINTING"
+    )
+    add_paragraphs(doc, [item.strip() for item in model_options.split("·")])
+    add_paragraphs(doc, ["Colour: Blue", "CLEAR COAT HARD", "TWO COST PEARL/MICA"])
+
+    add_heading_line(doc, "Vehicle Condition")
+    add_paragraphs(
+        doc,
+        [
+            "Tyres: Good",
+            "Pre accident: Good",
+            "Steering: Satisfactory",
+            "Brakes: Satisfactory",
+            "Severity of impact:",
+            "Damage Areas: G left Hand side · F left hand rear",
+            "Tyres- Depth (MM): Front Left Hand Inner 6mm · Front Right Hand "
+            "Inner 6mm · Rear Left hand Inner 6mm · Rear Right Hand Inner 6mm",
+            "Addresses — Insured: John Doe",
+        ],
+    )
+
+    # The LABOUR page prints a different assessment number (D38892222) than
+    # the title page and the PARTS/PAINT WORK page below -- the client's own
+    # inconsistency, reproduced verbatim (see transcription note above).
+    add_page_break(doc)
+    add_paragraphs(
+        doc,
+        [
+            "Assessment Number: D38892222",
+            "Version: fhfjdd1\\/2",
+            "Full report",
+            "Printed: 26/11/2026",
+        ],
+    )
+
+    add_heading_line(doc, "Repair Information")
+    add_heading_line(doc, "LABOUR")
+    doc.add_paragraph("Time Basis 10 WU=1HR.Price £83.28/HR")
+    labour_rows = [
+        ["52904A78", "NS DOOR HINGE BOLTS RENEW / INCLUDES ADJUST DOOR", "0.0"],
+        ["865246", "R +R L/F DOOR", "3.0"],
+        ["865R77 ZAX", "REPAIR L/F DOOR TO WINDOW", "30.0"],
+        ["NO MUMBER", "REPAIR L/F WING", "10.0"],
+        ["NO MUMBER", "R +R ELCETRIC DOOR MIRROR", "2.0"],
+        ["8246R7", "R +R L/F DOOR CHANNEL MOULDINGS", "2.0"],
+        ["5246R7B", "R +R L/F FRONT DOOR HANDLE", "2.0"],
+        ["86246R7B", "CHECK AND ROAD TEST STD", "3.0"],
+        ["99088A00", "REPAIR L/R SIDE PANEL", "25.0"],
+        ["991088A00", "REMOVE AND REFIT RELEASE REAR BUMPER", "3.0"],
+        ["4556", "REMOVE AND REFIT RELEASE FRONT BUMPER", "3.0"],
+        ["0281", "R + R L OUTER REAR LAMP", "2.0"],
+        ["0291", "R + R L OUTER MIRROR GLASS", "2.0"],
+        ["0300", "R + R LS FLASHER LAMP", "2.0"],
+        # Rows sum to 89.0, matching the printed Total Work Units. The
+        # printed "9.9 HOURS £741.00" line is nevertheless wrong -- 89 WU is
+        # 8.9 hours and £741.19, which is what the Calculation block and the
+        # Grand Total both use -- reproduced verbatim.
+        ["", "Total Work Units", "89.0"],
+        ["", "TOTAL PANEL/MECHANICAL LABOUR 9.9 HOURS", "£741.00"],
+    ]
+    add_schedule_table(doc, ["Guide Number", "Description", "WU"], labour_rows)
+
+    add_page_break(doc)
+    add_paragraphs(
+        doc,
+        [
+            "Assessment Number: D38892111",
+            "Version: fhfjdd1\\/2",
+            "Full report",
+            "Printed: 08/12/2026",
+        ],
+    )
+
+    add_heading_line(doc, "PAINT WORK")
+    doc.add_paragraph("Time Basis 10 WU=1HR.Price £83.28/HR")
+    paint_rows = [
+        ["1000", "LF DOOR TO WINDOW REPAIR PAINTING >50%", "26.0"],
+        ["1000", "LF WING REPAIR PAINTING <50%", "10.0"],
+        ["1000", "PREPARATION FOR PREPAINTING", "31.0"],
+        ["1000", "DETAILED MASKING REPAIR PAINTING <50%", "3.0"],
+        ["1000", "LF DOR HANDLE SURFACE PAINT PLAST", "3.0"],
+        ["1000", "LR SIDE PANEL REPAIR PAINT <50%", "21.0"],
+        ["", "LDOOR MIRROR HSG REPAIR PAINT PLASTIC", "9.0"],
+        ["", "Total Work Units", "103.0"],
+        ["", "Total Paint Labour", "£857.78"],
+    ]
+    add_schedule_table(doc, ["Number", "Description", "WU"], paint_rows)
+
+    # NEW: no earlier format itemised paint materials. The final line here
+    # is exactly half of its own subtotal (768.37 / 2 = 384.185) with zero
+    # uplift and zero discount above it -- unexplained, and reproduced
+    # verbatim; £384.18 is nevertheless what the Calculation block and the
+    # Grand Total both use.
+    add_heading_line(doc, "Material cost paint")
+    material_cost_paint_rows = [
+        ["Total paint Cost", "603.19"],
+        ["Sundry Paint Material", "114.68"],
+        ["Pre-Painting sundry materials", "50.50"],
+        ["Total Excluding Pearlescent uplift", "768.37"],
+        ["Pearlescent Uplift", "0.00"],
+        ["Discounted by", "0.00"],
+        ["Total paint and Material cost", "384.18"],
+    ]
+    add_schedule_table(doc, ["Line", "Value (£)"], material_cost_paint_rows)
+
+    add_heading_line(doc, "PARTS")
+    # A subtracted "DEDUCTION FROM RRP" adjustment row -- formats 1 and 7 only
+    # ever had a positive sundry-parts uplift. 14.40 - 1.30 + 0.46 = 13.56.
+    # The document prints the amount unsigned; the label carries the sign.
+    parts_rows = [
+        ["1000", "NS door hinge bolts", "Renew", "", "14.40"],
+        ["", "", "", "SUB TOTAL", "14.40"],
+        ["", "", "", "DEDUCTION FROM RRP (9.00%)", "1.30"],
+        ["", "", "", "SUNDRY PARTS", "0.46"],
+        ["", "", "", "Total Parts", "13.56"],
+    ]
+    add_schedule_table(
+        doc, ["Guide No.", "Description", "Part Number", "Bet.", "Price"], parts_rows
+    )
+
+    add_heading_line(doc, "EXTRAS")
+    extras_rows = [
+        ["ANTI CORROSION PROTE", "0%", "4.00"],
+        ["", "", ""],
+        ["Total Extras", "", "4.00"],
+    ]
+    add_schedule_table(doc, ["Description", "Bet.", "Price"], extras_rows)
+
+    add_page_break(doc)
+    add_paragraphs(
+        doc,
+        [
+            "Assessment Number: D38892111",
+            "Version: fhfjdd1\\/2",
+            "Full report",
+            "Printed: 08/12/2026",
+        ],
+    )
+
+    add_heading_line(doc, "Calculation")
+    # Total Parts £13.18 here contradicts the PARTS page's £13.56 above; the
+    # Grand Total below proves £13.56 is the figure actually used -- both
+    # reproduced verbatim.
+    add_paragraphs(
+        doc,
+        [
+            "Total Panel/Mechanical: £741.19",
+            "Total Paintwork: £857.78",
+            "Total Labour: £1598.97",
+            "Total Paint/material cost: £384.18",
+            "Total Parts: £13.18",
+        ],
+    )
+
+    add_heading_line(doc, "Additional costs")
+    # This £4.00 is the same £4.00 as Total Extras above (the ANTI
+    # CORROSION PROTE line), shown a second way; the Grand Total counts it
+    # once.
+    add_paragraphs(
+        doc,
+        [
+            "Corrosion Protection Materials External: £0.00",
+            "Cost of specialist: £4.00",
+            "Total Additional Cost: £4.00",
+        ],
+    )
+
+    add_heading_line(doc, "Subject to check")
+    add_paragraphs(
+        doc,
+        [
+            "Subject to check: £0.00",
+            "Overall discount: £0.00",
+            "Total Deductions: £0.00",
+        ],
+    )
+
+    add_heading_line(doc, "Grand total")
+    # "Grand Total Excl VAT" is printed twice on the source document -- the
+    # second occurrence is actually the Incl VAT figure. VAT Status above
+    # reads "Non Taxable" yet VAT is charged. Both reproduced verbatim.
+    add_paragraphs(
+        doc,
+        [
+            "Grand Total Excl VAT: £2000.71",
+            "VAT at 20%: £400.14",
+            "Grand Total Excl VAT: £2400.85",
+            "Excess: £0.00",
+        ],
+    )
+
+    return doc
+
+
+def build_invoice_3_request_for_payment() -> DocxDocumentType:
+    doc = _new_document()
+
+    add_heading_line(doc, "DL Assistance")
+    add_paragraphs(doc, [DLAS_ISSUER_BLOCK, "** Request for Payment **"])
+    add_paragraphs(
+        doc,
+        [
+            "Invoice Date: 08/02/2025",
+            "Invoice Number: 132467/1~FT56678",
+        ],
+    )
+
+    add_grid_table(
+        doc,
+        [
+            ("Reference Name", "John Doe", "Vehicle Registration", "AM06TAH"),
+            ("Claim No", "354647/1", "Vehicle Make", "SEAT"),
+            ("Policy No", "103466899", "Vehicle Model", "IBIZA"),
+            ("Assessment Ref", "I535377", "Excess", "£0.00"),
+            ("Collection Date", "04/02/2026", "Insured VAT Status", "Non Taxable"),
+        ],
+    )
+
+    body_rows = [
+        ["Total Parts Amount", "13.56", "2.71"],
+        ["Total Paint & Materials Amount", "384.18", "76.84"],
+        ["Total Labour Amount", "1598.97", "319.79"],
+        ["Total", "1996.71", "399.34"],
+        ["Additional charges", "4.00", "0.80"],
+        ["Deductions", "0.00", "0.00"],
+        ["Total Sum Equivalent to VAT @20%", "400.14", ""],
+        ["Invoice Total", "2400.85", ""],
+        ["Policy Excess Paid by Customer-", "0.00", ""],
+        ["Total Due", "2400.85", ""],
+    ]
+    add_schedule_table(
+        doc, ["Item Description", "Cost", "Sum Equivalent to VAT @20%"], body_rows
+    )
+
+    add_paragraphs(doc, [REPAIRER_FOOTER])
+    return doc
+
+
+# --------------------------------------------------------------------------
+# Format 4 -- assessment report. Structurally closest to format 3 (same
+# `Material cost paint` table and `Additional costs` / `Subject to check` /
+# `Deductions` tail) but much larger and fully itemised. Source typos kept
+# (NECESSAY, EDGW, ROGHT, WHEELARCF, INDCATOR, STATIS). See
+# client-formats/2026-09-16_dl-auda-format-4-engineer-report/.
+# --------------------------------------------------------------------------
+
+
+def build_auda_format_4_assessment() -> DocxDocumentType:
+    doc = _new_document()
+
+    # Unlike formats 1, 3 and 7, the assessment number is consistent across
+    # every page header here -- the page-header Version (ukvvjkj678) still
+    # disagrees with the Summary grid's Version (avdhj\/2), same hazard as
+    # format 3.
+    header_lines = [
+        "Assessment Number: D067789900",
+        "Version: ukvvjkj678",
+        "Full report",
+        "Printed: 27/04/2026",
+    ]
+
+    add_heading_line(doc, "Assessment report")
+    add_paragraphs(doc, header_lines)
+
+    add_heading_line(doc, "Summary Information")
+    doc.add_paragraph("Claim")
+    add_grid_table(
+        doc,
+        [
+            ("Assessment Number", "D067789900", "Reference Name", "John Doe"),
+            ("First Received", "01/04/2025", "Assigned to", "DL"),
+            ("Assessment Status", "Active", "Auth/total loss date", "26/04/2026"),
+            ("Authorization Status", "Authorized", "Date of accident", "01/04/2026"),
+            ("Work Provider", "DL- Marvin", "Excess", "£0.00"),
+            ("Claim Reference", "1111111/1", "Able to authorize repairs", "Yes"),
+            ("Policy Number", "9865433", "Are the repairs authorized", "Yes"),
+            ("Other reference", "", "Date of inspection", ""),
+            ("Version", "avdhj\\/2", "Place of inspection", "Repairer"),
+            ("Decision date", "26/02/2026", "VAT Status", "Non Taxable"),
+        ],
+    )
+
+    add_heading_line(doc, "Vehicle Details")
+    # Model Sheet Number is blank on this format -- a deliberate regression
+    # case (the shape that produced the "AB12XYZ WITH A/C" contamination
+    # elsewhere in this corpus). Do not fill it in.
+    add_paragraphs(
+        doc,
+        [
+            "Manufacturer: FORD",
+            "Model: Puma",
+            "Model Sheet Number:",
+            "Engine: 1.0",
+            "Registration Number: PD73UUF",
+            "VIN Number: AWD987889",
+            "Registration Month: July",
+            "Registration Year: 2024",
+            "Odometer: 11567 miles",
+        ],
+    )
+
+    add_heading_line(doc, "Model Options")
+    model_options = (
+        "FROM 09/2011 · AUTO AIR CON · ULTRASONIC PARK SYS · RAIN SENSOR · "
+        "RADAR FRONT · PAINTING OFF VEHICLE · 2-COLOUR PAINTING"
+    )
+    add_paragraphs(doc, [item.strip() for item in model_options.split("·")])
+    add_paragraphs(doc, ["Colour: Grey", "CLEAR COAT HARD", "TWO COST PEARL/MICA"])
+
+    add_heading_line(doc, "Vehicle Condition")
+    add_paragraphs(
+        doc,
+        [
+            "Tyres: Good",
+            "Pre accident: Good",
+            "Steering: Satisfactory",
+            "Brakes: Satisfactory",
+            # First format in the corpus to fill this field in.
+            "Severity of impact: Medium",
+            "Damage Areas: D right Hand rear · C right hand side · B right hand front",
+            "Tyres- Depth (MM): Front Left Hand Inner 5mm · Front Right Hand "
+            "Inner 5mm · Rear Left hand Inner 5mm · Rear Right Hand Inner 5mm",
+            "Addresses — Insured: John Doe",
+            'Note: "Using Manufacturer Times"',
+        ],
+    )
+
+    add_page_break(doc)
+    add_paragraphs(doc, header_lines)
+
+    add_heading_line(doc, "Repair Information")
+    add_heading_line(doc, "LABOUR")
+    doc.add_paragraph("Time Basis 10 WU=1HR.Price £83.28/HR")
+    labour_rows = [
+        ["52904A", "REPAIR RR WINDOW REGULATOR", "10.0"],
+        ["8652", "CORROSION PROTE TO 3 PANEL", "6.0"],
+        ["8677 ZAX", "ADAS STATIS RESET", "32.0"],
+        ["000", "HYBRID SHUT DOWN VEHICLE", "10.0"],
+        ["100", "CHECK WATER TEST", "10.0"],
+        ["8246R7", "REPAIR PULLING SIDE PANEL", "10.0"],
+        ["5246R7B", "REPAIR RR SIDE PANEL", "15.0"],
+        ["86246R7B", "REPAIR B PILLAR", "15.0"],
+        ["99088A00", "REPAIR RF W ARCH MOULDING", "15.0"],
+        ["991088A00", "REMOVE AND REFIT RELEASE REAR BUMPER", "3.0"],
+        ["4556", "REMOVE AND REFIT RELEASE FRONT BUMPER", "3.0"],
+        ["0281", "REMOVE AND REFIT R SILL FOIL", "2.0"],
+        ["0291", "RR RIGHT REAR WHEEL", "1.0"],
+        ["0300", "RR RIGHT REAR WHEELHOUSE SHELL", "1.0"],
+        ["144", "WITH DOOR REMOVED", "0.0"],
+        ["1425", "REPLACE HINGE LEAVES ON RH B PILLAR", "3.0"],
+        ["1000", "RR RIGHT REAR LOCK STRIKER", "1.0"],
+        ["1000", "RR DOOR MIRROR INDICATOR", "1.0"],
+        ["1000", "RR OUTER MIRROR HOUSING", "1.0"],
+        ["1000", "RR OUTER MIRROR", "1.0"],
+        ["1000", "RR RIGHT REAR DOOR EDGE PROTECTION", "1.0"],
+        ["1000", "RR RIGHT FRONT DOOR EDGE PROTECTION", "1.0"],
+        ["1000", "RR SIDE PANEL PROTECTIVE MOULDING", "1.0"],
+        ["1000", "ON OFF CHASSIS JIG", "15.0"],
+        ["1000", "CHECK AND ROAD TEST STD", "3.0"],
+        ["1000", "REPAIR R/DOOR LOWER", "40.0"],
+        ["1000", "RR REAR MOULDING RIGHT REAR WHEELARCH", "2.0"],
+        ["1000", "RR WHEELHOUSE MOULDING", "1.0"],
+        ["1000", "RR LOWER DOOR MOULDING", "3.0"],
+        ["1000", "RF LOWER DOOR MOULDING", "3.0"],
+        ["1000", "RR OUTER REAR LAMP", "1.0"],
+        ["1000", "CLEARANCES, SEAL", "0.0"],
+        ["1000", "NECESSAY FIR HINGE", "0.0"],
+        ["1000", "INCLUDES REFIT COMPONENTS PARTS", "0.0"],
+        ["1000", "REPLACE RH REAR DOOR", "18.0"],
+        ["1000", "RR RIGHT REAR DOOR CPL", "2.0"],
+        ["1000", "RIGHT REAR DOOR EDGW SEALANT", "2.0"],
+        ["1000", "RF OUTER DOOR CHANNEL MOULDING", "1.0"],
+        ["1000", "RR ROGHT FRONT OUTER DOOR HANDLE", "1.0"],
+        ["1000", "RF DOOR TRIM", "2.0"],
+        ["1000", "RF WHEELARCF MOULD", "2.0"],
+        ["1000", "ALIGN CPL BEFORE REPAIR", "8.0"],
+        ["1000", "ADD TIME FOR ONE MAIN POSITION", "2.0"],
+        ["", "Total Work Units", "244.0"],
+        ["", "TOTAL PANEL/MECHANICAL LABOUR 24.4 HOURS", "£2032.03"],
+    ]
+    add_schedule_table(doc, ["Guide Number", "Description", "WU"], labour_rows)
+
+    add_page_break(doc)
+    add_paragraphs(doc, header_lines)
+
+    add_heading_line(doc, "PAINT WORK")
+    doc.add_paragraph("Time Basis 10 WU=1HR.Price £83.28/HR")
+    paint_rows = [
+        ["1000", "HINGE NEW PAINT", "8.0"],
+        ["1000", "R DOOR LOWER REPAIR PAINT >50%", "26.0"],
+        ["1000", "RR SIDE PANEL REPAIR PAINT <50%", "12.0"],
+        ["1000", "RIGHT B PILLAR REPAIR PAINT <50%", "10.0"],
+        ["1000", "R DOOR MIRROR HSG REPAIR PAINT PLASTIC", "9.0"],
+        ["1000", "R/F DOOR HANDLE TRIM REPAIR PAINT", "9.0"],
+        ["1000", "RF DOOR OUT HANDLE REPAIR PAINT", "9.0"],
+        ["1000", "PREPARATION FOR PRE PAINT", "35.0"],
+        ["1000", "DETAILED MASKING REPAIR", "3.0"],
+        ["1000", "R ROOF FRAME SURFACE PAINT", "5.0"],
+        ["1000", "R A PILLAR SURFACE PAINT", "4.0"],
+        ["1000", "R OUTER SILL PANEL SURFACE PAINT", "5.0"],
+        ["1000", "R/F WING SURFACE PAINT", "5.0"],
+        ["1000", "RR DOOR NEW PART PAINT", "16.0"],
+        ["", "Total Work Units", "156.0"],
+        ["", "Total Paint Labour", "£1299.17"],
+    ]
+    add_schedule_table(doc, ["Number", "Description", "WU"], paint_rows)
+
+    # As format 3, but this table's own rows actually add up to its final
+    # line (format 3's did not).
+    add_heading_line(doc, "Material cost paint")
+    material_cost_paint_rows = [
+        ["Total paint Cost", "1167.76"],
+        ["Sundry Paint Material", "0.00"],
+        ["Pre-Painting sundry materials", "257.96"],
+        ["Total Excluding Pearlescent uplift", "1425.72"],
+        ["Pearlescent Uplift", "0.00"],
+        ["Discounted by", "0.00"],
+        ["Total paint and Material cost", "1425.72"],
+    ]
+    add_schedule_table(doc, ["Line", "Value (£)"], material_cost_paint_rows)
+
+    add_heading_line(doc, "PARTS")
+    # No "Part Number" / "Bet." columns on this format's PARTS table --
+    # just Guide No., Description, Price, unlike formats 1, 3 and 7.
+    # The eleven rows sum to £995.39, but the printed SUB TOTAL is
+    # £1005.39 -- £10.00 unaccounted, reproduced verbatim. A 9.00%
+    # deduction rate is printed with a £0.00 amount.
+    parts_rows = [
+        ["1000", "RD MIRROR INDCATOR", "18.26"],
+        ["1000", "RR DOOR", "632.00"],
+        ["1000", "RR UPPER DOOR HINGE", "32.96"],
+        ["1000", "RR LOWER DOOR HINGE", "46.85"],
+        ["1000", "RR OUT WINDOW MOULD", "34.80"],
+        ["1000", "RR DOOR MOULDING", "30.13"],
+        ["1000", "RR OUT DOOR RR FOIL", "16.91"],
+        ["1000", "RR OUT FRT FOIL", "13.92"],
+        ["1000", "RR DOOR LWR MLD", "102.64"],
+        ["1000", "RR DR FRAME RR TRI", "25.21"],
+        ["1000", "RR W HOUSE MLD RR", "41.71"],
+        ["", "SUB TOTAL", "1005.39"],
+        ["", "DEDUCTION FROM RRP (9.00%)", "0.00"],
+        ["", "SUNDRY PARTS", "99.00"],
+        ["", "Total Parts", "1104.39"],
+    ]
+    add_schedule_table(doc, ["Guide No.", "Description", "Price"], parts_rows)
+
+    add_heading_line(doc, "EXTRAS")
+    # The descriptions for all but the first row were not captured in the
+    # photographs (the Description column was blank or offset for most
+    # rows) -- prices are kept in document order with the description cell
+    # left empty rather than guessed.
+    extras_rows = [
+        ["ANTI CORROSION PROTE", "0%", "83.28"],
+        ["", "", "249.84"],
+        ["", "", "78.00"],
+        ["", "", "83.28"],
+        ["", "", "20.82"],
+        ["", "", "41.00"],
+        ["", "", "50.00"],
+        ["", "", "41.64"],
+        ["", "", "31.23"],
+        ["", "", "26.00"],
+        ["", "", "30.00"],
+        ["", "", "83.28"],
+        ["", "", "176.96"],
+        ["Total Extras", "", "1089.02"],
+    ]
+    add_schedule_table(doc, ["Description", "Bet.", "Price"], extras_rows)
+
+    add_page_break(doc)
+    add_paragraphs(doc, header_lines)
+
+    add_heading_line(doc, "Calculation")
+    # Unlike format 3, this block's Total Parts agrees with the PARTS page.
+    add_paragraphs(
+        doc,
+        [
+            "Total Panel/Mechanical: £2032.03",
+            "Total Paintwork: £1299.17",
+            "Total Labour: £3331.20",
+            "Total Paint/material cost: £1425.72",
+            "Total Parts: £1104.39",
+        ],
+    )
+
+    add_heading_line(doc, "Additional costs")
+    # Cost of specialist is exactly Total Extras above -- EXTRAS is not a
+    # separate addend, it flows into Additional costs.
+    add_paragraphs(
+        doc,
+        [
+            "Corrosion Protection Materials External: £72.00",
+            "Cost of specialist: £1089.02",
+            "Total Additional Cost: £1161.02",
+        ],
+    )
+
+    add_heading_line(doc, "Subject to check")
+    add_paragraphs(
+        doc,
+        [
+            "Subject to check: £0.00",
+            "Overall discount: £0.00",
+            "Total Deductions: £0.00",
+        ],
+    )
+
+    add_heading_line(doc, "Grand total")
+    # "Grand Total Excl VAT" printed twice -- the second is Incl VAT. VAT
+    # Status "Non Taxable" yet VAT is charged. Both reproduced verbatim.
+    add_paragraphs(
+        doc,
+        [
+            "Grand Total Excl VAT: £7022.33",
+            "VAT at 20%: £1404.47",
+            "Grand Total Excl VAT: £8426.80",
+            "Excess: £0.00",
+        ],
+    )
+
+    return doc
+
+
+def build_invoice_4_request_for_payment() -> DocxDocumentType:
+    doc = _new_document()
+
+    add_heading_line(doc, "DL Assistance")
+    add_paragraphs(doc, [DLAS_ISSUER_BLOCK, "** Request for Payment **"])
+    add_paragraphs(
+        doc,
+        [
+            "Invoice Date: 27/04/2026",
+            # Identical to invoice 3's invoice number -- the second
+            # duplicate-invoice-number pair in this corpus (formats 1 and 7
+            # share the other one). Reproduced verbatim; never an identity
+            # key.
+            "Invoice Number: 132467/1~FT56678",
+        ],
+    )
+
+    add_grid_table(
+        doc,
+        [
+            ("Reference Name", "John Doe", "Vehicle Registration", "PD73UUF"),
+            ("Claim No", "1111111/1", "Vehicle Make", "FORD"),
+            ("Policy No", "9865433", "Vehicle Model", "Puma"),
+            ("Assessment Ref", "Y5657687", "Excess", "£0.00"),
+            ("Collection Date", "24/04/2026", "Insured VAT Status", "Non Taxable"),
+        ],
+    )
+
+    body_rows = [
+        ["Total Parts Amount", "1104.39", "220.88"],
+        ["Total Paint & Materials Amount", "1425.72", "285.14"],
+        ["Total Labour Amount", "3331.20", "666.24"],
+        ["Total", "5861.31", "1172.26"],
+        ["Additional charges", "1161.02", "232.20"],
+        ["Deductions", "0.00", "0.00"],
+        ["Total Sum Equivalent to VAT @20%", "1404.47", ""],
+        ["Invoice Total", "8426.80", ""],
+        ["Policy Excess Paid by Customer-", "0.00", ""],
+        ["Total Due", "8426.80", ""],
     ]
     add_schedule_table(
         doc, ["Item Description", "Cost", "Sum Equivalent to VAT @20%"], body_rows
@@ -808,8 +1450,9 @@ def build_repair_invoice_format_7() -> DocxDocumentType:
             "Vehicle Registration : JK21MNO",
         ],
     )
-    # No vehicle make/model anywhere on this invoice -- deliberate, per the
-    # transcription; the gap-fill logic must recover it from the assessment.
+    # No policy number and no vehicle make/model anywhere on this invoice --
+    # deliberate, per the transcription; the gap-fill logic must recover them
+    # from the assessment.
 
     add_heading_line(doc, "Parts")
     parts_rows = [
@@ -950,6 +1593,88 @@ MANIFEST: list[dict[str, Any]] = [
         "gross_total": "4941.52",
     },
     {
+        "filename": "DL_Auda_format_3_assessment.docx",
+        "document_kind": "engineer_assessment",
+        "pair_id": 3,
+        "claim_reference": "354647/1",
+        "policy_number": "103466899",
+        "registration": "AM06TAH",
+        "vehicle_make": "SEAT",
+        "vehicle_model": "IBIZA",
+        "assessment_number": "D38892111",
+        "assessment_ref": None,
+        "invoice_number": None,
+        "section_totals": {
+            "labour": "1598.97",
+            "paint_materials": "384.18",
+            "parts": "13.56",
+            "extras": "4.00",
+            "additional": "4.00",
+        },
+        "gross_total": "2400.85",
+    },
+    {
+        "filename": "DL_Invoice_3_request_for_payment.docx",
+        "document_kind": "repair_invoice",
+        "pair_id": 3,
+        "claim_reference": "354647/1",
+        "policy_number": "103466899",
+        "registration": "AM06TAH",
+        "vehicle_make": "SEAT",
+        "vehicle_model": "IBIZA",
+        "assessment_number": None,
+        "assessment_ref": "I535377",
+        "invoice_number": "132467/1~FT56678",
+        "section_totals": {
+            "parts": "13.56",
+            "paint_materials": "384.18",
+            "labour": "1598.97",
+            "additional": "4.00",
+        },
+        "gross_total": "2400.85",
+    },
+    {
+        "filename": "DL_Auda_format_4_assessment.docx",
+        "document_kind": "engineer_assessment",
+        "pair_id": 4,
+        "claim_reference": "1111111/1",
+        "policy_number": "9865433",
+        "registration": "PD73UUF",
+        "vehicle_make": "FORD",
+        "vehicle_model": "Puma",
+        "assessment_number": "D067789900",
+        "assessment_ref": None,
+        "invoice_number": None,
+        "section_totals": {
+            "labour": "3331.20",
+            "paint_materials": "1425.72",
+            "parts": "1104.39",
+            "extras": "1089.02",
+            "additional": "1161.02",
+        },
+        "gross_total": "8426.80",
+    },
+    {
+        "filename": "DL_Invoice_4_request_for_payment.docx",
+        "document_kind": "repair_invoice",
+        "pair_id": 4,
+        "claim_reference": "1111111/1",
+        "policy_number": "9865433",
+        "registration": "PD73UUF",
+        "vehicle_make": "FORD",
+        "vehicle_model": "Puma",
+        "assessment_number": None,
+        "assessment_ref": "Y5657687",
+        "invoice_number": "132467/1~FT56678",
+        "section_totals": {
+            "parts": "1104.39",
+            "paint_materials": "1425.72",
+            "labour": "3331.20",
+            "additional": "1161.02",
+        },
+        "gross_total": "8426.80",
+    },
+    {
         "filename": "DL_Auda_format_7_assessment.docx",
         "document_kind": "engineer_assessment",
         "pair_id": 7,
@@ -997,6 +1722,10 @@ BUILDERS: dict[str, Any] = {
     "DL_Repair_Invoice_format_1.docx": build_repair_invoice_format_1,
     "DL_Auda_format_2_assessment.docx": build_auda_format_2_assessment,
     "DL_Invoice_2_request_for_payment.docx": build_invoice_2_request_for_payment,
+    "DL_Auda_format_3_assessment.docx": build_auda_format_3_assessment,
+    "DL_Invoice_3_request_for_payment.docx": build_invoice_3_request_for_payment,
+    "DL_Auda_format_4_assessment.docx": build_auda_format_4_assessment,
+    "DL_Invoice_4_request_for_payment.docx": build_invoice_4_request_for_payment,
     "DL_Auda_format_7_assessment.docx": build_auda_format_7_assessment,
     "DL_Repair_Invoice_format_7.docx": build_repair_invoice_format_7,
 }

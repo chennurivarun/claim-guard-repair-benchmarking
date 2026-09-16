@@ -29,7 +29,7 @@ function renderShell(activeScreen: ScreenId) {
         onNavigate: () => {},
         issuanceAllowed: false,
         liabilityStatus: "PENDING",
-        apiMode: "demo",
+        apiStatus: "connected",
         children: createElement("div", null, "content"),
       })
     )

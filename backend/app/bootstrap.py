@@ -1,8 +1,23 @@
-"""Idempotently build the supplied ClaimGuard pilot case from bundled sample data."""
+"""Idempotently build the supplied ClaimGuard pilot case from bundled sample data.
+
+The idempotence check is "does a case with this reference exist", which is the
+right question until a clean-slate reset makes the answer *deliberately* no.
+Running ``claimguard-bootstrap`` after ``claimguard-reset`` would then rebuild
+the demo case, re-ingest the demo invoice and re-mint the auto-staged ontology
+rows derived from it -- precisely what the client asked to be rid of.
+
+So the guard is on the reset, not on the reference: renaming the demo case
+would resurrect exactly the same data under a different label. If the audit log
+records a ``CASE_DATA_RESET``, this refuses to recreate the pilot case and says
+why; ``--force`` is the deliberate override, and ``--case-reference`` exists for
+building the demo somewhere it will not collide.
+"""
 
 from __future__ import annotations
 
+import argparse
 import json
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -38,16 +53,22 @@ from app.services.external_benchmark_import_service import import_external_uk_be
 from app.services.seed_import_service import import_seed_workbooks
 
 SAMPLE_DATA = Path(__file__).resolve().parents[2] / "sample-data"
-CASE_REFERENCE = "CG-2026-0048"
+DEFAULT_CASE_REFERENCE = "CG-2026-0048"
+# Back-compat alias for anything still importing the constant.
+CASE_REFERENCE = DEFAULT_CASE_REFERENCE
+
+# Written by ``app.reset``. Its presence means an operator deliberately
+# deleted every case, so rebuilding the demo case is almost never wanted.
+RESET_EVENT_TYPE = "CASE_DATA_RESET"
 INVOICE_PATH = SAMPLE_DATA / "1643919_doc_16439191.pdf.pdf"
 ONTOLOGY_PATH = SAMPLE_DATA / "ontology_seed.xlsx"
 HISTORY_PATH = SAMPLE_DATA / "historical_claims_seed.xlsx"
 EXTERNAL_BENCHMARK_PATH = SAMPLE_DATA / "uk_external_benchmarks.csv"
 
 
-def _create_case(session) -> Case:
+def _create_case(session, case_reference: str = DEFAULT_CASE_REFERENCE) -> Case:
     case = Case(
-        case_reference=CASE_REFERENCE,
+        case_reference=case_reference,
         status=CaseStatus.LIABILITY_REVIEW,
         created_by="pilot.handler",
         notes="Pilot case built from the supplied invoice 91283 and seed workbooks.",
@@ -152,7 +173,7 @@ def _create_case(session) -> Case:
             entity_id=case.id,
             before_json=None,
             after_json={
-                "case_reference": CASE_REFERENCE,
+                "case_reference": case_reference,
                 "liability_status": LiabilityStatus.ADMITTED.value,
             },
             event_payload_json={"invoice_may_decide_fault": False},
@@ -162,7 +183,9 @@ def _create_case(session) -> Case:
     return case
 
 
-def bootstrap_pilot() -> dict[str, object]:
+def bootstrap_pilot(
+    case_reference: str = DEFAULT_CASE_REFERENCE, *, force: bool = False
+) -> dict[str, object]:
     for path in (ONTOLOGY_PATH, HISTORY_PATH):
         if not path.is_file():
             raise FileNotFoundError(path)
@@ -172,9 +195,10 @@ def bootstrap_pilot() -> dict[str, object]:
         external_result = import_external_uk_benchmarks(session, EXTERNAL_BENCHMARK_PATH)
         session.commit()
 
-        case = session.scalar(select(Case).where(Case.case_reference == CASE_REFERENCE))
+        case = session.scalar(select(Case).where(Case.case_reference == case_reference))
         if case is None:
-            case = _create_case(session)
+            _refuse_after_reset(session, case_reference, force=force)
+            case = _create_case(session, case_reference)
 
         invoice_count = session.scalar(
             select(func.count(Invoice.id)).where(Invoice.case_id == case.id)
@@ -196,7 +220,7 @@ def bootstrap_pilot() -> dict[str, object]:
                 select(func.count(Document.id)).where(Document.case_id == case.id)
             )
             return {
-                "case_reference": CASE_REFERENCE,
+                "case_reference": case_reference,
                 "seed_import": {
                     "ontology_items_created": seed_result.ontology_items_created,
                     "price_observations_created": seed_result.price_observations_created,
@@ -236,12 +260,12 @@ def bootstrap_pilot() -> dict[str, object]:
                 "line_count": comparison_count,
             }
 
-        workspace = build_claim_workspace(session, CASE_REFERENCE)
+        workspace = build_claim_workspace(session, case_reference)
         document_count = session.scalar(
             select(func.count(Document.id)).where(Document.case_id == case.id)
         )
         return {
-            "case_reference": CASE_REFERENCE,
+            "case_reference": case_reference,
             "seed_import": {
                 "ontology_items_created": seed_result.ontology_items_created,
                 "price_observations_created": seed_result.price_observations_created,
@@ -259,9 +283,53 @@ def bootstrap_pilot() -> dict[str, object]:
         }
 
 
-def main() -> None:
-    print(json.dumps(bootstrap_pilot(), indent=2, default=str))
+def _refuse_after_reset(session, case_reference: str, *, force: bool) -> None:
+    """Do not undo a clean-slate reset by accident.
+
+    The reset's whole purpose is that the demo corpus is gone. Recreating the
+    pilot case would re-ingest the demo invoice and, through
+    ``stage_unmatched_line_proposal``, re-mint the ontology items and price
+    observations derived from it.
+    """
+
+    if force:
+        return
+    resets = session.scalar(
+        select(func.count(AuditEvent.id)).where(AuditEvent.event_type == RESET_EVENT_TYPE)
+    )
+    if resets:
+        raise RuntimeError(
+            f"Refusing to recreate {case_reference}: the audit log records "
+            f"{resets} clean-slate reset(s), so this case was deliberately "
+            "deleted. Re-run with --force if you really want the demo corpus "
+            "back, or use --case-reference to build it elsewhere."
+        )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="claimguard-bootstrap",
+        description="Build the bundled ClaimGuard demo case from sample data.",
+    )
+    parser.add_argument(
+        "--case-reference",
+        default=DEFAULT_CASE_REFERENCE,
+        help=f"Reference for the demo case (default: {DEFAULT_CASE_REFERENCE}).",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Recreate the demo case even though a clean-slate reset has run.",
+    )
+    args = parser.parse_args(argv)
+    try:
+        result = bootstrap_pilot(args.case_reference, force=args.force)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(json.dumps(result, indent=2, default=str))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

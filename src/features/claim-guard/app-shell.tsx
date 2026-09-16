@@ -1,6 +1,5 @@
 import { useState, type CSSProperties, type ReactNode } from "react"
 import {
-  ArchiveIcon,
   CheckCircle2Icon,
   ChevronRightIcon,
   ClipboardCheckIcon,
@@ -11,6 +10,7 @@ import {
   BarChart3Icon,
   LayoutDashboardIcon,
   LibraryBigIcon,
+  PlugZapIcon,
   SearchCheckIcon,
   Share2Icon,
   Settings2Icon,
@@ -41,6 +41,16 @@ import {
 } from "@/components/ui/sidebar"
 
 import type { LiabilityStatus, ScreenId } from "./types"
+
+/** How the app is currently placed against the ClaimGuard API. There is no
+ * "demo" state: the footer reports the real connection, never a stand-in. */
+export type ApiStatus = "connecting" | "connected" | "unavailable"
+
+const API_STATUS_LABELS: Record<ApiStatus, string> = {
+  connecting: "Connecting to the API",
+  connected: "API connected",
+  unavailable: "API unavailable",
+}
 
 const primaryNavigation = [
   {
@@ -134,11 +144,11 @@ function primaryActiveId(activeScreen: ScreenId): ScreenId {
 function AppSidebar({
   activeScreen,
   onNavigate,
-  apiMode,
+  apiStatus,
 }: {
   activeScreen: ScreenId
   onNavigate: (screen: ScreenId) => void
-  apiMode: "api" | "demo"
+  apiStatus: ApiStatus
 }) {
   const { isMobile, setOpenMobile } = useSidebar()
   const advancedToolActive = administration.some(
@@ -266,26 +276,21 @@ function AppSidebar({
         <SidebarMenu className="gap-2">
           <SidebarMenuItem>
             <SidebarMenuButton className="text-xs text-muted-foreground">
-              {apiMode === "api" ? (
+              {apiStatus === "connected" ? (
                 <CheckCircle2Icon className="text-success" aria-hidden />
               ) : (
-                <ArchiveIcon aria-hidden />
+                <PlugZapIcon aria-hidden />
               )}
-              <span>
-                {apiMode === "api" ? "API connected" : "Demo workspace"}
-              </span>
+              <span>{API_STATUS_LABELS[apiStatus]}</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>
             <SidebarMenuButton size="lg" className="h-12">
               <Avatar className="size-8">
-                <AvatarFallback>VC</AvatarFallback>
+                <AvatarFallback>CG</AvatarFallback>
               </Avatar>
               <span className="grid min-w-0 flex-1 text-left leading-tight">
                 <span className="truncate text-sm font-medium">
-                  Pilot Handler
-                </span>
-                <span className="truncate text-xs text-muted-foreground">
                   Claims handler
                 </span>
               </span>
@@ -301,14 +306,14 @@ function AppSidebar({
 export function AppShell({
   activeScreen,
   onNavigate,
-  apiMode,
+  apiStatus,
   children,
 }: {
   activeScreen: ScreenId
   onNavigate: (screen: ScreenId) => void
   issuanceAllowed: boolean
   liabilityStatus: LiabilityStatus
-  apiMode: "api" | "demo"
+  apiStatus: ApiStatus
   children: ReactNode
 }) {
   return (
@@ -316,7 +321,7 @@ export function AppShell({
       <AppSidebar
         activeScreen={activeScreen}
         onNavigate={onNavigate}
-        apiMode={apiMode}
+        apiStatus={apiStatus}
       />
       <SidebarInset className="min-w-0 overflow-hidden bg-background">
         <header className="flex h-14 shrink-0 items-center border-b px-4 md:hidden">

@@ -49,14 +49,18 @@ def manifest() -> list[dict]:
     return _load_manifest()
 
 
-def test_manifest_exists_and_covers_six_fixtures(manifest: list[dict]) -> None:
-    assert len(manifest) == 6
+def test_manifest_exists_and_covers_every_fixture(manifest: list[dict]) -> None:
+    assert len(manifest) == 10
     filenames = {entry["filename"] for entry in manifest}
     assert filenames == {
         "DL_Auda_format_1_assessment.docx",
         "DL_Repair_Invoice_format_1.docx",
         "DL_Auda_format_2_assessment.docx",
         "DL_Invoice_2_request_for_payment.docx",
+        "DL_Auda_format_3_assessment.docx",
+        "DL_Invoice_3_request_for_payment.docx",
+        "DL_Auda_format_4_assessment.docx",
+        "DL_Invoice_4_request_for_payment.docx",
         "DL_Auda_format_7_assessment.docx",
         "DL_Repair_Invoice_format_7.docx",
     }
@@ -66,14 +70,7 @@ def test_manifest_exists_and_covers_six_fixtures(manifest: list[dict]) -> None:
 
 @pytest.mark.parametrize(
     "filename",
-    [
-        "DL_Auda_format_1_assessment.docx",
-        "DL_Repair_Invoice_format_1.docx",
-        "DL_Auda_format_2_assessment.docx",
-        "DL_Invoice_2_request_for_payment.docx",
-        "DL_Auda_format_7_assessment.docx",
-        "DL_Repair_Invoice_format_7.docx",
-    ],
+    [entry["filename"] for entry in _load_manifest()],
 )
 def test_fixture_converts_and_contains_manifest_identity(
     filename: str, manifest: list[dict], monkeypatch: pytest.MonkeyPatch

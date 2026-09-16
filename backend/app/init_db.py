@@ -64,27 +64,36 @@ def _sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+# Named so that a maintenance job (see ``app.reset``) can drop and faithfully
+# recreate the same append-only guards inside its own transaction.
+AUDIT_TRIGGER_NAMES: tuple[str, ...] = (
+    "audit_events_no_update",
+    "audit_events_no_delete",
+)
+
+AUDIT_TRIGGER_STATEMENTS: tuple[str, ...] = (
+    """
+    CREATE TRIGGER IF NOT EXISTS audit_events_no_update
+    BEFORE UPDATE ON audit_events
+    BEGIN
+        SELECT RAISE(ABORT, 'audit_events are append-only');
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
+    BEFORE DELETE ON audit_events
+    BEGIN
+        SELECT RAISE(ABORT, 'audit_events are append-only');
+    END
+    """,
+)
+
+
 def _install_sqlite_audit_triggers(target_engine: Engine) -> None:
     if target_engine.dialect.name != "sqlite":
         return
-    statements = (
-        """
-        CREATE TRIGGER IF NOT EXISTS audit_events_no_update
-        BEFORE UPDATE ON audit_events
-        BEGIN
-            SELECT RAISE(ABORT, 'audit_events are append-only');
-        END
-        """,
-        """
-        CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
-        BEFORE DELETE ON audit_events
-        BEGIN
-            SELECT RAISE(ABORT, 'audit_events are append-only');
-        END
-        """,
-    )
     with target_engine.begin() as connection:
-        for statement in statements:
+        for statement in AUDIT_TRIGGER_STATEMENTS:
             connection.exec_driver_sql(statement)
 
 

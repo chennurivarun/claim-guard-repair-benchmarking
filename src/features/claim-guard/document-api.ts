@@ -1,8 +1,6 @@
 const configuredApiBase = import.meta.env.VITE_API_URL as string | undefined
 const API_BASE = (configuredApiBase?.trim() || "").replace(/\/+$/, "")
 
-export const DEFAULT_CASE_REFERENCE = "CG-2026-0048"
-
 export const PAGE_TYPES = [
   "invoice",
   "engineer_assessment",
@@ -137,13 +135,13 @@ export function documentApiErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "The document request failed."
 }
 
-export function fetchDocumentPages(caseReference = DEFAULT_CASE_REFERENCE) {
+export function fetchDocumentPages(caseReference: string) {
   return requestJson<DocumentPageRecord[]>(
     `/api/v1/claims/${encodeURIComponent(caseReference)}/pages`
   )
 }
 
-export function fetchCaseDocuments(caseReference = DEFAULT_CASE_REFERENCE) {
+export function fetchCaseDocuments(caseReference: string) {
   return requestJson<UploadedDocument[]>(
     `/api/v1/claims/${encodeURIComponent(caseReference)}/documents`
   )
@@ -151,7 +149,7 @@ export function fetchCaseDocuments(caseReference = DEFAULT_CASE_REFERENCE) {
 
 export function uploadCurrentDocument(
   file: File,
-  caseReference = DEFAULT_CASE_REFERENCE,
+  caseReference: string,
   intakeGroup?: IntakeGroup,
   pairedDocumentId?: string
 ) {
@@ -171,6 +169,53 @@ export function processUploadedDocument(documentId: string, force = false) {
   const query = force ? "?force=true" : ""
   return requestJson<DocumentProcessingResult>(
     `/api/v1/documents/${encodeURIComponent(documentId)}/process${query}`,
+    { method: "POST" },
+    180_000
+  )
+}
+
+/** One assessment's pairing verdict, as `_pairing_summary` serialises it
+ * (`backend/app/api/router.py`). */
+export interface PairingSummaryRow {
+  assessment_id: string
+  document_id: string
+  assessment_number: string | null
+  pair_status: string
+  pair_confidence: number | null
+  pair_reasons: string[]
+  paired_invoice_id: string | null
+  paired_invoice_number: string | null
+}
+
+/** What `POST /claims/{ref}/documents/link-sweep` returns: the case reference
+ * plus the `_pairing_summary` block, spread in at the top level. */
+export interface CaseLinkSweepResult {
+  case_reference: string
+  assessments: number
+  paired: number
+  unpaired: number
+  details: PairingSummaryRow[]
+}
+
+/** The case-wide link / gap-fill sweep, run **once** after a whole batch of
+ * repair invoices and engineer estimates has been handed over -- never per
+ * file. A per-file sweep re-pairs the same case N times and, worse, can link
+ * an estimate to the only invoice loaded so far while the invoice it belongs
+ * to is still queued behind it.
+ *
+ * This is `POST /claims/{ref}/documents/link-sweep`, which exists to do
+ * exactly this and nothing else: it calls `run_case_gap_fill` once for the
+ * whole case, summarises the pairing, and commits its own work.
+ *
+ * It is deliberately **not** `POST /claims/{ref}/compare`. That endpoint, on
+ * a case that already carries a comparison, runs `reprocess_case`: a new
+ * `ProcessingRun`, every handler mapping-review decision from the previous
+ * run discarded, the LLM adjudicator re-run, and `CASE_COMPARISON_COMPLETED`
+ * audit events written against `pilot.handler` for an action no handler took.
+ * None of that belongs behind an Upload button. */
+export function runCaseLinkSweep(caseReference: string) {
+  return requestJson<CaseLinkSweepResult>(
+    `/api/v1/claims/${encodeURIComponent(caseReference)}/documents/link-sweep`,
     { method: "POST" },
     180_000
   )

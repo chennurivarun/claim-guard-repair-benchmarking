@@ -77,6 +77,88 @@
     "gross_total": "4941.52"
   },
   {
+    "filename": "DL_Auda_format_3_assessment.docx",
+    "document_kind": "engineer_assessment",
+    "pair_id": 3,
+    "claim_reference": "354647/1",
+    "policy_number": "103466899",
+    "registration": "AM06TAH",
+    "vehicle_make": "SEAT",
+    "vehicle_model": "IBIZA",
+    "assessment_number": "D38892111",
+    "assessment_ref": null,
+    "invoice_number": null,
+    "section_totals": {
+      "labour": "1598.97",
+      "paint_materials": "384.18",
+      "parts": "13.56",
+      "extras": "4.00",
+      "additional": "4.00"
+    },
+    "gross_total": "2400.85"
+  },
+  {
+    "filename": "DL_Invoice_3_request_for_payment.docx",
+    "document_kind": "repair_invoice",
+    "pair_id": 3,
+    "claim_reference": "354647/1",
+    "policy_number": "103466899",
+    "registration": "AM06TAH",
+    "vehicle_make": "SEAT",
+    "vehicle_model": "IBIZA",
+    "assessment_number": null,
+    "assessment_ref": "I535377",
+    "invoice_number": "132467/1~FT56678",
+    "section_totals": {
+      "parts": "13.56",
+      "paint_materials": "384.18",
+      "labour": "1598.97",
+      "additional": "4.00"
+    },
+    "gross_total": "2400.85"
+  },
+  {
+    "filename": "DL_Auda_format_4_assessment.docx",
+    "document_kind": "engineer_assessment",
+    "pair_id": 4,
+    "claim_reference": "1111111/1",
+    "policy_number": "9865433",
+    "registration": "PD73UUF",
+    "vehicle_make": "FORD",
+    "vehicle_model": "Puma",
+    "assessment_number": "D067789900",
+    "assessment_ref": null,
+    "invoice_number": null,
+    "section_totals": {
+      "labour": "3331.20",
+      "paint_materials": "1425.72",
+      "parts": "1104.39",
+      "extras": "1089.02",
+      "additional": "1161.02"
+    },
+    "gross_total": "8426.80"
+  },
+  {
+    "filename": "DL_Invoice_4_request_for_payment.docx",
+    "document_kind": "repair_invoice",
+    "pair_id": 4,
+    "claim_reference": "1111111/1",
+    "policy_number": "9865433",
+    "registration": "PD73UUF",
+    "vehicle_make": "FORD",
+    "vehicle_model": "Puma",
+    "assessment_number": null,
+    "assessment_ref": "Y5657687",
+    "invoice_number": "132467/1~FT56678",
+    "section_totals": {
+      "parts": "1104.39",
+      "paint_materials": "1425.72",
+      "labour": "3331.20",
+      "additional": "1161.02"
+    },
+    "gross_total": "8426.80"
+  },
+  {
     "filename": "DL_Auda_format_7_assessment.docx",
     "document_kind": "engineer_assessment",
     "pair_id": 7,
