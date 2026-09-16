@@ -52,23 +52,110 @@ INVOICE_FILL_NAMES = frozenset(name for name, _ in INVOICE_FILL_FIELDS)
 
 FILL_LABEL = "Filled from engineer assessment"
 
-#: One invoice cannot be two claims' invoice, and one invoice cannot be
-#: claimed by two different assessments.  Both ambiguities end the same way:
-#: nothing is linked and nothing is filled until a handler says which.
+#: One invoice cannot be two claims' invoice: nothing is linked and nothing
+#: is filled until a handler says which.
 AMBIGUOUS_INVOICES_REASON = (
     "Multiple invoices share the same identifiers; manual linkage required"
 )
-AMBIGUOUS_ASSESSMENTS_REASON = (
-    "Multiple assessments share the same identifiers; manual linkage required"
+
+#: The three ways an invoice claimed by two assessments can end.  They are
+#: worded apart because they are different facts about the paperwork and a
+#: handler resolves them differently: one report was uploaded twice, two
+#: different reports fit the invoice equally well, or one report fits it
+#: better than this one.  A single "share the same identifiers" sentence was
+#: used for all of them and was untrue of every case but the first.
+DUPLICATE_ASSESSMENT_REASON = (
+    "The same assessment identity was uploaded more than once; the earliest "
+    "copy keeps the link and manual linkage is required for this one"
+)
+CONTESTED_ASSESSMENTS_REASON = (
+    "Two assessments agree with this invoice equally well; manual linkage required"
+)
+OUTRANKED_ASSESSMENT_REASON = (
+    "Another assessment agrees with this invoice on more printed identities; "
+    "manual linkage required"
 )
 NO_SHARED_IDENTIFIER_REASON = (
-    "No invoice shares a registration or claim reference with this assessment"
+    "No invoice shares a printed registration, claim reference or policy number "
+    "with this assessment"
 )
 EXPLICIT_LINK_REASON = "Uploaded together for this invoice"
 
 #: Substring that marks a per-key verdict as a disagreement rather than an
 #: absence.  Only a disagreement blocks a link.
 CONFLICT_MARKER = " conflict: "
+
+#: The states a pairing key can be in.  Only ``MATCHED`` and ``CONFLICT`` are
+#: *compared*: the client's rule is "match what is there", so a key one
+#: document does not usefully print carries no information about the pair at
+#: all.  ``NOT_COMPARED`` and ``PLACEHOLDER`` are both "not compared", kept
+#: apart because a reader has to be able to tell an empty box ("not printed")
+#: from a filled-in one that identifies nothing ("printed but meaningless").
+KEY_MATCHED = "matched"
+KEY_CONFLICT = "conflict"
+KEY_NOT_COMPARED = "not_compared"
+KEY_PLACEHOLDER = "placeholder"
+
+#: What a printed token has to clear before it is allowed to be *comparable*:
+#: it must not be one of the things a form prints where an identity is
+#: unknown, and it must be long enough to single out one claim.
+#:
+#: Demoting a token to "not printed" is deliberately the safe direction.
+#: Absence is neutral under the client's rule -- it neither links a pair nor
+#: blocks one -- so the worst a false demotion can do is leave a pair for a
+#: handler to make by hand.  Believing the token is the unsafe direction:
+#: format 1's assessment prints the policy number "PH", and before this floor
+#: existed two unrelated documents both printing "PH" agreed on a key, linked
+#: at confidence 1.0, and let the assessment's claim reference, policy number
+#: and vehicle identity be gap-filled onto somebody else's invoice.  Worse, a
+#: placeholder could make the *wrong* invoice outrank the right one, because
+#: agreeing on two keys beats agreeing on one.
+#:
+#: A demoted key is therefore never a match and never a conflict -- it is
+#: reported as ``KEY_PLACEHOLDER``, which is not compared.
+#:
+#: This lives here rather than in ``normalise_identifier`` on purpose: it is a
+#: pairing judgement, not a normalisation one.  ``vehicle_classification``
+#: normalises registrations through the same function and must keep every
+#: value it is handed.
+IDENTIFIER_PLACEHOLDERS = frozenset(
+    {
+        "PH",
+        "N/A",
+        "NA",
+        "N/K",
+        "NK",
+        "NONE",
+        "NIL",
+        "TBC",
+        "TBA",
+        "TBD",
+        "UNKNOWN",
+        "X",
+        "XX",
+        "XXX",
+        "XXXX",
+        "0",
+        "00",
+        "000",
+        "0000",
+    }
+)
+
+#: Fewer alphanumeric characters than this cannot pick one claim out of a book
+#: of them, whatever the token spells.  The shortest real identifier in the
+#: corpus is a seven-character registration.
+MINIMUM_IDENTIFIER_LENGTH = 4
+
+#: Prefix on the ``pair_reasons`` entry that says a link rests on a single
+#: comparable identity.  Loosening the rule to "compare what is printed" makes
+#: one-key links possible -- an invoice printing only a registration now pairs
+#: on the registration alone -- so every such link is labelled at the point the
+#: reason is read rather than being silently indistinguishable from a
+#: three-key agreement.  The contention rule (``_resolve_contention``) is what
+#: stops two same-vehicle claims racing for that invoice; this prefix is what
+#: stops a handler mistaking the survivor for strong evidence.
+WEAK_PAIR_PREFIX = "weak pair: "
 
 #: An invoice section total resolves to one assessment section total.  Note
 #: that the assessment's ``paint_net`` is the paint *materials* cost (the
@@ -187,51 +274,191 @@ def _printed_identity(invoice: Invoice) -> dict[str, str | None]:
     }
 
 
+def _comparable_identifier(value: str | None) -> tuple[str | None, str | None]:
+    """Split a printed identifier into "what to compare" and "what was printed".
+
+    Returns ``(comparable, printed)``.  ``comparable`` is the value the pairing
+    rule may compare and is ``None`` in two different situations: the document
+    printed nothing, or it printed something that cannot identify a claim (see
+    ``IDENTIFIER_PLACEHOLDERS``).  ``printed`` is what tells the two apart --
+    the normalised token the document carried, ``None`` only when there was
+    none.  The second case is a placeholder, and the caller reports it as one.
+    """
+
+    normalised = normalise_identifier(value)
+    if normalised is None:
+        return None, None
+    alphanumeric = sum(1 for character in normalised if character.isalnum())
+    if normalised in IDENTIFIER_PLACEHOLDERS or alphanumeric < MINIMUM_IDENTIFIER_LENGTH:
+        return None, normalised
+    return normalised, normalised
+
+
+def _side(sides: tuple[str, ...]) -> str | None:
+    """Name the document(s) a fact is true of, in the ``absent_on`` vocabulary."""
+
+    if not sides:
+        return None
+    return "both" if len(sides) == 2 else sides[0]
+
+
+@dataclasses.dataclass(frozen=True)
+class _KeyVerdict:
+    """One pairing key's outcome, in the four states the UI has to show.
+
+    ``text`` is the sentence the review screens already render; the machine
+    readable fields beside it are what let a screen colour a conflict red and
+    a skipped key grey without parsing prose -- and say, of a skipped key,
+    whether the document left the box empty or filled it with "N/A".
+    """
+
+    key: str
+    label: str
+    state: str
+    text: str
+    #: ``"invoice"``, ``"assessment"`` or ``"both"`` for the document(s) that
+    #: printed nothing for this key; ``None`` when both printed something.
+    absent_on: str | None = None
+    #: ``"invoice"``, ``"assessment"`` or ``"both"`` for the document(s) that
+    #: printed a placeholder instead of an identity; ``None`` otherwise.  The
+    #: two fields are independent facts and can both be set: format 1's
+    #: assessment prints "PH" for a policy number its invoice does not print
+    #: at all.
+    placeholder_on: str | None = None
+    assessment_value: str | None = None
+    invoice_value: str | None = None
+
+    @property
+    def compared(self) -> bool:
+        return self.state in {KEY_MATCHED, KEY_CONFLICT}
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "key": self.key,
+            "label": self.label,
+            "state": self.state,
+            "compared": self.compared,
+            "absent_on": self.absent_on,
+            "placeholder_on": self.placeholder_on,
+            "assessment_value": self.assessment_value,
+            "invoice_value": self.invoice_value,
+            "text": self.text,
+        }
+
+
 def _compare_pair_keys(
     assessment: EngineerAssessment, printed: dict[str, str | None]
-) -> tuple[set[str], list[str], bool]:
-    """Compare the three printed identities; return matches, verdicts, conflict.
+) -> list[_KeyVerdict]:
+    """Compare the printed identities the two documents have in common.
 
     ``printed`` is the invoice's *printed* identity snapshot from
     ``_printed_identity`` -- never the live attributes, which may already
     carry another assessment's gap-fill.
 
-    A key counts only when *both* documents print it.  A key printed on both
-    sides that disagrees is a conflict, and a conflict is fatal however well
-    the other two keys read: two different claims can share a repairer, a
-    registration or (as formats 1 and 7 do) an invoice number, but they cannot
-    share a claim reference.
+    The client's rule is "claim + policy + registration; in case any one is
+    missing, just match what is there".  So a key is *compared* only when both
+    documents print it, and a key only one side prints is neither a match nor
+    a conflict -- it drops out of the arithmetic entirely.  Two of the three
+    client pairs print no policy number on the invoice, and under the previous
+    "every printed key must agree, scored out of three" rule they could never
+    read as more than two-thirds certain.
+
+    A key printed on both sides that disagrees is still a conflict, and a
+    conflict is still fatal however well the other keys read: two different
+    claims can share a repairer, a registration or (as formats 1 and 7 do) an
+    invoice number, but they cannot share a claim reference.
+
+    "Printed" means "printed something that identifies a claim".  A
+    placeholder -- "PH", "N/A", "TBC" -- is demoted to not-printed rather than
+    compared, because a token every claim's paperwork can carry is evidence
+    about neither this pair nor any other; see ``IDENTIFIER_PLACEHOLDERS`` for
+    why demotion is the safe direction.
     """
 
-    matched: set[str] = set()
-    verdicts: list[str] = []
-    conflict = False
+    verdicts: list[_KeyVerdict] = []
     for key, label in PAIR_KEYS:
-        left = normalise_identifier(getattr(assessment, key, None))
-        right = normalise_identifier(printed.get(key))
+        assessment_value = getattr(assessment, key, None)
+        invoice_value = printed.get(key)
+        left, left_printed = _comparable_identifier(assessment_value)
+        right, right_printed = _comparable_identifier(invoice_value)
+        common = {
+            "key": key,
+            "label": label,
+            "assessment_value": assessment_value,
+            "invoice_value": invoice_value,
+        }
         if left and right:
-            if left == right:
-                matched.add(key)
-                verdicts.append(f"{label} exact match")
-            else:
-                conflict = True
-                verdicts.append(
-                    f"{label}{CONFLICT_MARKER}assessment {getattr(assessment, key)} "
-                    f"versus invoice {printed.get(key)}"
-                )
-        elif left:
-            verdicts.append(f"{label} not printed on the invoice")
-        elif right:
-            verdicts.append(f"{label} not printed on the assessment")
+            state = KEY_MATCHED if left == right else KEY_CONFLICT
+            text = (
+                f"{label} exact match"
+                if state == KEY_MATCHED
+                else f"{label}{CONFLICT_MARKER}assessment {assessment_value} "
+                f"versus invoice {invoice_value}"
+            )
+            verdicts.append(_KeyVerdict(state=state, text=text, **common))
+            continue
+        sides = (("assessment", left, left_printed), ("invoice", right, right_printed))
+        absent_on = _side(tuple(side for side, _, token in sides if token is None))
+        placeholders = tuple(
+            (side, token) for side, comparable, token in sides
+            if comparable is None and token is not None
+        )
+        placeholder_on = _side(tuple(side for side, _ in placeholders))
+        if placeholder_on is None:
+            text = {
+                "invoice": f"{label} not printed on the invoice",
+                "assessment": f"{label} not printed on the assessment",
+                "both": f"{label} not printed on either document",
+            }[absent_on]
+            state = KEY_NOT_COMPARED
         else:
-            verdicts.append(f"{label} not printed on either document")
-    return matched, verdicts, conflict
+            tokens = " and ".join(
+                dict.fromkeys(token for _, token in placeholders)
+            )
+            where = (
+                "both documents" if placeholder_on == "both" else f"the {placeholder_on}"
+            )
+            text = f"{label} is a placeholder on {where} ({tokens})"
+            state = KEY_PLACEHOLDER
+        verdicts.append(
+            _KeyVerdict(
+                state=state,
+                text=text,
+                absent_on=absent_on,
+                placeholder_on=placeholder_on,
+                **common,
+            )
+        )
+    return verdicts
 
 
 def _matched_reasons(matched: set[str]) -> list[str]:
     """The positive verdicts, in key order -- what justifies a link."""
 
     return [f"{label} exact match" for key, label in PAIR_KEYS if key in matched]
+
+
+def _weak_pair_reason(verdicts: list[_KeyVerdict]) -> str | None:
+    """Say so, in the reasons, when a link rests on one comparable key.
+
+    A single-key link is a real link -- the client asked for it -- but it is
+    the weakest one the rule can produce, so it is never allowed to read like
+    a three-key agreement on the screens that join ``pair_reasons`` into a
+    sentence.
+
+    Each skipped key states its own verdict rather than being folded into one
+    "not printed on both documents" clause, which was false whenever only one
+    side was missing the key -- and one side missing it is the common case.
+    """
+
+    compared = [verdict for verdict in verdicts if verdict.compared]
+    if len(compared) != 1:
+        return None
+    skipped = [verdict.text for verdict in verdicts if not verdict.compared]
+    return (
+        f"{WEAK_PAIR_PREFIX}only the {compared[0].label} was comparable; "
+        + "; ".join(skipped)
+    )
 
 
 def _assessment_identity(assessment: EngineerAssessment) -> tuple[str | None, ...]:
@@ -245,7 +472,21 @@ class _Candidate:
     invoice: Invoice
     confidence: float
     matched: set[str]
-    verdicts: list[str]
+    verdicts: list[_KeyVerdict]
+
+    @property
+    def strength(self) -> tuple[int, float]:
+        """How good this candidate is, best first.
+
+        Confidence alone can no longer rank candidates: every eligible
+        candidate now agrees on every key it could compare, so all of them
+        score 1.0.  The count of keys that actually agreed is what separates a
+        registration-only link from a registration-and-claim link, and the
+        confidence stays in the tuple only so a candidate reached through an
+        explicit upload association with nothing matched still sorts last.
+        """
+
+        return len(self.matched), self.confidence
 
 
 @dataclasses.dataclass
@@ -254,11 +495,18 @@ class _Decision:
     invoice: Invoice | None = None
     confidence: float = 0.0
     reasons: list[str] = dataclasses.field(default_factory=list)
+    #: How many pairing keys actually agreed.  ``_Candidate.strength`` ranks
+    #: invoices within one assessment; this is the same evidence carried out
+    #: of the choice so ``_resolve_contention`` can rank *assessments* against
+    #: each other when two of them reach for one invoice.  ``0`` is a link
+    #: that rests on an explicit upload association alone.
+    matched_keys: int = 0
 
     def reject(self, reason: str) -> None:
         self.invoice = None
         self.confidence = 0.0
         self.reasons = [reason]
+        self.matched_keys = 0
 
 
 def _select_invoice(
@@ -268,19 +516,24 @@ def _select_invoice(
 ) -> _Decision:
     """Choose the one invoice this assessment may link to, or none.
 
-    Eligibility is symmetric across the two strong keys: a link needs at least
-    one of the registration or the claim reference to match, no key to
-    conflict, and nothing else.  The earlier rule demanded a registration
-    match, which refused an exact claim-and-policy match printed on a document
-    carrying no registration while accepting a registration-only match.
+    Eligibility, per the client's "match what is there": at least one key is
+    compared (printed on both documents) and matches, and no compared key
+    disagrees.  A key only one side prints is skipped, so it can neither
+    qualify nor disqualify a candidate.  No key is privileged any more --
+    the earlier rule demanded a registration *or* claim match, which refused
+    the only evidence a document carrying just a policy number can offer.
 
-    Residual risk, deliberately accepted: where an invoice prints no claim
-    reference, a registration-only match links a report to an invoice that may
-    belong to a *different* claim on the same vehicle.  That is exactly the
-    shape of the five ``sample-data/engineer-invoice-pairs`` fixtures, which
-    is why the rule stays.  Two assessments in that position now leave the
-    invoice unlinked rather than racing for it (see ``_resolve_contention``),
-    so the exposure is a single same-vehicle report with no competitor.
+    Residual risk, deliberately accepted and now labelled: a link resting on
+    one comparable key -- a registration on an invoice that prints no claim
+    reference, say -- may attach a report to a *different* claim on the same
+    vehicle.  That is exactly the shape of the five
+    ``sample-data/engineer-invoice-pairs`` fixtures, which is why the rule
+    stays.  Four things contain it: a candidate that agrees on more keys
+    always outranks one that agrees on fewer (``_Candidate.strength``), two
+    assessments fitting one invoice equally well leave it unlinked rather than
+    racing for it (``_resolve_contention``), a token that identifies nothing
+    is never one of those agreeing keys (``IDENTIFIER_PLACEHOLDERS``), and a
+    one-key link says so in its reasons (``_weak_pair_reason``).
     """
 
     metadata = assessment.document.metadata_json or {}
@@ -295,11 +548,18 @@ def _select_invoice(
             continue
         if explicit_document and invoice.document_id != explicit_document:
             continue
-        matched, verdicts, conflict = _compare_pair_keys(assessment, printed[invoice.id])
+        verdicts = _compare_pair_keys(assessment, printed[invoice.id])
+        matched = {verdict.key for verdict in verdicts if verdict.state == KEY_MATCHED}
+        compared = sum(1 for verdict in verdicts if verdict.compared)
+        conflict = any(verdict.state == KEY_CONFLICT for verdict in verdicts)
         # An explicit upload association buys no confidence it has not earned:
-        # the number is always the share of pairing keys that actually agree,
-        # and the association itself is carried as a reason instead.
-        candidate = _Candidate(invoice, len(matched) / len(PAIR_KEYS), matched, verdicts)
+        # the number is always the share of the *comparable* keys that agree,
+        # and the association itself is carried as a reason instead.  Nothing
+        # comparable at all is 0.0 rather than a division by zero, which only
+        # an explicitly associated pair can reach.
+        candidate = _Candidate(
+            invoice, len(matched) / compared if compared else 0.0, matched, verdicts
+        )
         if conflict:
             # An explicit upload association must not override conflicting
             # identities, so this drops the candidate even when the two
@@ -310,34 +570,67 @@ def _select_invoice(
         if explicit_document:
             candidates.append(candidate)
             continue
-        eligible = bool(matched) and (
-            "registration" in matched or "claim_reference" in matched
-        )
-        (candidates if eligible else rejected).append(candidate)
+        (candidates if matched else rejected).append(candidate)
 
-    candidates.sort(key=lambda row: row.confidence, reverse=True)
-    rejected.sort(key=lambda row: row.confidence, reverse=True)
-    ambiguous = (
-        len(candidates) > 1 and candidates[0].confidence == candidates[1].confidence
-    )
+    candidates.sort(key=lambda row: row.strength, reverse=True)
+    # ``rejected`` is deliberately not sorted: a rejected candidate matched no
+    # key and had no conflict, so its confidence is 0/compared and its
+    # strength is always ``(0, 0.0)``.  Sorting a list whose every key is
+    # equal decided nothing; the invoices arrive in a stable order
+    # (``pair_case_assessments`` orders the query), which is what actually
+    # makes the fallback reason below reproducible.
+    # Two candidates agreeing on the same number of keys are equally good
+    # evidence, and guessing between them is what the contention rule exists
+    # to refuse.  More agreeing keys wins outright.
+    ambiguous = len(candidates) > 1 and candidates[0].strength == candidates[1].strength
     if candidates and not ambiguous:
         chosen = candidates[0]
         reasons = _matched_reasons(chosen.matched)
+        weak = _weak_pair_reason(chosen.verdicts)
+        if weak:
+            reasons = [*reasons, weak]
         if explicit_document:
             reasons = [EXPLICIT_LINK_REASON, *reasons]
-        return _Decision(assessment, chosen.invoice, min(chosen.confidence, 1.0), reasons)
+        return _Decision(
+            assessment,
+            chosen.invoice,
+            min(chosen.confidence, 1.0),
+            reasons,
+            len(chosen.matched),
+        )
 
     if ambiguous:
         return _Decision(assessment, None, 0.0, [AMBIGUOUS_INVOICES_REASON])
     fallback = next(iter(rejected or conflicting), None)
     if fallback is None:
         return _Decision(assessment, None, 0.0, [NO_SHARED_IDENTIFIER_REASON])
-    conflicts = [verdict for verdict in fallback.verdicts if CONFLICT_MARKER in verdict]
+    conflicts = [
+        verdict.text for verdict in fallback.verdicts if verdict.state == KEY_CONFLICT
+    ]
     return _Decision(assessment, None, 0.0, conflicts or [NO_SHARED_IDENTIFIER_REASON])
 
 
 def _resolve_contention(decisions: list[_Decision]) -> None:
-    """Refuse the links where two assessments both reach for one invoice."""
+    """Decide, or refuse, the invoices two assessments both reach for.
+
+    One invoice belongs to one claim, so at most one assessment may keep the
+    link -- but which one is a question of evidence, not of arrival order.  A
+    claimant agreeing with the invoice on strictly more printed identities
+    than every rival *is* the invoice's assessment, and the rivals are
+    refused.  Only a genuine tie is unresolvable, and then nothing is linked
+    and nothing is filled.
+
+    Refusing every claimant unconditionally was affordable while a claimant
+    had to agree on a registration or a claim reference.  Under "match what is
+    there" it is not: an invoice that prints a policy number attracts any
+    report sharing it, so a one-key lookalike destroyed three-of-three exact
+    pairs -- and told the handler the two assessments "share the same
+    identifiers", when the lookalike in fact shared none.
+
+    ``claimants`` is in ``decisions`` order, which ``pair_case_assessments``
+    fixes as oldest assessment first, so the duplicate branch below always
+    leaves the *first* copy linked.
+    """
 
     by_invoice: dict[str, list[_Decision]] = {}
     for decision in decisions:
@@ -350,13 +643,24 @@ def _resolve_contention(decisions: list[_Decision]) -> None:
             # The same identity uploaded twice: the first report keeps the
             # link, and refusing the duplicate changes nothing on the invoice.
             for duplicate in claimants[1:]:
-                duplicate.reject(AMBIGUOUS_ASSESSMENTS_REASON)
+                duplicate.reject(DUPLICATE_ASSESSMENT_REASON)
             continue
-        # Two *different* identities cannot both be this invoice's. Linking
-        # either would write a claim reference the invoice never printed, so
-        # neither is linked and the invoice keeps only what it printed.
+        strongest = max(claimant.matched_keys for claimant in claimants)
+        leaders = [
+            claimant for claimant in claimants if claimant.matched_keys == strongest
+        ]
+        if strongest and len(leaders) == 1:
+            for claimant in claimants:
+                if claimant is not leaders[0]:
+                    claimant.reject(OUTRANKED_ASSESSMENT_REASON)
+            continue
+        # Two different identities that fit equally well cannot both be this
+        # invoice's. Linking either would write a claim reference the invoice
+        # never printed, so neither is linked and the invoice keeps only what
+        # it printed.  ``strongest == 0`` lands here too: claimants holding
+        # nothing but an upload association are not ranked against each other.
         for claimant in claimants:
-            claimant.reject(AMBIGUOUS_ASSESSMENTS_REASON)
+            claimant.reject(CONTESTED_ASSESSMENTS_REASON)
 
 
 def _fill_invoice_gaps(invoice: Invoice, assessment: EngineerAssessment) -> None:
@@ -452,19 +756,29 @@ def pair_case_assessments(session: Session, case_id: str) -> None:
 
     The pass is deliberately whole-case and ordered:
 
-    * assessments are read oldest first, so the outcome does not depend on the
-      order the database happens to hand rows back;
+    * assessments *and* invoices are read oldest first, so the outcome does
+      not depend on the order the database happens to hand rows back -- an
+      unpaired assessment's stated reason is read off the first candidate
+      invoice, so an unordered query made the sentence vary between runs;
     * every gap-fill any of them made is reverted *before* the first decision,
       and each invoice's printed identity is snapshotted, so no assessment is
       ever judged against another assessment's fill;
     * contention between two assessments reaching for one invoice is resolved
-      after all of them have chosen, not by whoever got there first.
+      after all of them have chosen, on the evidence each one holds, not by
+      whoever got there first.
 
     ``pair_reasons_json`` carries the reasons for the outcome, never the raw
     per-key verdicts: a linked assessment lists the keys that matched (the
-    review screen renders them as "paired ... using <reasons>"), an unlinked
-    one lists what blocked it.  The full per-key verdicts reach the UI on the
+    review screen renders them as "paired ... using <reasons>") plus a
+    ``weak pair:`` note when only one key could be compared, an unlinked one
+    lists what blocked it.  The full per-key verdicts reach the UI on the
     payload as ``pair_key_verdicts``.
+
+    ``pair_confidence`` is matched keys over *compared* keys, so the two
+    client pairs whose invoices print no policy number read 2/2 rather than
+    2/3: the number answers "how much of the available evidence agrees", and
+    how many identities the repairer chose to print is not evidence about
+    whether these two documents describe the same repair.
     """
 
     assessments = session.scalars(
@@ -477,6 +791,7 @@ def pair_case_assessments(session: Session, case_id: str) -> None:
         select(Invoice)
         .where(Invoice.case_id == case_id)
         .options(selectinload(Invoice.vehicle), selectinload(Invoice.line_items))
+        .order_by(Invoice.created_at, Invoice.id)
     ).all()
 
     operation_ids = [
@@ -671,9 +986,17 @@ def engineer_assessment_payload(
         "pair_reasons": assessment.pair_reasons_json or [],
         # The per-key detail behind the link, kept out of ``pair_reasons`` so
         # the review screen's "paired ... using <reasons>" sentence never
-        # reads back an absent or conflicting key as a justification.
+        # reads back an absent or conflicting key as a justification.  Each
+        # entry carries ``state`` (matched / conflict / not_compared /
+        # placeholder), ``compared``, ``absent_on``, ``placeholder_on`` and
+        # both printed values alongside the ``text`` the screens render, so a
+        # key skipped can be shown as skipped -- and shown *why* it was
+        # skipped -- rather than as a silent failure to match.
         "pair_key_verdicts": (
-            _compare_pair_keys(assessment, _printed_identity(invoice))[1]
+            [
+                verdict.as_payload()
+                for verdict in _compare_pair_keys(assessment, _printed_identity(invoice))
+            ]
             if invoice is not None
             else []
         ),

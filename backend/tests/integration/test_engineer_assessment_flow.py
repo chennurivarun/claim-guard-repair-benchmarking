@@ -61,12 +61,18 @@ def test_five_assessments_pair_safely_without_entering_p90_history(engineer_engi
         assessments = session.scalars(select(EngineerAssessment)).all()
         assert len(assessments) == 5
         assert all(assessment.pair_status == "paired" for assessment in assessments)
-        # pair_confidence is now matched pairing keys over three, not the old
-        # weighted score whose registration term happened to be worth 0.70.
-        # These fixtures print a registration on both documents and a claim
-        # reference on neither invoice, so exactly one key is comparable.
+        # pair_confidence is matched pairing keys over *comparable* ones, not
+        # the old weighted score whose registration term happened to be worth
+        # 0.70 and not a share of three. These fixtures print a registration on
+        # both documents and a claim reference on neither invoice, so exactly
+        # one key is comparable and it agrees: certain about the only evidence
+        # there is, and flagged as the weakest shape of link the rule allows.
         assert all(
-            assessment.pair_confidence == pytest.approx(1 / 3) for assessment in assessments
+            assessment.pair_confidence == pytest.approx(1 / 1) for assessment in assessments
+        )
+        assert all(
+            any("weak pair" in reason for reason in assessment.pair_reasons_json)
+            for assessment in assessments
         )
         assert session.scalar(select(func.count()).select_from(AssessmentOperation)) == 25
         assert session.scalar(select(func.count()).select_from(AssessmentInvoiceVariance)) == 25
