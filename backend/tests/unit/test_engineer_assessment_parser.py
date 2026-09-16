@@ -399,6 +399,14 @@ def test_wrapped_description_joins_and_an_unrated_row_keeps_no_price() -> None:
 #: The Summary Information and Vehicle Details values each client assessment
 #: prints. Every one of these grids is followed by the free-text Model Options
 #: list, and not one character of that list belongs in any of these values.
+#:
+#: Honest label: these are REGRESSION COVER, not a reproduction. The reported
+#: real-world symptom -- a blank invoice number, claim and policy in the
+#: running app, and a stored registration of "AB12XYZ WITH A/C" -- does not
+#: occur on any committed fixture, and did not occur before the fix either.
+#: Whatever renders the client's own `.docx` differently from this repo's
+#: replicas is still unidentified, and finding it needs the real files. What
+#: this table does guarantee is that the values below cannot silently change.
 CLIENT_ASSESSMENT_IDENTITY: dict[str, dict[str, object]] = {
     "DL_Auda_format_1_assessment.docx": {
         # The page-1 header prints L0987892222 and later running headers print
@@ -420,6 +428,31 @@ CLIENT_ASSESSMENT_IDENTITY: dict[str, dict[str, object]] = {
         "vehicle_make": "SKODA",
         "vehicle_model": "KAROQ SE TSI 115]",
         "vin": "ABCD98765432",
+    },
+    # Formats 3 and 4, received 16 Sep 2026, are the only pairs in the corpus
+    # that print all three pairing keys on BOTH documents and agree on all
+    # three, so they are the acceptance case for "a new file just works".
+    "DL_Auda_format_3_assessment.docx": {
+        # The LABOUR page header prints D38892222; the Summary grid wins.
+        "assessment_number": "D38892111",
+        "claim_reference": "354647/1",
+        # The same policy number format 2 prints, against a different claim.
+        "policy_number": "103466899",
+        "registration": "AM06TAH",
+        "vehicle_make": "SEAT",
+        "vehicle_model": "IBIZA",
+        "vin": "ABCD987889",
+    },
+    "DL_Auda_format_4_assessment.docx": {
+        "assessment_number": "D067789900",
+        "claim_reference": "1111111/1",
+        "policy_number": "9865433",
+        "registration": "PD73UUF",
+        "vehicle_make": "FORD",
+        # Printed "Puma", not "PUMA", and directly below a blank Model Sheet
+        # Number that sits against the Model Options column.
+        "vehicle_model": "Puma",
+        "vin": "AWD987889",
     },
     "DL_Auda_format_7_assessment.docx": {
         "assessment_number": "T4592861",
@@ -452,8 +485,11 @@ def test_model_options_never_leak_into_an_identity_value(
     The running app stored registration "AB12XYZ WITH A/C" and model "140 SE
     Nav FROM 06/2017" for format 1, and the pair then failed on a registration
     conflict. Every one of these reports prints a Model Options list and no two
-    print the same items, so this asserts the general shape rather than the
-    strings: an identity value is one printed value and nothing else.
+    print the same items, so this asserts the shape rather than the strings.
+
+    Single-token is a property of these five documents, not a rule about
+    identifiers: `domain.normalisation` exists because a claim reference is
+    also printed "245338996 / 1", and the reader keeps that spacing.
     """
 
     parsed = parse_engineer_assessment(_fixture_pages(monkeypatch, filename))

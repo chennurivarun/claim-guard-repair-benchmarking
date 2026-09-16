@@ -144,17 +144,41 @@ COLUMN_HEADING_TOKENS = frozenset(
     }
 )
 LEADING_CONNECTOR_PATTERN = re.compile(r"^(?:and|&|/)\s*", re.IGNORECASE)
-# A printed company block opens with the company's registered name and runs on
-# into its registration and address: "DL Assistance Accident repair Center Ltd,
-# Registered in England & Wales No 1234, registered Office: St Clare House,
-# ...". The name is everything up to the first company suffix; the lazy
-# quantifier stops at the first one so a block naming two companies keeps the
-# one it opens with.
+# A printed company block opens with the company's registered name at the start
+# of its own line and runs on into its registration and address: "DL Assistance
+# Accident repair Center Ltd, Registered in England & Wales No 1234, registered
+# Office: St Clare House, ...". The name is everything from the line start up
+# to the first company suffix; the lazy quantifier stops at the first one so a
+# block naming two companies keeps the one it opens with.
+#
+# The anchor is load-bearing. A block is a printed heading, not a sentence, and
+# without the two guards below this pattern happily reports
+# "Please make all cheques payable to Bright Panel Repairs Ltd" as a company.
 COMPANY_BLOCK_PATTERN = re.compile(
     r"^(?P<name>[A-Za-z0-9][\w&.'’/-]*(?:\s+[\w&.'’/-]+)*?"
     r"\s+(?:Ltd|Limited|LLP|LLC|PLC|Inc)\.?)\s*(?:,|$)",
     re.IGNORECASE,
 )
+#: At most this many words in a registered name. "DL Assistance Accident repair
+#: Center Ltd" is six; a sentence that happens to name a company is longer.
+MAX_COMPANY_NAME_WORDS = 6
+#: Lower-case function words that only appear in running prose. The test is
+#: this closed class rather than "every word is capitalised", because a trade
+#: name does carry lower-case words of its own -- "Accident repair Center".
+PROSE_WORDS = frozenset(
+    {
+        "a", "all", "an", "and", "are", "at", "be", "by", "for", "from", "in",
+        "is", "of", "on", "or", "our", "please", "the", "this", "to", "we",
+        "with", "your",
+    }
+)
+#: A repair invoice is never supplied by the insurer, so a company block naming
+#: one is never the repairer -- however far down the document it is printed.
+#: The DLAS layouts repeat their issuer block ("DL Insurance Limited, Central
+#: Invoicing Dept, ...") as a per-page footer, and the auda-style invoices name
+#: the repairer first and the insurer afterwards, so position alone decides
+#: this wrong in both directions.
+INSURER_NAME_PATTERN = re.compile(r"\b(?:insurance|assurance|insurer|underwrit)", re.IGNORECASE)
 
 
 def _first_not_none(*values: Decimal | None) -> Decimal | None:
@@ -220,6 +244,27 @@ def _labelled_registration(value: str | None) -> str | None:
     return cleaned if REGISTRATION_PATTERN.fullmatch(cleaned.upper()) else None
 
 
+def _company_block_name(line: str) -> str | None:
+    """The registered name a whole printed company block opens with.
+
+    ``None`` unless the line really is a block: the name must start the line,
+    read like a name rather than a sentence, and not be an insurer's.
+    """
+
+    match = COMPANY_BLOCK_PATTERN.match(line)
+    if match is None:
+        return None
+    name = match.group("name").strip()
+    words = name.split()
+    if len(words) > MAX_COMPANY_NAME_WORDS:
+        return None
+    if any(word.strip(",.").casefold() in PROSE_WORDS and word[:1].islower() for word in words):
+        return None
+    if INSURER_NAME_PATTERN.search(name):
+        return None
+    return name
+
+
 def _footer_company(text: str) -> str | None:
     """The repairer named in the document's closing company block.
 
@@ -227,18 +272,22 @@ def _footer_company(text: str) -> str | None:
     insurer's invoicing department heads page 1 ("DL Insurance Limited, Central
     Invoicing Dept, St Clare House, ...") and the repairer closes the document
     in the page-2 footer ("DL Assistance Accident repair Center Ltd, Registered
-    in England & Wales No 1234, ..."). Nothing in the text says which is which,
-    so position decides: the issuer opens the invoice and the repairer closes
-    it, and the last block therefore wins.
+    in England & Wales No 1234, ..."). The insurer is excluded by name rather
+    than by position -- see ``INSURER_NAME_PATTERN`` -- and the last of what is
+    left wins, because a repairer's own block closes the document.
+
+    Known residual: a customer's company block printed below the repairer's
+    would still win. No document in this corpus prints one that way (the
+    auda-style invoice labels its "Account: ..." line, which is not a block at
+    all), so there is nothing here to key on yet.
     """
 
     names = [
-        match.group("name").strip()
-        for match in (
-            COMPANY_BLOCK_PATTERN.match(strip_scan_artifacts(line))
-            for line in text.splitlines()
+        name
+        for name in (
+            _company_block_name(strip_scan_artifacts(line)) for line in text.splitlines()
         )
-        if match is not None
+        if name is not None
     ]
     return names[-1] if names else None
 

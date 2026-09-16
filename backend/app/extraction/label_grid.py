@@ -122,13 +122,33 @@ MONEY_FIELDS = frozenset(
 # the free-text Model Options list (``FROM 06/2017 · MODEL i30 · HEAT
 # ABSORBING GLASS · WITH A/C · ...``, one item per grid row).
 #
-# The rule: **a value ends at the end of the printed value, never at the end
-# of the line.**  Once the column break is gone the only evidence left is the
-# shape of the value itself, so every field whose printed value is a single
-# token declares that shape once, here, and the remainder of a run-on cell is
-# cut to it.  This is deliberately a shape, not a list of the strings the
-# neighbouring column happens to print: all three assessments carry a Model
-# Options list and no two print the same items.
+# A shape says what the printed value looks like.  It is NOT licence to cut
+# wherever it happens to stop: truncating an identifier is worse than leaving
+# a visible tail on it, because a truncated key still compares.  Two real
+# examples from this corpus: ``245338996 / 1`` cut to ``245338996`` conflicts
+# with the invoice's ``245338996/1`` and refuses a correct pair, and
+# ``245338996 / 1`` and ``245338996 / 2`` -- two claims on one policy, per
+# ``domain.normalisation`` -- cut to the same string and pair *each other* at
+# full confidence.
+#
+# So a shape may cut only where there is positive evidence that a column break
+# was lost, and ``_trim_to_value`` demands both:
+#
+#   1. the cut falls on a whitespace boundary.  A shape that stops in the
+#      middle of a printed token has found nothing -- ``MH12AB1234`` is one
+#      registration, not ``MH12AB``; ``WF0AXXWPMA BR12345`` is one VIN.
+#   2. the discarded tail opens with an alphabetic word.  Free text from a
+#      neighbouring column starts with a word (``WITH A/C``, ``DRIVER SEAT
+#      HEIGHT``, ``Repairs Authorised?: TBA``); the continuation of an
+#      identifier does not (``/ 1``, ``12 34``, ``BR12345``).
+#
+# Where the evidence is absent the whole remainder is kept.  That leaves
+# visible garbage rather than a plausible wrong key, which is the trade this
+# module wants: a value normalised into agreement is worse than no value.
+#
+# The shapes themselves describe what the client documents print, not an
+# assumption that identifiers have no spaces -- ``normalisation.py`` exists
+# precisely because they do (``"245338996 / 1" -> "245338996/1"``).
 #
 # Fields with no fixed shape -- make, model, customer names, addresses, notes
 # -- declare none and keep the whole remainder.  There is nothing to cut them
@@ -136,14 +156,44 @@ MONEY_FIELDS = frozenset(
 # (``140 SE Nav``, ``KAROQ SE TSI 115]``) or a two-line address.  Multi-line
 # values are never affected either way: the reader takes at most one line for
 # a value and never concatenates two.
+#: An identifier is one token, or several joined by ``/`` or ``~`` with the
+#: spacing the client's documents print around the separator.
+_IDENTIFIER_SHAPE = re.compile(r"\S+(?:\s*[/~]\s*\S+)*")
+#: UK registrations, longest form first: current ``AB12 XYZ`` / ``AB12XYZ``,
+#: prefix ``ABC1234`` / ``A30DRY``, Northern Irish ``GAZ 1234``, and dateless
+#: ``1 ABC`` / ``JB 007``.
+_REGISTRATION_SHAPE = re.compile(
+    r"[A-Za-z]{2}[0-9]{2}\s?[A-Za-z]{3}"
+    r"|[A-Za-z]{1,3}[0-9]{1,4}[A-Za-z]{0,3}"
+    r"|[A-Za-z]{1,3}\s[0-9]{1,4}"
+    r"|[0-9]{1,4}\s[A-Za-z]{1,3}"
+)
 VALUE_SHAPES: dict[str, re.Pattern[str]] = {
-    "registration": re.compile(r"[A-Za-z]{1,3}[0-9]{1,3}\s?[A-Za-z]{1,3}"),
+    "registration": _REGISTRATION_SHAPE,
     "vin": re.compile(r"[A-Za-z0-9]{8,20}"),
-    "claim_reference": re.compile(r"\S+"),
-    "policy_number": re.compile(r"\S+"),
-    "assessment_number": re.compile(r"\S+"),
-    "invoice_number": re.compile(r"\S+"),
+    "claim_reference": _IDENTIFIER_SHAPE,
+    "policy_number": _IDENTIFIER_SHAPE,
+    "assessment_number": _IDENTIFIER_SHAPE,
+    "invoice_number": _IDENTIFIER_SHAPE,
 }
+
+#: Printed column and section headings that are never half of a label/value
+#: pair.  Every DL Auda report prints ``Model Options`` as the heading of the
+#: free-text column beside Vehicle Details, and ``Model Sheet Number`` as a
+#: label in that grid; both begin with the ``Model`` synonym, so without this
+#: set a collapsed render reads ``Model Options`` as model ``Options`` and a
+#: blank ``Model Sheet Number:`` (format 4 prints one) as model
+#: ``Sheet Number:``.  They are also never a value for the label above them.
+COLUMN_HEADINGS = frozenset(
+    {
+        "model options",
+        "model sheet number",
+        "vehicle details",
+        "vehicle condition",
+        "summary information",
+        "repair information",
+    }
+)
 
 # ponytail: an amount is recognised only with two decimal places (optionally
 # £-prefixed).  A money total printed without pence falls back to the generic
@@ -153,6 +203,16 @@ _NUMBER_PATTERN = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
 _DATE_PATTERN = re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b")
 _CELL_SPLIT = re.compile(r"\s{2,}")
 _SUMMARY_HEADING = re.compile(r"(?i)^\s*summary information\b")
+#: A token of letters only -- how free text from a neighbouring column opens.
+_WORD_PATTERN = re.compile(r"[A-Za-z]+")
+#: A single English-looking word: ``Are``, ``Options``, ``the``.  Capitalised
+#: or lower case, never all capitals, because the identifiers this corpus
+#: prints are capitalised throughout (``PH``, ``TBA``, ``PL-739284``).
+_PROSE_WORD_PATTERN = re.compile(r"[A-Z][a-z]+|[a-z]+")
+
+
+def _is_prose_word(value: str) -> bool:
+    return _PROSE_WORD_PATTERN.fullmatch(value) is not None
 
 
 def _normalise_label(value: str) -> str:
@@ -186,6 +246,8 @@ def _read_cell(cell: str) -> tuple[str | None, str, bool]:
     single run-on cell, used only when nothing stricter claimed the field.
     """
 
+    if _normalise_label(cell) in COLUMN_HEADINGS:
+        return None, "", False
     label, separator, remainder = cell.partition(":")
     if separator:
         field = _LABEL_INDEX.get(_normalise_label(label))
@@ -222,26 +284,75 @@ def _next_line_value(rows: list[list[str]], index: int) -> str | None:
 
 
 def _trim_to_value(field: str, remainder: str) -> str:
-    """Cut a run-on cell's remainder at the end of the printed value.
+    """Cut a run-on cell's remainder where a lost column break can be proved.
 
     Only the remainder is cut, never a neighbouring cell: a cell boundary is
     already a value boundary, and a document that prints ``Policy Number`` and
-    ``AB 12 34`` in two cells means all of it.  See ``VALUE_SHAPES``.
+    ``AB 12 34`` in two cells means all of it.  The two conditions a cut must
+    satisfy, and why, are documented on ``VALUE_SHAPES``.
     """
 
     shape = VALUE_SHAPES.get(field)
     if shape is None or not remainder:
         return remainder
     match = shape.match(remainder)
-    return match.group(0) if match else remainder
+    if match is None:
+        return remainder
+    tail = remainder[match.end() :]
+    if not tail.strip():
+        return match.group(0)
+    if not tail[:1].isspace():
+        # The shape stopped inside a printed token, so it has not found the
+        # end of anything.
+        return remainder
+    if _WORD_PATTERN.fullmatch(tail.split()[0].strip(",.;:")) is None:
+        # The tail could be the rest of this value rather than the next
+        # column, so there is no evidence to cut on.
+        return remainder
+    return match.group(0)
+
+
+def _borrows_another_label(cell: str) -> bool:
+    """True when ``cell`` is another field's label/value cell, not a value.
+
+    ``Policy Number:`` printed with a blank value and ``VAT Status: Non
+    Taxable`` in the next column is one grid row with two pairs on it, not a
+    policy number of ``VAT Status: Non Taxable``.  A loose match counts only
+    when the cell prints a colon, so a genuine value that merely opens with a
+    label word (``Model X``) is still read as a value.
+    """
+
+    if _normalise_label(cell) in COLUMN_HEADINGS:
+        return True
+    field, _remainder, strict = _read_cell(cell)
+    if field is None:
+        return False
+    return strict or ":" in cell
 
 
 def _pick_value(field: str, remainder: str, candidates: list[str]) -> str | None:
-    remainder = _trim_to_value(field, remainder)
-    options = [value for value in ([remainder, *candidates]) if value and not _is_label(value)]
+    options = [
+        value
+        for value in (_trim_to_value(field, remainder), *candidates)
+        if value and not _is_label(value) and not _borrows_another_label(value)
+    ]
+    if field in VALUE_SHAPES:
+        # A shaped field's value is an identifier, and an identifier is never
+        # a bare English word.  Format 1's Summary grid prints ``Policy Number
+        # | (blank) | Are the repairs authorized | Yes``; collapsed, that
+        # offers ``Are``, which normalises and compares like a redacted
+        # reference and would pair any two format-1 assessments on a policy
+        # number neither document prints.  All-capital tokens are kept: format
+        # 1's policy number really is printed ``PH``.
+        options = [value for value in options if not _is_prose_word(value)]
     if not options:
         return None
     if field in MONEY_FIELDS:
+        # An amount has digits in it.  ``VAT Status: Non Taxable`` sits beside
+        # the VAT total on every DL Auda grid and is not one.
+        options = [value for value in options if any(char.isdigit() for char in value)]
+        if not options:
+            return None
         for option in options:
             if _AMOUNT_PATTERN.search(option):
                 return option
@@ -260,10 +371,16 @@ def read_label_values(text: str) -> dict[str, str]:
     is what makes Format 1 report ``assessment_number = "D7576879"`` from the
     summary grid rather than ``L0987892222`` from the page-1 header band.
 
-    A value always ends where the printed value ends: it is one cell, or one
-    line, or -- when a renderer collapsed the columns into a single run-on
-    cell -- as much of that cell as the field's ``VALUE_SHAPES`` entry claims.
-    Text from the next column is never appended.
+    A value is one cell, or one line, or -- when a renderer collapsed two
+    columns into a single run-on cell and the field declares a shape -- the
+    leading part of that cell, but only where a lost column break can be
+    proved.  See ``VALUE_SHAPES`` for what counts as proof and why the reader
+    would rather keep a visible tail than invent a shorter key.
+
+    A neighbouring cell that is itself a label/value cell is not this field's
+    value: ``Policy Number:`` beside ``VAT Status: Non Taxable`` yields no
+    policy number.  A neighbouring cell that carries no recognised label is
+    still taken whole, because a cell boundary is a value boundary.
     """
 
     lines = (text or "").splitlines()

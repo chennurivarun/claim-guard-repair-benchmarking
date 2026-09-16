@@ -311,3 +311,127 @@ def test_field_synonyms_cover_every_documented_field() -> None:
     }
 
     assert expected <= set(FIELD_SYNONYMS)
+
+
+# --------------------------------------------------------------------------
+# Value boundaries.  Every case below is printed by a document in
+# ``client-formats/`` or documented in ``app/domain/normalisation.py``.
+# --------------------------------------------------------------------------
+
+
+def test_an_identifier_printed_with_spaces_around_its_slash_is_kept_whole() -> None:
+    """``normalisation.normalise_identifier`` exists to absorb this spacing.
+
+    Cutting the value before it runs is what made an assessment's
+    ``245338996 / 1`` conflict with its invoice's ``245338996/1`` and refuse a
+    correct pair -- the failure this reader is supposed to prevent.
+    """
+
+    values = read_label_values("Policy Number: AB 12 34\nClaim Reference: 245338996 / 1\n")
+
+    assert values["claim_reference"] == "245338996 / 1"
+    assert values["policy_number"] == "AB 12 34"
+
+
+def test_two_claims_on_one_policy_never_collapse_into_the_same_value() -> None:
+    """``123456/1`` and ``123456/2`` are two claims, not one printed twice.
+
+    A shared truncation compares equal, so it does not merely lose a pair --
+    it manufactures one, at full confidence, on a key neither document
+    printed that way.
+    """
+
+    first = read_label_values("Claim Reference: 245338996 / 1\n")
+    second = read_label_values("Claim Reference: 245338996 / 2\n")
+
+    assert first["claim_reference"] != second["claim_reference"]
+
+
+def test_a_shaped_field_never_reports_a_bare_english_word() -> None:
+    """Format 1's Summary grid prints ``Policy Number`` with no value at all.
+
+    Collapsed, the row reads ``Policy Number Are the repairs authorized Yes``.
+    Reporting ``Are`` from it would survive normalisation and match every
+    other format-1 assessment whose policy number is equally blank.
+    """
+
+    assert "policy_number" not in read_label_values(
+        "Policy Number Are the repairs authorized Yes\n"
+    )
+
+
+def test_a_registration_run_on_is_cut_only_where_free_text_follows() -> None:
+    """``ABC1234`` is the plate in ``sample-data/auda-style/Auda7_full_report.pdf``."""
+
+    assert read_label_values("Registration Number: ABC1234 WITH A/C\n")["registration"] == (
+        "ABC1234"
+    )
+    assert read_label_values("Registration Number: AB12XYZ WITH A/C\n")["registration"] == (
+        "AB12XYZ"
+    )
+
+
+def test_a_printed_registration_is_never_shortened() -> None:
+    """Plates are printed with spaces, and not every one is ``AB12XYZ``."""
+
+    printed = ["GAZ 1234", "1 ABC", "JB 007", "MH12AB1234", "AB12 XYZ", "AM06TAH"]
+
+    for value in printed:
+        assert read_label_values(f"Registration Number: {value}\n")["registration"] == value
+
+
+def test_a_vin_split_by_a_space_is_not_cut_to_a_shared_prefix() -> None:
+    """An eight-character VIN prefix is shared by every car of that model.
+
+    ``DRIVER SEAT HEIGHT`` is a Model Options item and is evidence of a lost
+    column break; ``BR12345`` could be the rest of the VIN and is not.
+    """
+
+    assert read_label_values("VIN Number: WF0AXXWPMA BR12345\n")["vin"] == "WF0AXXWPMA BR12345"
+    assert read_label_values("VIN Number: ABCD1234567 DRIVER SEAT HEIGHT\n")["vin"] == (
+        "ABCD1234567"
+    )
+
+
+def test_a_neighbouring_label_value_cell_is_not_this_fields_value() -> None:
+    """One grid row, two label/value pairs, and the left value is blank.
+
+    This line is printed by every DL Auda Summary grid in the corpus.
+    """
+
+    values = read_label_values("Policy Number:                       VAT Status: Non Taxable\n")
+
+    assert "policy_number" not in values
+    assert "vat_total" not in values
+
+
+def test_a_blank_label_does_not_swallow_the_next_lines_label_value_pair() -> None:
+    """Format 1 prints blank values, so the next line is often another label."""
+
+    values = read_label_values("Registration Number:   \nVIN Number: ABCD1234567\n")
+
+    assert "registration" not in values
+    assert values["vin"] == "ABCD1234567"
+
+
+def test_the_model_options_heading_is_neither_a_model_nor_a_value() -> None:
+    """Every DL Auda report prints ``Model Options`` beside Vehicle Details.
+
+    Format 4 prints a blank ``Model Sheet Number`` directly above it, and both
+    headings open with the ``Model`` synonym, so both are read as a model and
+    both are offered as the value of whatever label printed a blank.
+    """
+
+    values = read_label_values(
+        "Manufacturer: FORD\nModel: Puma\nModel Sheet Number:   \nOdometer:   \nModel Options\n"
+    )
+
+    assert values["vehicle_model"] == "Puma"
+    assert "mileage" not in values
+
+    headings_only = read_label_values(
+        "Model Sheet Number:   \nModel Options\nRegistration Number: PD73UUF\n"
+    )
+
+    assert "vehicle_model" not in headings_only
+    assert headings_only["registration"] == "PD73UUF"
