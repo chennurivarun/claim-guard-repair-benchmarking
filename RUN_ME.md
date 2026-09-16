@@ -106,6 +106,14 @@ It keeps the reference library imported in step 1, exports the full audit log to
 claim (`CG-CLIENT-001`) ready for the next set of documents. Add
 `--case-reference YOUR-REFERENCE` to name that claim, or `--no-new-case` for none.
 
+**First time only:** the reset deletes files, so it refuses to run while
+`CLAIM_GUARD_STORAGE_DIR` in `backend/.env` is the relative `./data/storage` it
+ships with — a relative path means a different folder depending on where the
+command is run from. Open `backend/.env` and change that one line to the full
+path of the folder, for example
+`CLAIM_GUARD_STORAGE_DIR=/Users/you/claim-guard/backend/data/storage` (on Windows
+`C:\Users\you\claim-guard\backend\data\storage`), then run the command again.
+
 ## Updating to a newer version WITHOUT losing your work
 
 Every download is a fresh copy with an **empty database** — your uploaded

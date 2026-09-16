@@ -242,7 +242,7 @@ Generated files are written beneath `backend/data/exports/<case-reference>/`. Ru
 | Migration replay     | `cd backend && uv run alembic upgrade head` | Applies or safely replays the current managed schema revision.                                                       |
 | Setup replay         | `cd backend && uv run claimguard-setup`     | Re-running creates no duplicate seed rows and no second case; an existing case is left untouched.                |
 | Bootstrap replay     | `cd backend && uv run claimguard-bootstrap` | Demo-case path. Re-running creates no duplicate seed, case, document, or comparison records.                     |
-| Clean slate          | `cd backend && uv run claimguard-reset --confirm "DELETE ALL CASE DATA"` | Deletes every case artefact, keeps the reference library, exports the audit log first, and leaves one empty case. |
+| Clean slate          | `cd backend && uv run claimguard-reset --confirm "DELETE ALL CASE DATA"` | Deletes every case artefact, keeps the reference library, exports the audit log first, and leaves one empty case. Requires an absolute `CLAIM_GUARD_STORAGE_DIR`; it refuses on the relative default. |
 
 ## Configuration
 
