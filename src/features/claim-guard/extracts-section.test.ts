@@ -190,13 +190,97 @@ describe("invoice and assessment extracts section", () => {
     expect(html).toContain("from assessment")
   })
 
-  it("collapses row-level disclosures by default so the section stays short", () => {
+  // The client's whole ask: "total parts in invoice = 110 means from the
+  // engineer estimate we shud show what all parts line items r taken exactly
+  // to get tht total parts cost". Both fixture invoices roll their costs up
+  // into a section total, so both open themselves and show the assessment
+  // rows behind the total -- with no click anywhere. `renderToStaticMarkup`
+  // has no pointer, so anything in this markup was reached without one.
+  it("shows the split for a rolled-up total with no interaction at all", () => {
     const html = render(fixture)
-    // The rolled-up-total badge and line-item content only exist inside
-    // the (collapsed) detail rows.
-    expect(html).not.toContain("Rolled-up total")
-    expect(html).not.toContain("Front bumper replace")
-    expect(html).not.toContain("Rear bumper replace")
+    expect(html).toContain("Rolled-up total")
+    expect(html).toContain("Assessment breakdown")
+    expect(html).toContain("Total Labour £1,910.00 billed")
+    expect(html).toContain("Front bumper replace")
+    expect(html).toContain("Rear bumper replace")
+  })
+
+  it("leaves a fully itemised invoice collapsed: it has no split to show", () => {
+    const itemised: InvoiceExtractPayload = {
+      ...invoiceOne,
+      invoice_id: "invoice-itemised",
+      lines: [
+        {
+          id: "invoice-itemised-line-1",
+          sequence_no: 1,
+          line_item_type: "parts",
+          raw_category: "PARTS",
+          description: "Bonnet panel",
+          quantity: "1",
+          unit_price: "310.00",
+          line_total: "310.00",
+          is_section_total: false,
+          item_kind: "part",
+        },
+      ],
+    }
+    const html = renderStatic(
+      createElement(InvoiceExtractsTable, {
+        invoices: [itemised],
+        breakdowns: [],
+      })
+    )
+    expect(html).not.toContain("Bonnet panel")
+  })
+
+  it("leaves a rolled-up invoice collapsed once it runs past the auto-expand line limit", () => {
+    // 41 lines is one past AUTO_EXPAND_LINE_LIMIT. Opening a 300-line
+    // invoice would bury the very breakdown it was opened for.
+    const long: InvoiceExtractPayload = {
+      ...invoiceOne,
+      invoice_id: "invoice-long",
+      lines: [
+        ...invoiceOne.lines,
+        ...Array.from({ length: 40 }, (_unused, index) => ({
+          id: `invoice-long-line-${index + 2}`,
+          sequence_no: index + 2,
+          line_item_type: "parts",
+          raw_category: "PARTS",
+          description: `Filler part ${index + 2}`,
+          quantity: "1",
+          unit_price: "10.00",
+          line_total: "10.00",
+          is_section_total: false,
+          item_kind: "part",
+        })),
+      ],
+    }
+    const html = renderStatic(
+      createElement(InvoiceExtractsTable, {
+        invoices: [long],
+        breakdowns: [{ ...breakdownOne, invoice_id: "invoice-long" }],
+      })
+    )
+    expect(html).not.toContain("Assessment breakdown")
+    expect(html).not.toContain("Filler part 2")
+  })
+
+  it("keeps a manual collapse control on every auto-expanded disclosure", () => {
+    const html = render(fixture)
+    // Auto-expanding must not take the control away: an opened invoice row
+    // and the breakdown inside it both still advertise aria-expanded="true"
+    // on a button that closes them again.
+    expect(html).toContain('aria-expanded="true"')
+    expect(html).toContain("Collapse lines for invoice")
+    expect(html).toContain("Collapse the assessment breakdown for")
+  })
+
+  it("leaves assessment rows collapsed: the split already lives on the invoice side", () => {
+    const html = render(fixture)
+    // assessmentOne's only operation is already visible inside the invoice's
+    // breakdown; its own disclosure stays shut so a 120-operation report
+    // does not push everything else off the page.
+    expect(html).toContain("Expand lines for assessment D7576879")
   })
 
   it("shows a loading state and an error state", () => {
@@ -254,16 +338,6 @@ describe("breakdown and operation rows render their own text", () => {
     expect(html).toContain("Front bumper replace")
   })
 
-  it("renders 'No breakdown rows on the assessment' when breakdown_available is false", () => {
-    const unavailable: SectionBreakdownPayload = {
-      ...breakdownOne,
-      breakdown_available: false,
-      rows: [],
-    }
-    const html = renderStatic(createElement(SectionBreakdownDetail, { breakdown: unavailable }))
-    expect(html).toContain("No breakdown rows on the assessment")
-  })
-
   it("shows rows_total beside the assessment total when present", () => {
     const withRowsTotal: SectionBreakdownPayload = {
       ...breakdownOne,
@@ -271,5 +345,117 @@ describe("breakdown and operation rows render their own text", () => {
     }
     const html = renderStatic(createElement(SectionBreakdownDetail, { breakdown: withRowsTotal }))
     expect(html).toContain("rows total £1,910.00")
+  })
+})
+
+// A reader has to be able to tell "the tool failed to line these up" from
+// "the document does not say". `breakdown_available` is `bool(rows)` on the
+// backend, so it reports only *that* there are no rows -- these three cases
+// are separated by reading `assessment_id` and `assessment_total` too.
+describe("the three empty-breakdown cases each say something different", () => {
+  function renderBreakdown(breakdown: SectionBreakdownPayload) {
+    return renderStatic(createElement(SectionBreakdownDetail, { breakdown }))
+  }
+
+  const unpaired: SectionBreakdownPayload = {
+    ...breakdownOne,
+    assessment_id: null,
+    assessment_total: null,
+    matches: null,
+    difference: null,
+    breakdown_available: false,
+    rows_total: null,
+    rows: [],
+  }
+
+  const unresolved: SectionBreakdownPayload = {
+    ...breakdownOne,
+    line_item_type: "unknown",
+    raw_category: "Total Sundries",
+    description: "Total Sundries",
+    assessment_total: null,
+    matches: null,
+    difference: null,
+    breakdown_available: false,
+    rows_total: null,
+    rows: [],
+  }
+
+  // Formats 1 and 7: the assessment prints a paint/materials total and no
+  // paint-materials operations whatsoever. Nothing failed.
+  const totalOnly: SectionBreakdownPayload = {
+    ...breakdownOne,
+    line_item_type: "paint_materials",
+    raw_category: "Total Paint / Materials Costs",
+    description: "Total Paint / Materials Costs",
+    invoice_total: "396.00",
+    assessment_total: "396.00",
+    matches: true,
+    difference: "0.00",
+    breakdown_available: false,
+    rows_total: null,
+    rows: [],
+  }
+
+  it("says nothing is paired when the invoice has no assessment at all", () => {
+    const html = renderBreakdown(unpaired)
+    expect(html).toContain("No assessment is paired to this invoice")
+    expect(html).toContain(
+      "Check the pairing verdict on the assessment extracts table below."
+    )
+  })
+
+  it("says the section resolves to no assessment category", () => {
+    const html = renderBreakdown(unresolved)
+    expect(html).toContain("This section resolves to no assessment category")
+    expect(html).toContain("could not build a split")
+  })
+
+  it("says the assessment prints a total only, and that nothing failed", () => {
+    const html = renderBreakdown(totalOnly)
+    expect(html).toContain("The assessment prints this section as a total only")
+    expect(html).toContain(
+      "The document does not itemise it — the extraction did not fail."
+    )
+  })
+
+  it("gives each case its own wording", () => {
+    const rendered = [unpaired, unresolved, totalOnly].map(renderBreakdown)
+    for (const phrase of [
+      "No assessment is paired to this invoice",
+      "This section resolves to no assessment category",
+      "The assessment prints this section as a total only",
+    ]) {
+      expect(rendered.filter((html) => html.includes(phrase))).toHaveLength(1)
+    }
+  })
+
+  it("offers no collapse control for a breakdown with nothing in it", () => {
+    expect(renderBreakdown(unpaired)).not.toContain(
+      "the assessment breakdown for"
+    )
+  })
+})
+
+describe("difference_convention is explained in words, not as a formula", () => {
+  it("says a positive difference means the repairer billed more", () => {
+    const withConvention = {
+      ...breakdownOne,
+      difference_convention: "invoice_total - assessment_total",
+    } as SectionBreakdownPayload
+    const html = renderStatic(
+      createElement(SectionBreakdownDetail, { breakdown: withConvention })
+    )
+    expect(html).toContain("invoice total - assessment total")
+    expect(html).toContain(
+      "a positive difference means the repairer billed more than the engineer assessed"
+    )
+  })
+
+  it("stays quiet when the payload carries no convention", () => {
+    const html = renderStatic(
+      createElement(SectionBreakdownDetail, { breakdown: breakdownOne })
+    )
+    expect(html).not.toContain("a positive difference means")
   })
 })
