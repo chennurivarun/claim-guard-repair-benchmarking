@@ -12,6 +12,7 @@ import app.services.document_processing as document_processing
 from app.extraction.calculation_validator import validate_invoice
 from app.extraction.invoice_parser import (
     InvoiceParser,
+    _footer_company,
     _guess_item_kind,
     _has_uncertain_lines,
 )
@@ -649,3 +650,134 @@ def test_credit_rows_are_dropped_rather_than_signed() -> None:
     )
 
     assert lines == []
+
+
+#: What each client invoice actually prints, field by field. `None` means the
+#: label is absent from the document -- formats 1 and 7 print no policy number
+#: and no vehicle make/model at all, and inventing either is the failure this
+#: table exists to catch. Filling those gaps from the matched assessment is a
+#: separate step that happens after extraction.
+#:
+#: Honest label: rows 1, 2 and 7 are REGRESSION COVER, not a reproduction.
+#: They pass against the parser as it stood before this table was written, so
+#: the reported real-world symptom (blank invoice number, claim and policy in
+#: the running app) has a cause that is not present in these replicas and is
+#: still unidentified. Rows 3 and 4 are acceptance cases for two pairs that
+#: arrived on 16 Sep 2026 and print every pairing key on both documents.
+CLIENT_INVOICE_IDENTITY: dict[str, dict[str, str | None]] = {
+    "DL_Repair_Invoice_format_1.docx": {
+        "invoice_number": "343653726836/1~3538",
+        "claim_reference": "245338996/1",
+        "policy_number": None,
+        "registration": "AB12XYZ",
+        "vehicle_make": None,
+        "vehicle_model": None,
+        "customer_name": "John Doe",
+    },
+    "DL_Invoice_2_request_for_payment.docx": {
+        "invoice_number": "22564547648/1~AJ123456",
+        "claim_reference": "123456/1",
+        "policy_number": "103466899",
+        "registration": "A30DRY",
+        "vehicle_make": "SKODA",
+        # The stray closing bracket is printed, so it is kept as printed.
+        "vehicle_model": "KAROQ SE TSI 115]",
+        "customer_name": "John Doe",
+    },
+    "DL_Invoice_3_request_for_payment.docx": {
+        "invoice_number": "132467/1~FT56678",
+        "claim_reference": "354647/1",
+        "policy_number": "103466899",
+        "registration": "AM06TAH",
+        "vehicle_make": "SEAT",
+        "vehicle_model": "IBIZA",
+        "customer_name": "John Doe",
+    },
+    "DL_Invoice_4_request_for_payment.docx": {
+        # The same invoice number invoice 3 prints, against a different claim
+        # -- the second duplicate pair in the corpus, after formats 1 and 7.
+        # An invoice number is never a pairing key.
+        "invoice_number": "132467/1~FT56678",
+        "claim_reference": "1111111/1",
+        "policy_number": "9865433",
+        "registration": "PD73UUF",
+        "vehicle_make": "FORD",
+        "vehicle_model": "Puma",
+        "customer_name": "John Doe",
+    },
+    "DL_Repair_Invoice_format_7.docx": {
+        "invoice_number": "343653726836/1~3538",
+        "claim_reference": "426953180/3",
+        "policy_number": None,
+        "registration": "JK21MNO",
+        "vehicle_make": None,
+        "vehicle_model": None,
+        "customer_name": "Oliver Reed",
+    },
+}
+
+
+@pytest.mark.parametrize("filename", sorted(CLIENT_INVOICE_IDENTITY))
+def test_client_invoice_identity_is_exactly_what_is_printed(filename: str) -> None:
+    """Every printed identity label is read, and nothing absent is invented.
+
+    The DLAS "INVOICE" header and the "Request for Payment" reference grid
+    both print a label cell beside a value cell with no colon anywhere, which
+    is why these fields came back blank against the client's own documents.
+    """
+
+    header = _client_invoice(filename).header
+    expected = CLIENT_INVOICE_IDENTITY[filename]
+
+    assert {name: getattr(header, name) for name in expected} == expected
+
+
+@pytest.mark.parametrize("filename", sorted(CLIENT_INVOICE_IDENTITY))
+def test_client_invoice_supplier_is_the_footer_repairer_not_the_issuer(filename: str) -> None:
+    """The repairer closes the document; the insurer's invoicing dept opens it.
+
+    Both company blocks print the same St Clare House address, so only their
+    position separates them -- taking the first would file every one of these
+    invoices against "DL Insurance Limited".
+    """
+
+    header = _client_invoice(filename).header
+
+    assert header.supplier_name == "DL Assistance Accident repair Center Ltd"
+
+
+def test_a_sentence_naming_a_company_is_not_a_company_block() -> None:
+    """A payment instruction is prose, not the repairer's printed block.
+
+    Reading it as one filed the invoice against
+    "Please make all cheques payable to Bright Panel Repairs Ltd".
+    """
+
+    assert (
+        _footer_company(
+            "Bright Panel Repairs Ltd, 12 High Street, Leeds\n"
+            "Total Due 100.00\n"
+            "Please make all cheques payable to Bright Panel Repairs Ltd, "
+            "quoting the invoice number\n"
+        )
+        == "Bright Panel Repairs Ltd"
+    )
+
+
+def test_the_insurer_is_never_the_repairer_however_late_it_is_printed() -> None:
+    """Repeating the registered-office block per page is standard on invoices.
+
+    With position as the only rule, the repeat files every DLAS invoice
+    against the insurer -- the outcome `_footer_company` exists to prevent.
+    """
+
+    assert (
+        _footer_company(
+            "DL Insurance Limited, Central Invoicing Dept, St Clare House, 30-33 Minories\n"
+            "INVOICE\n"
+            "DL Assistance Accident repair Center Ltd, Registered in England & Wales No 1234\n"
+            "Total Due 5895.11\n"
+            "DL Insurance Limited, Central Invoicing Dept, St Clare House, 30-33 Minories\n"
+        )
+        == "DL Assistance Accident repair Center Ltd"
+    )
