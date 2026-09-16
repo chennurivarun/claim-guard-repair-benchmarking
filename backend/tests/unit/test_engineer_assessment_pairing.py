@@ -36,6 +36,7 @@ from app.init_db import initialize_database
 from app.main import app
 from app.models import Document, EngineerAssessment, Invoice
 from app.services.engineer_assessment import (
+    _printed_identity,
     engineer_assessment_payload,
     run_case_gap_fill,
     section_breakdown_for_invoice,
@@ -193,21 +194,27 @@ def _add_assessment(
     return assessment
 
 
+def _verdicts(payload: dict) -> dict[str, dict]:
+    return {entry["key"]: entry for entry in payload["pair_key_verdicts"]}
+
+
 @pytest.mark.parametrize(
-    ("pair_id", "expected_reasons", "expected_verdicts", "expected_confidence"),
+    ("pair_id", "expected_reasons", "expected_states", "expected_confidence"),
     [
         (
             1,
             ["registration exact match", "claim reference exact match"],
-            [
-                "registration exact match",
-                "claim reference exact match",
+            {
+                "registration": "matched",
+                "claim_reference": "matched",
                 # "PH" is printed on the assessment only, so the key is not
-                # comparable -- absence is never a conflict, and it is not a
-                # reason the pair is linked either.
-                "policy number not printed on the invoice",
-            ],
-            2 / 3,
+                # comparable -- absence is never a conflict, it is not a
+                # reason the pair is linked, and it does not dilute the
+                # confidence either.
+                "policy_number": "not_compared",
+            },
+            # Two keys comparable, two agree.
+            2 / 2,
         ),
         (
             2,
@@ -216,22 +223,22 @@ def _add_assessment(
                 "claim reference exact match",
                 "policy number exact match",
             ],
-            [
-                "registration exact match",
-                "claim reference exact match",
-                "policy number exact match",
-            ],
-            1.0,
+            {
+                "registration": "matched",
+                "claim_reference": "matched",
+                "policy_number": "matched",
+            },
+            3 / 3,
         ),
         (
             7,
             ["registration exact match", "claim reference exact match"],
-            [
-                "registration exact match",
-                "claim reference exact match",
-                "policy number not printed on the invoice",
-            ],
-            2 / 3,
+            {
+                "registration": "matched",
+                "claim_reference": "matched",
+                "policy_number": "not_compared",
+            },
+            2 / 2,
         ),
     ],
 )
@@ -239,7 +246,7 @@ def test_client_pairs_link_on_their_printed_identities(
     pairing_client,
     pair_id: int,
     expected_reasons: list[str],
-    expected_verdicts: list[str],
+    expected_states: dict[str, str],
     expected_confidence: float,
 ) -> None:
     _process_pair(pairing_client, pair_id)
@@ -254,8 +261,45 @@ def test_client_pairs_link_on_their_printed_identities(
         assert assessment.pair_reasons_json == expected_reasons
         assert assessment.pair_confidence == pytest.approx(expected_confidence)
         assert not any("conflict" in reason for reason in assessment.pair_reasons_json)
+        # Two keys comparable is not a weak pair; one key would be.
+        assert not any("weak pair" in reason for reason in assessment.pair_reasons_json)
         payload = engineer_assessment_payload(assessment, session)
-        assert payload["pair_key_verdicts"] == expected_verdicts
+        verdicts = _verdicts(payload)
+        assert {key: entry["state"] for key, entry in verdicts.items()} == expected_states
+        for key, state in expected_states.items():
+            assert verdicts[key]["compared"] is (state != "not_compared")
+            assert verdicts[key]["absent_on"] == (
+                None if state != "not_compared" else "invoice"
+            )
+            assert verdicts[key]["text"]
+
+
+def test_the_policy_number_absent_on_the_invoice_is_skipped_not_scored(
+    pairing_client,
+) -> None:
+    """Pair 1 is the client's own case: policy "PH" is printed on one side.
+
+    The whole point of the change: a key the repairer never printed is not
+    evidence of disagreement and must not cost the pair a third of its
+    confidence, which is all that ever stopped this pair reading as certain.
+    """
+
+    _process_pair(pairing_client, 1)
+
+    with _session(pairing_client) as session:
+        assessment = _only_assessment(session)
+        invoice = _only_invoice(session)
+        assert assessment.policy_number == "PH"
+        assert _printed_identity(invoice)["policy_number"] is None
+        assert assessment.pair_confidence == pytest.approx(1.0)
+        policy = _verdicts(engineer_assessment_payload(assessment, session))[
+            "policy_number"
+        ]
+        assert policy["state"] == "not_compared"
+        assert policy["absent_on"] == "invoice"
+        assert policy["assessment_value"] == "PH"
+        assert policy["invoice_value"] is None
+        assert policy["text"] == "policy number not printed on the invoice"
 
 
 def test_neither_the_invoice_number_nor_the_assessment_reference_is_a_key(
@@ -381,7 +425,9 @@ def test_a_claim_and_policy_match_pairs_without_any_registration(
             "claim reference exact match",
             "policy number exact match",
         ]
-        assert assessment.pair_confidence == pytest.approx(2 / 3)
+        # Two keys comparable, both agreeing: the registration the invoice
+        # never printed is not counted against the pair.
+        assert assessment.pair_confidence == pytest.approx(2 / 2)
         # The registration the invoice never printed is then gap-filled.
         assert invoice.vehicle.registration == assessment.registration
 
@@ -389,7 +435,13 @@ def test_a_claim_and_policy_match_pairs_without_any_registration(
 def test_a_registration_match_pairs_when_only_the_invoice_prints_the_claim(
     pairing_client,
 ) -> None:
-    """A key printed on one side only is an absence, never a disagreement."""
+    """A key printed on one side only is an absence, never a disagreement.
+
+    One comparable key is enough to link, and the link says out loud that it
+    rests on one key: this is the weakest pair the rule can produce and a
+    handler reading "paired ... using registration exact match" alone would
+    have no way to tell it apart from a three-key agreement.
+    """
 
     _process_pair(pairing_client, 2)
 
@@ -405,8 +457,118 @@ def test_a_registration_match_pairs_when_only_the_invoice_prints_the_claim(
         assert invoice.claim_reference == "123456/1"
         assert assessment.pair_status == "paired"
         assert assessment.paired_invoice_id == invoice.id
-        assert assessment.pair_reasons_json == ["registration exact match"]
-        assert assessment.pair_confidence == pytest.approx(1 / 3)
+        assert assessment.pair_reasons_json == [
+            "registration exact match",
+            "weak pair: only the registration was comparable; "
+            "claim reference and policy number not printed on both documents",
+        ]
+        # One key comparable, one agreeing: certain about the only evidence
+        # there was, which is what the "weak pair" reason is there to qualify.
+        assert assessment.pair_confidence == pytest.approx(1 / 1)
+        verdicts = _verdicts(engineer_assessment_payload(assessment, session))
+        assert verdicts["claim_reference"]["state"] == "not_compared"
+        assert verdicts["claim_reference"]["absent_on"] == "assessment"
+        assert verdicts["claim_reference"]["invoice_value"] == "123456/1"
+        assert verdicts["policy_number"]["absent_on"] == "assessment"
+
+
+def test_a_policy_number_alone_is_enough_when_nothing_else_is_printed(
+    pairing_client,
+) -> None:
+    """"Just match what is there" includes the case where "there" is one key.
+
+    The old rule privileged the registration and the claim reference, so an
+    invoice printing only a policy number could not pair however exactly that
+    policy number agreed.
+    """
+
+    _process_pair(pairing_client, 2)
+
+    with _session(pairing_client) as session:
+        invoice = _only_invoice(session)
+        assessment = _only_assessment(session)
+        invoice.vehicle.registration = None
+        invoice.claim_reference = None
+        session.flush()
+        run_case_gap_fill(session, invoice.case_id)
+        session.flush()
+
+        assert assessment.pair_status == "paired"
+        assert assessment.paired_invoice_id == invoice.id
+        assert assessment.pair_confidence == pytest.approx(1 / 1)
+        assert assessment.pair_reasons_json == [
+            "policy number exact match",
+            "weak pair: only the policy number was comparable; "
+            "registration and claim reference not printed on both documents",
+        ]
+
+
+def test_a_conflict_on_the_only_weak_key_still_refuses_the_pair(
+    pairing_client,
+) -> None:
+    """Every compared key must agree -- the loosened rule loosened nothing here."""
+
+    _process_pair(pairing_client, 2)
+
+    with _session(pairing_client) as session:
+        invoice = _only_invoice(session)
+        assessment = _only_assessment(session)
+        invoice.policy_number = "103466899-OTHER"
+        session.flush()
+        run_case_gap_fill(session, invoice.case_id)
+        session.flush()
+
+        # Registration and claim reference both agree; the third compared key
+        # disagrees, and a disagreement is fatal however the others read.
+        assert assessment.registration == invoice.vehicle.registration
+        assert assessment.claim_reference == invoice.claim_reference
+        assert assessment.pair_status == "unpaired"
+        assert assessment.paired_invoice_id is None
+        assert assessment.pair_confidence == 0.0
+        assert assessment.pair_reasons_json == [
+            "policy number conflict: assessment 103466899 versus invoice 103466899-OTHER"
+        ]
+
+
+def test_confidence_is_matched_over_compared_not_over_three(pairing_client) -> None:
+    """The arithmetic, in one place, across every shape the corpus produces."""
+
+    _process_pair(pairing_client, 2)
+
+    with _session(pairing_client) as session:
+        invoice = _only_invoice(session)
+        assessment = _only_assessment(session)
+        case_id = invoice.case_id
+
+        # 3 of 3 comparable.
+        assert assessment.pair_confidence == pytest.approx(1.0)
+
+        # 2 of 2 comparable: the client's pairs 1 and 7, where the repairer
+        # printed no policy number at all.
+        invoice.policy_number = None
+        session.flush()
+        run_case_gap_fill(session, case_id)
+        session.flush()
+        assert assessment.pair_confidence == pytest.approx(1.0)
+        assert len(assessment.pair_reasons_json) == 2
+
+        # 1 of 1 comparable, and labelled weak. The policy number the previous
+        # pass gap-filled is reverted by the sweep itself, so it stays an
+        # absence rather than becoming the assessment's own evidence.
+        invoice.claim_reference = None
+        session.flush()
+        run_case_gap_fill(session, case_id)
+        session.flush()
+        assert assessment.pair_confidence == pytest.approx(1.0)
+        assert any("weak pair" in reason for reason in assessment.pair_reasons_json)
+
+        # Nothing comparable: no link, and no division by zero.
+        invoice.vehicle.registration = None
+        session.flush()
+        run_case_gap_fill(session, case_id)
+        session.flush()
+        assert assessment.pair_status == "unpaired"
+        assert assessment.pair_confidence == 0.0
 
 
 @pytest.mark.parametrize("order", ["oldest_first", "oldest_last"])
@@ -493,8 +655,104 @@ def test_one_report_on_that_registration_still_pairs(pairing_client) -> None:
 
         assert assessment.pair_status == "paired"
         assert assessment.paired_invoice_id == invoice.id
-        assert assessment.pair_reasons_json == ["registration exact match"]
+        # The one comparable key carries the link, and says so.
+        assert assessment.pair_reasons_json[0] == "registration exact match"
+        assert assessment.pair_reasons_json[1].startswith(
+            "weak pair: only the registration was comparable"
+        )
         assert invoice.claim_reference == "111111/1"
+
+
+def _invoices_by_registration(session: Session) -> dict[str, Invoice]:
+    return {
+        invoice.vehicle.registration: invoice
+        for invoice in session.scalars(select(Invoice)).all()
+    }
+
+
+def test_the_candidate_agreeing_on_more_keys_wins(pairing_client) -> None:
+    """Two comparable keys beat one; the weaker candidate is not a rival.
+
+    Every eligible candidate now agrees on every key it could compare, so all
+    of them score 1.0 and confidence alone can no longer rank them. Without
+    ranking on the *number* of agreeing keys, a registration-only lookalike
+    would tie with an exact registration-and-claim match and the contention
+    rule would refuse both.
+    """
+
+    _process_pair(
+        pairing_client,
+        19,
+        files=("DL_Repair_Invoice_format_1.docx", "DL_Repair_Invoice_format_7.docx"),
+    )
+
+    with _session(pairing_client) as session:
+        invoices = _invoices_by_registration(session)
+        right, lookalike = invoices["AB12XYZ"], invoices["JK21MNO"]
+        # The second invoice is the same vehicle with no claim printed: one
+        # comparable key, and it agrees.
+        lookalike.vehicle.registration = right.vehicle.registration
+        lookalike.claim_reference = None
+        session.flush()
+        assessment = _add_assessment(
+            session,
+            right,
+            "two-key-report.pdf",
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
+            registration="AB12XYZ",
+            claim_reference=right.claim_reference,
+        )
+        run_case_gap_fill(session, right.case_id)
+        session.flush()
+
+        assert assessment.pair_status == "paired"
+        assert assessment.paired_invoice_id == right.id
+        assert assessment.pair_reasons_json == [
+            "registration exact match",
+            "claim reference exact match",
+        ]
+        assert assessment.pair_confidence == pytest.approx(2 / 2)
+        # Nothing was written onto the invoice that only looked similar.
+        assert lookalike.claim_reference is None
+
+
+def test_two_equally_comparable_invoices_leave_the_assessment_unpaired(
+    pairing_client,
+) -> None:
+    """Equally good evidence is not evidence: the engine refuses to guess."""
+
+    _process_pair(
+        pairing_client,
+        20,
+        files=("DL_Repair_Invoice_format_1.docx", "DL_Repair_Invoice_format_7.docx"),
+    )
+
+    with _session(pairing_client) as session:
+        invoices = _invoices_by_registration(session)
+        first, second = invoices["AB12XYZ"], invoices["JK21MNO"]
+        case_id = first.case_id
+        second.vehicle.registration = first.vehicle.registration
+        for invoice in (first, second):
+            invoice.claim_reference = None
+        session.flush()
+        assessment = _add_assessment(
+            session,
+            first,
+            "ambiguous-report.pdf",
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
+            registration="AB12XYZ",
+            claim_reference="245338996/1",
+        )
+        run_case_gap_fill(session, case_id)
+        session.flush()
+
+        assert assessment.pair_status == "unpaired"
+        assert assessment.paired_invoice_id is None
+        assert assessment.pair_confidence == 0.0
+        assert "Multiple invoices" in assessment.pair_reasons_json[0]
+        # Neither invoice took the claim reference of a pair that was refused.
+        assert first.claim_reference is None
+        assert second.claim_reference is None
 
 
 @pytest.mark.parametrize("order", ["oldest_first", "oldest_last"])
@@ -774,8 +1032,15 @@ def test_the_breakdown_reaches_the_assessment_payload(pairing_client) -> None:
         types = {entry["line_item_type"] for entry in payload["section_breakdowns"]}
         assert types == {"labour", "paint_materials"}
         assert payload["field_sources"]["policy_number"]["value"] == "PH"
-        assert payload["pair_key_verdicts"] == [
+        # One entry per pairing key, in key order, each carrying the state the
+        # UI renders as well as the sentence it prints.
+        assert [entry["text"] for entry in payload["pair_key_verdicts"]] == [
             "registration exact match",
             "claim reference exact match",
             "policy number not printed on the invoice",
+        ]
+        assert [entry["state"] for entry in payload["pair_key_verdicts"]] == [
+            "matched",
+            "matched",
+            "not_compared",
         ]

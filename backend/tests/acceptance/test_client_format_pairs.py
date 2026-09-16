@@ -58,10 +58,31 @@ PAIRS: dict[int, tuple[str, str]] = {
     7: ("DL_Auda_format_7_assessment.docx", "DL_Repair_Invoice_format_7.docx"),
 }
 
-#: Confidence = matched keys / 3. Formats 1 and 7 print no policy number on
-#: the invoice (so that key is absent, not conflicting); format 2 prints all
-#: three and matches on all three.
-EXPECTED_CONFIDENCE: dict[int, float] = {1: 2 / 3, 2: 1.0, 7: 2 / 3}
+#: Confidence = matched keys / *comparable* keys. Formats 1 and 7 print no
+#: policy number on the invoice, so that key is not compared at all -- neither
+#: a conflict nor a deduction -- and both pairs agree on the two keys they can
+#: compare; format 2 prints all three and matches on all three.
+EXPECTED_CONFIDENCE: dict[int, float] = {1: 2 / 2, 2: 3 / 3, 7: 2 / 2}
+
+#: The per-key states the payload must carry for each pair, so the UI can show
+#: an absent key as skipped rather than as a silent failure to match.
+EXPECTED_KEY_STATES: dict[int, dict[str, str]] = {
+    1: {
+        "registration": "matched",
+        "claim_reference": "matched",
+        "policy_number": "not_compared",
+    },
+    2: {
+        "registration": "matched",
+        "claim_reference": "matched",
+        "policy_number": "matched",
+    },
+    7: {
+        "registration": "matched",
+        "claim_reference": "matched",
+        "policy_number": "not_compared",
+    },
+}
 
 #: The section-total ``line_item_type`` values each invoice is rolled up
 #: into, per the Decisions log and the manifest's own ``section_totals``.
@@ -336,7 +357,9 @@ def test_client_pair_end_to_end_through_the_real_api(extracts_client, pair_id: i
         assert invoice.invoice_number not in joined_reasons
 
         payload = engineer_assessment_payload(assessment, session)
-        assert payload["pair_key_verdicts"]
+        assert {
+            entry["key"]: entry["state"] for entry in payload["pair_key_verdicts"]
+        } == EXPECTED_KEY_STATES[pair_id]
 
         # -- 5. Gap-fill and manual review, where the client called it out
         # explicitly: format 7's invoice is never held up for a missing
