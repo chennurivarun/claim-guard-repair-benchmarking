@@ -174,6 +174,26 @@ export function processUploadedDocument(documentId: string, force = false) {
   )
 }
 
+/** The case-wide link / gap-fill sweep, run **once** after a whole batch of
+ * repair invoices and engineer estimates has been handed over -- never per
+ * file. A per-file sweep re-pairs the same case N times and, worse, can link
+ * an estimate to the only invoice loaded so far while the invoice it belongs
+ * to is still queued behind it.
+ *
+ * TODO(task-3): repoint this at the dedicated sweep endpoint Task 3 is adding
+ * to `backend/app/api/router.py`; it is not present in this worktree. Until
+ * it lands, this one call site uses `POST /api/v1/claims/{ref}/compare`,
+ * which already runs `run_case_gap_fill(db, case.id)` across the whole case
+ * before it compares anything. Swapping the path is a one-line change here,
+ * and there is deliberately no per-file fallback anywhere. */
+export function runCaseLinkSweep(caseReference = DEFAULT_CASE_REFERENCE) {
+  return requestJson<{ status: string }>(
+    `/api/v1/claims/${encodeURIComponent(caseReference)}/compare`,
+    { method: "POST" },
+    180_000
+  )
+}
+
 export function correctDocumentPage(
   pageId: string,
   correction: {

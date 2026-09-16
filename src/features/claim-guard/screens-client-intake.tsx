@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useState, type InputHTMLAttributes } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -18,25 +18,49 @@ import {
 } from "@/components/ui/table"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import {
+  fetchClaimExtracts,
   fetchClaimInvoices,
   getApiErrorMessage,
+  type ClaimExtractsPayload,
   type ClaimInvoiceSummary,
 } from "@/lib/api"
 import {
   fetchCaseDocuments,
   processUploadedDocument,
+  runCaseLinkSweep,
   uploadCurrentDocument,
   type IntakeGroup,
   type UploadedDocument,
 } from "./document-api"
+import { ExtractsSection } from "./extracts-section"
 import { ScreenHeading, StatusBadge } from "./shared"
 
 const labels: Record<IntakeGroup, string> = {
   historical_claim: "Third-party claims invoices",
   in_house: "In-house repair invoices",
-  live: "New repair invoice",
+  live: "New repair invoices",
 }
 const accept = ".pdf,.doc,.docx"
+
+/** `webkitdirectory` turns a file input into a folder picker in every browser
+ * that ships Chromium or WebKit; React has no typing for it, so it is spread
+ * in as a plain attribute. Same shape as the picker in
+ * `screens-document-workflow.tsx`. */
+const directoryInputProps = {
+  webkitdirectory: "",
+  directory: "",
+} as InputHTMLAttributes<HTMLInputElement>
+
+/** A folder picker hands back everything in the folder -- .DS_Store, stray
+ * spreadsheets, the lot -- so the selection is filtered to what intake can
+ * actually read rather than failing file by file on the server. */
+function isSupportedDocument(file: File) {
+  const name = file.name.toLowerCase()
+  return [".pdf", ".doc", ".docx"].some((extension) => name.endsWith(extension))
+}
+
+/** One row of the hand-over, in the order it will be sent. */
+type BatchEntry = { file: File; role: "invoice" | "estimate" }
 
 export function ClientIntakeScreen({
   caseReference,
@@ -56,15 +80,37 @@ export function ClientIntakeScreen({
   const [documents, setDocuments] = useState<UploadedDocument[]>([])
   const [invoices, setInvoices] = useState<ClaimInvoiceSummary[]>([])
   const [files, setFiles] = useState<Partial<Record<IntakeGroup, File[]>>>({})
-  const [estimate, setEstimate] = useState<File | null>(null)
+  const [estimates, setEstimates] = useState<File[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [sweepNotice, setSweepNotice] = useState<string | null>(null)
   const [results, setResults] = useState<
-    Array<{ name: string; status: string }>
+    Array<{ name: string; role: string; status: string }>
   >([])
+  /** Bumped after every batch so the file inputs drop their DOM selection:
+   * without it, re-picking the same folder fires no `change` event. */
+  const [pickerKey, setPickerKey] = useState(0)
+  const [extracts, setExtracts] = useState<ClaimExtractsPayload | null>(null)
+  const [extractsLoading, setExtractsLoading] = useState(!setup)
+  const [extractsError, setExtractsError] = useState<string | null>(null)
   const groups: IntakeGroup[] = setup
     ? ["historical_claim", "in_house"]
     : ["live"]
+
+  /** The extracts endpoint is case-scoped, so it only means something on the
+   * live screen; see the `!setup` guard on the section itself. */
+  async function loadExtracts() {
+    if (setup) return
+    try {
+      setExtracts(await fetchClaimExtracts(caseReference))
+      setExtractsError(null)
+    } catch (e) {
+      setExtracts(null)
+      setExtractsError(getApiErrorMessage(e))
+    } finally {
+      setExtractsLoading(false)
+    }
+  }
 
   async function refresh() {
     const [docs, rows] = await Promise.all([
@@ -73,7 +119,29 @@ export function ClientIntakeScreen({
     ])
     setDocuments(docs)
     setInvoices(rows)
+    await loadExtracts()
   }
+  useEffect(() => {
+    if (setup) return
+    let active = true
+    void fetchClaimExtracts(caseReference)
+      .then((payload) => {
+        if (!active) return
+        setExtracts(payload)
+        setExtractsError(null)
+      })
+      .catch((e) => {
+        if (!active) return
+        setExtracts(null)
+        setExtractsError(getApiErrorMessage(e))
+      })
+      .finally(() => {
+        if (active) setExtractsLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [caseReference, setup])
   useEffect(() => {
     let active = true
     void Promise.all([
@@ -94,68 +162,117 @@ export function ClientIntakeScreen({
     }
   }, [caseReference])
 
+  function describeProcessed(document: UploadedDocument) {
+    if (document.manual_review) return "Needs review"
+    if (document.kind === "engineer_assessment") {
+      return document.paired ? "Estimate linked" : "Estimate awaiting a safe match"
+    }
+    return "Ingested"
+  }
+
+  /** A whole hand-over at once: a folder of repair invoices and a folder of
+   * engineer estimates. The sequencing matters and is deliberate.
+   *
+   * 1. Every invoice goes first, then every estimate -- an estimate can only
+   *    be linked to an invoice the case already holds.
+   * 2. Every file is uploaded under the same `intake_group`. The backend
+   *    refuses to pair an estimate with an invoice from another group, so a
+   *    mixed-group hand-over would silently never pair.
+   * 3. A file that fails does not abort the batch. A folder of ten is not
+   *    worth losing to one unreadable scan; the failure is reported on its
+   *    own row and summarised at the end.
+   * 4. The case-wide link / gap-fill sweep runs exactly **once**, after the
+   *    last file. See `runCaseLinkSweep`. */
   async function upload(group: IntakeGroup) {
-    const selected = files[group] ?? []
-    if (busy || finalised || !selected.length) return
-    const batch = [
-      ...selected,
-      ...(group === "live" && estimate ? [estimate] : []),
+    const invoiceFiles = files[group] ?? []
+    const estimateFiles = group === "live" ? estimates : []
+    if (busy || finalised || (!invoiceFiles.length && !estimateFiles.length))
+      return
+    const batch: BatchEntry[] = [
+      ...invoiceFiles.map((file) => ({ file, role: "invoice" as const })),
+      ...estimateFiles.map((file) => ({ file, role: "estimate" as const })),
     ]
+    const roleLabel = (role: BatchEntry["role"]) =>
+      role === "estimate"
+        ? "Engineer estimate"
+        : group === "live"
+          ? "Repair invoice"
+          : "Client document"
     setBusy(true)
     setError(null)
-    setResults([])
-    let invoiceDocumentId: string | undefined
+    setSweepNotice(null)
+    setResults(
+      batch.map(({ file, role }) => ({
+        name: file.name,
+        role: roleLabel(role),
+        status: "Queued",
+      }))
+    )
+    const setStatus = (index: number, status: string) =>
+      setResults((rows) =>
+        rows.map((row, position) =>
+          position === index ? { ...row, status } : row
+        )
+      )
+    // The backend only accepts an explicit invoice link when the estimate
+    // names a single-invoice document, so the hint is kept for the one
+    // invoice + one estimate hand-over that used to be the only option. With
+    // a folder of each, which estimate belongs to which invoice is the
+    // sweep's job -- it sees the whole set, this loop does not.
+    const explicitPairing =
+      invoiceFiles.length === 1 && estimateFiles.length === 1
+    let pairTarget: string | undefined
+    // The reviewer is sent to the first invoice of the hand-over: with a
+    // folder, any other choice is alphabetical accident.
+    let firstInvoiceDocumentId: string | undefined
+    const failures: string[] = []
     try {
-      for (const file of batch) {
-        setResults((rows) => [
-          ...rows,
-          { name: file.name, status: "Processing" },
-        ])
+      for (const [index, { file, role }] of batch.entries()) {
+        setStatus(index, `Uploading (${index + 1} of ${batch.length})`)
         try {
           const doc = await uploadCurrentDocument(
             file,
             caseReference,
             group,
-            file === estimate ? invoiceDocumentId : undefined
+            role === "estimate" && explicitPairing ? pairTarget : undefined
           )
+          setStatus(index, "Extracting…")
           const result = await processUploadedDocument(doc.id)
-          if (result.document.kind === "repair_invoice")
-            invoiceDocumentId = doc.id
-          setResults((rows) =>
-            rows.map((row) =>
-              row.name === file.name
-                ? {
-                    ...row,
-                    status: result.document.manual_review
-                      ? "Needs review"
-                      : result.document.kind === "engineer_assessment"
-                        ? result.document.paired
-                          ? "Estimate linked"
-                          : "Estimate awaiting a safe match"
-                        : "Ingested",
-                  }
-                : row
-            )
-          )
+          if (result.document.kind === "repair_invoice") {
+            pairTarget ??= doc.id
+            firstInvoiceDocumentId ??= doc.id
+          }
+          setStatus(index, describeProcessed(result.document))
         } catch (e) {
-          setResults((rows) =>
-            rows.map((row) =>
-              row.name === file.name
-                ? { ...row, status: getApiErrorMessage(e) }
-                : row
-            )
-          )
-          throw e
+          const message = getApiErrorMessage(e)
+          failures.push(`${file.name}: ${message}`)
+          setStatus(index, message)
         }
       }
+      if (failures.length < batch.length) {
+        try {
+          await runCaseLinkSweep(caseReference)
+        } catch (e) {
+          // The documents are stored either way; only the pairing pass is
+          // missing, and it can be re-run. Say so instead of presenting the
+          // whole hand-over as failed.
+          setSweepNotice(getApiErrorMessage(e))
+        }
+      }
+      if (failures.length) {
+        setError(
+          `${failures.length} of ${batch.length} files could not be processed. ${failures.join(" · ")}`
+        )
+      }
       await refresh()
-      await onProcessed(invoiceDocumentId)
-      setFiles((current) => ({ ...current, [group]: [] }))
-      if (group === "live") setEstimate(null)
+      await onProcessed(firstInvoiceDocumentId)
     } catch (e) {
       setError(getApiErrorMessage(e))
       await refresh().catch(() => undefined)
     } finally {
+      setFiles((current) => ({ ...current, [group]: [] }))
+      if (group === "live") setEstimates([])
+      setPickerKey((current) => current + 1)
       setBusy(false)
     }
   }
@@ -186,6 +303,16 @@ export function ClientIntakeScreen({
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
+      {sweepNotice && (
+        <Alert>
+          <AlertTitle>Documents stored, pairing sweep did not run</AlertTitle>
+          <AlertDescription>
+            Every file was ingested, but the case-wide link and gap-fill sweep
+            failed: {sweepNotice} Invoices and estimates may stay unpaired
+            until it is re-run.
+          </AlertDescription>
+        </Alert>
+      )}
       {finalised && (
         <Alert>
           <AlertTitle>Finalised case</AlertTitle>
@@ -201,7 +328,7 @@ export function ClientIntakeScreen({
               <CardTitle>{labels[group]}</CardTitle>
               <CardDescription>
                 {group === "live"
-                  ? "One invoice, with an optional engineer estimate."
+                  ? "Hand over a whole set at once: every repair invoice, and every engineer estimate that goes with them. Pick files or a folder for each."
                   : "Upload client invoices and their corresponding engineer estimates. PDF and Word documents are supported."}
               </CardDescription>
             </CardHeader>
@@ -209,13 +336,14 @@ export function ClientIntakeScreen({
               <label className="block space-y-2 text-sm font-medium">
                 <span>
                   {group === "live"
-                    ? "Repair invoice (required)"
+                    ? "Repair invoices (required)"
                     : labels[group]}
                 </span>
                 <Input
+                  key={`files-${group}-${pickerKey}`}
                   type="file"
                   accept={accept}
-                  multiple={setup}
+                  multiple
                   disabled={busy || finalised}
                   onChange={(e) =>
                     setFiles((current) => ({
@@ -224,25 +352,76 @@ export function ClientIntakeScreen({
                     }))
                   }
                 />
+                <Input
+                  key={`folder-${group}-${pickerKey}`}
+                  aria-label={`${labels[group]} folder`}
+                  type="file"
+                  accept={accept}
+                  multiple
+                  disabled={busy || finalised}
+                  {...directoryInputProps}
+                  onChange={(e) =>
+                    setFiles((current) => ({
+                      ...current,
+                      [group]: Array.from(e.target.files ?? []).filter(
+                        isSupportedDocument
+                      ),
+                    }))
+                  }
+                />
+                <span className="block font-normal text-muted-foreground">
+                  {files[group]?.length
+                    ? `${files[group]?.length} selected`
+                    : "Choose files, or a whole folder."}
+                </span>
               </label>
               {group === "live" && (
                 <label className="block space-y-2 text-sm font-medium">
-                  <span>Engineer estimate (optional)</span>
+                  <span>Engineer estimates (optional)</span>
                   <Input
+                    key={`estimates-${pickerKey}`}
                     type="file"
                     accept={accept}
+                    multiple
                     disabled={busy || finalised}
-                    onChange={(e) => setEstimate(e.target.files?.[0] ?? null)}
+                    onChange={(e) =>
+                      setEstimates(Array.from(e.target.files ?? []))
+                    }
                   />
+                  <Input
+                    key={`estimates-folder-${pickerKey}`}
+                    aria-label="Engineer estimates folder"
+                    type="file"
+                    accept={accept}
+                    multiple
+                    disabled={busy || finalised}
+                    {...directoryInputProps}
+                    onChange={(e) =>
+                      setEstimates(
+                        Array.from(e.target.files ?? []).filter(
+                          isSupportedDocument
+                        )
+                      )
+                    }
+                  />
+                  <span className="block font-normal text-muted-foreground">
+                    {estimates.length
+                      ? `${estimates.length} selected`
+                      : "Choose files, or a whole folder."}
+                  </span>
                 </label>
               )}
               <Button
-                disabled={busy || finalised || !files[group]?.length}
+                disabled={
+                  busy ||
+                  finalised ||
+                  !(files[group]?.length || (group === "live" && estimates.length))
+                }
                 onClick={() => void upload(group)}
               >
                 {busy
                   ? "Processing documents…"
-                  : `Upload ${group === "live" ? "invoice" : "documents"}`}
+                  : `Upload ${group === "live" ? "invoices and estimates" : "documents"}`}
               </Button>
               <p className="text-sm text-muted-foreground">
                 {
@@ -262,19 +441,29 @@ export function ClientIntakeScreen({
         <Card>
           <CardHeader>
             <CardTitle>Processing results</CardTitle>
+            <CardDescription>
+              One row per file, in the order they were sent. Invoices go first
+              so the estimates behind them have something to link to.
+            </CardDescription>
           </CardHeader>
           <CardContent>
             <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>File</TableHead>
+                  <TableHead>Handed over as</TableHead>
                   <TableHead>Result</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
+                {/* Keyed by position, not filename: two folders can hand over
+                    the same filename twice in one batch. */}
                 {results.map((row, i) => (
                   <TableRow key={i}>
                     <TableCell>{row.name}</TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {row.role}
+                    </TableCell>
                     <TableCell role="status">{row.status}</TableCell>
                   </TableRow>
                 ))}
@@ -348,6 +537,23 @@ export function ClientIntakeScreen({
           )}
         </CardContent>
       </Card>
+      {/* The two standardised tables and the per-total split, on the screen
+          people actually land on. They used to render only on Review
+          findings, which now sits under Advanced tools, so nobody saw them.
+          Placed directly under the Live invoices table: the upload card is
+          the action, that table is the receipt, and this is what the reviewer
+          then reads. Deliberately not on the Benchmark data setup variant --
+          `/extracts` is case-scoped and unfiltered by intake group, so there
+          it would show the live claim's invoice/assessment pairing on a
+          screen whose every other table is filtered to the reference
+          dataset. */}
+      {!setup && (
+        <ExtractsSection
+          extracts={extracts}
+          loading={extractsLoading}
+          error={extractsError}
+        />
+      )}
       {documents
         .filter(
           (d) =>
