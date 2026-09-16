@@ -174,21 +174,48 @@ export function processUploadedDocument(documentId: string, force = false) {
   )
 }
 
+/** One assessment's pairing verdict, as `_pairing_summary` serialises it
+ * (`backend/app/api/router.py`). */
+export interface PairingSummaryRow {
+  assessment_id: string
+  document_id: string
+  assessment_number: string | null
+  pair_status: string
+  pair_confidence: number | null
+  pair_reasons: string[]
+  paired_invoice_id: string | null
+  paired_invoice_number: string | null
+}
+
+/** What `POST /claims/{ref}/documents/link-sweep` returns: the case reference
+ * plus the `_pairing_summary` block, spread in at the top level. */
+export interface CaseLinkSweepResult {
+  case_reference: string
+  assessments: number
+  paired: number
+  unpaired: number
+  details: PairingSummaryRow[]
+}
+
 /** The case-wide link / gap-fill sweep, run **once** after a whole batch of
  * repair invoices and engineer estimates has been handed over -- never per
  * file. A per-file sweep re-pairs the same case N times and, worse, can link
  * an estimate to the only invoice loaded so far while the invoice it belongs
  * to is still queued behind it.
  *
- * TODO(task-3): repoint this at the dedicated sweep endpoint Task 3 is adding
- * to `backend/app/api/router.py`; it is not present in this worktree. Until
- * it lands, this one call site uses `POST /api/v1/claims/{ref}/compare`,
- * which already runs `run_case_gap_fill(db, case.id)` across the whole case
- * before it compares anything. Swapping the path is a one-line change here,
- * and there is deliberately no per-file fallback anywhere. */
-export function runCaseLinkSweep(caseReference = DEFAULT_CASE_REFERENCE) {
-  return requestJson<{ status: string }>(
-    `/api/v1/claims/${encodeURIComponent(caseReference)}/compare`,
+ * This is `POST /claims/{ref}/documents/link-sweep`, which exists to do
+ * exactly this and nothing else: it calls `run_case_gap_fill` once for the
+ * whole case, summarises the pairing, and commits its own work.
+ *
+ * It is deliberately **not** `POST /claims/{ref}/compare`. That endpoint, on
+ * a case that already carries a comparison, runs `reprocess_case`: a new
+ * `ProcessingRun`, every handler mapping-review decision from the previous
+ * run discarded, the LLM adjudicator re-run, and `CASE_COMPARISON_COMPLETED`
+ * audit events written against `pilot.handler` for an action no handler took.
+ * None of that belongs behind an Upload button. */
+export function runCaseLinkSweep(caseReference: string) {
+  return requestJson<CaseLinkSweepResult>(
+    `/api/v1/claims/${encodeURIComponent(caseReference)}/documents/link-sweep`,
     { method: "POST" },
     180_000
   )

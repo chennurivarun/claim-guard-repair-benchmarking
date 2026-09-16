@@ -9,6 +9,7 @@ import type {
   SectionBreakdownPayload,
 } from "@/lib/api"
 import {
+  AssessmentExtractsTable,
   AssessmentLinesTable,
   ExtractsSection,
   InvoiceExtractsTable,
@@ -311,7 +312,7 @@ describe("keying by invoice_id instead of the non-unique invoice_number", () => 
       createElement(InvoiceExtractsTable, {
         invoices: [invoiceOne, invoiceSeven],
         breakdowns: [breakdownOne, breakdownSeven],
-        defaultExpanded: true,
+        expansion: "all",
       })
     )
     // Both invoices share one invoice_number, so if the breakdown lookup
@@ -457,5 +458,251 @@ describe("difference_convention is explained in words, not as a formula", () => 
       createElement(SectionBreakdownDetail, { breakdown: breakdownOne })
     )
     expect(html).not.toContain("a positive difference means")
+  })
+})
+
+// The backend emits `assessment_total = None` for two different reasons: the
+// invoice section resolves to no assessment section at all, or it resolves to
+// one whose column the paired document simply left blank (all four of
+// `parts_net` / `paint_net` / `extras_net` / `labour_net` are nullable). Under
+// the old classification -- "paired and no total means unresolved" -- an
+// invoice printing "Total Extras" beside an assessment with no extras section
+// told the handler the tool had failed to match anything, when the document
+// just carries no such figure.
+describe("the fourth empty-breakdown case: resolvable, but the assessment prints no total", () => {
+  const noSectionTotal: SectionBreakdownPayload = {
+    ...breakdownOne,
+    line_item_type: "extras",
+    raw_category: "Total Extras",
+    description: "Total Extras",
+    invoice_total: "120.00",
+    assessment_total: null,
+    matches: null,
+    difference: null,
+    breakdown_available: false,
+    rows_total: null,
+    rows: [],
+  }
+
+  const unresolvable: SectionBreakdownPayload = {
+    ...noSectionTotal,
+    line_item_type: "unknown",
+    raw_category: "Total Sundries",
+    description: "Total Sundries",
+  }
+
+  it("does not call a blank assessment column a failure to match", () => {
+    const html = renderStatic(
+      createElement(SectionBreakdownDetail, { breakdown: noSectionTotal })
+    )
+    expect(html).toContain(
+      "The paired assessment prints no total for this section"
+    )
+    expect(html).toContain("the extraction did not fail")
+    expect(html).not.toContain("This section resolves to no assessment category")
+  })
+
+  it("still calls a genuinely unresolvable section unresolved", () => {
+    const html = renderStatic(
+      createElement(SectionBreakdownDetail, { breakdown: unresolvable })
+    )
+    expect(html).toContain("This section resolves to no assessment category")
+    expect(html).not.toContain(
+      "The paired assessment prints no total for this section"
+    )
+  })
+
+  it("classifies on line_item_type, so every resolvable section reads the same", () => {
+    for (const type of ["parts", "paint_materials", "extras", "labour"]) {
+      const html = renderStatic(
+        createElement(SectionBreakdownDetail, {
+          breakdown: { ...noSectionTotal, line_item_type: type },
+        })
+      )
+      expect(html).toContain(
+        "The paired assessment prints no total for this section"
+      )
+    }
+  })
+})
+
+// `get_claim_extracts` emits a breakdown for *every* `is_section_total` line
+// unconditionally, paired or not. Auto-expanding on "a breakdown exists" meant
+// that uploading invoices before any estimate blew every rolled-up invoice
+// open onto four "No assessment is paired to this invoice" boxes -- the
+// opposite of putting the split in front of the reader. The same
+// `ExtractsSection` renders on Review findings, so this covers both screens.
+describe("auto-expansion needs a breakdown that actually resolves", () => {
+  const unpairedBreakdown: SectionBreakdownPayload = {
+    ...breakdownOne,
+    assessment_id: null,
+    assessment_total: null,
+    matches: null,
+    difference: null,
+    breakdown_available: false,
+    rows_total: null,
+    rows: [],
+  }
+
+  it("leaves a rolled-up invoice collapsed when nothing is paired to it", () => {
+    const html = renderStatic(
+      createElement(InvoiceExtractsTable, {
+        invoices: [invoiceOne],
+        breakdowns: [unpairedBreakdown],
+      })
+    )
+    expect(html).not.toContain("Assessment breakdown")
+    expect(html).not.toContain("No assessment is paired to this invoice")
+    expect(html).toContain("Expand lines for invoice")
+  })
+
+  it("does not dump a whole claim of unpaired invoices open", () => {
+    const payload: ClaimExtractsPayload = {
+      invoice_extracts: [invoiceOne, invoiceSeven],
+      assessment_extracts: [],
+      section_breakdowns: [
+        { ...unpairedBreakdown, invoice_id: "invoice-1" },
+        {
+          ...unpairedBreakdown,
+          invoice_id: "invoice-7",
+          invoice_line_item_id: "invoice-7-line-1",
+        },
+      ],
+    }
+    const html = render(payload)
+    expect(html).not.toContain("Assessment breakdown")
+    // Every invoice row still advertises "Expand", never "Collapse": not one
+    // of them was pre-opened. (The card's own Hide/Show trigger is a
+    // different control and is open by design.)
+    expect(html).not.toContain("Collapse lines for invoice")
+    expect(html.match(/Expand lines for invoice/g) ?? []).toHaveLength(2)
+  })
+
+  it("still opens an invoice whose breakdown carries rows", () => {
+    const html = renderStatic(
+      createElement(InvoiceExtractsTable, {
+        invoices: [invoiceOne],
+        breakdowns: [breakdownOne],
+      })
+    )
+    expect(html).toContain("Assessment breakdown")
+    expect(html).toContain("Front bumper replace")
+  })
+
+  // The old prop was `defaultExpanded?: boolean`, under which `undefined`
+  // meant "apply the auto-expand rule" and `false` meant "open nothing" --
+  // two spellings of "not pre-expanded" that behaved differently, with
+  // nothing on the type to say so. The three named states each mean one
+  // thing.
+  it("opens nothing at all under expansion=\"none\", auto-expand rule or not", () => {
+    const html = renderStatic(
+      createElement(InvoiceExtractsTable, {
+        invoices: [invoiceOne],
+        breakdowns: [breakdownOne],
+        expansion: "none",
+      })
+    )
+    expect(html).not.toContain("Assessment breakdown")
+    expect(html).toContain("Expand lines for invoice")
+  })
+})
+
+describe("the difference convention is not asserted where there is no difference", () => {
+  const convention = "invoice_total - assessment_total"
+
+  it("stays quiet when nothing is paired to the invoice", () => {
+    const html = renderStatic(
+      createElement(SectionBreakdownDetail, {
+        breakdown: {
+          ...breakdownOne,
+          assessment_id: null,
+          assessment_total: null,
+          matches: null,
+          difference: null,
+          breakdown_available: false,
+          rows: [],
+          difference_convention: convention,
+        } as SectionBreakdownPayload,
+      })
+    )
+    expect(html).toContain("No assessment is paired to this invoice")
+    expect(html).not.toContain("a positive difference means")
+  })
+
+  it("stays quiet when the section resolves to nothing", () => {
+    const html = renderStatic(
+      createElement(SectionBreakdownDetail, {
+        breakdown: {
+          ...breakdownOne,
+          line_item_type: "unknown",
+          assessment_total: null,
+          matches: null,
+          difference: null,
+          breakdown_available: false,
+          rows: [],
+          difference_convention: convention,
+        } as SectionBreakdownPayload,
+      })
+    )
+    expect(html).toContain("This section resolves to no assessment category")
+    expect(html).not.toContain("a positive difference means")
+  })
+
+  it("still explains the sign when there is a difference to explain", () => {
+    const html = renderStatic(
+      createElement(SectionBreakdownDetail, {
+        breakdown: {
+          ...breakdownOne,
+          difference: "120.00",
+          matches: false,
+          difference_convention: convention,
+        } as SectionBreakdownPayload,
+      })
+    )
+    expect(html).toContain(
+      "a positive difference means the repairer billed more than the engineer assessed"
+    )
+  })
+})
+
+// `pair_key_verdicts` was typed `string[]` while the backend emits one object
+// per key. Spreading those objects into a joined string prints
+// "[object Object]" the moment anything wires the field in.
+describe("per-key pairing verdicts render their own sentences", () => {
+  it("never prints [object Object] for a verdict", () => {
+    const withVerdicts: AssessmentExtractPayload = {
+      ...assessmentOne,
+      pair_key_verdicts: [
+        {
+          key: "registration",
+          label: "registration",
+          state: "matched",
+          compared: true,
+          absent_on: null,
+          placeholder_on: null,
+          assessment_value: "A30DRY",
+          invoice_value: "A30DRY",
+          text: "registration exact match",
+        },
+        {
+          key: "policy_number",
+          label: "policy number",
+          state: "placeholder",
+          compared: false,
+          absent_on: "invoice",
+          placeholder_on: "assessment",
+          assessment_value: "PH",
+          invoice_value: null,
+          text: "policy number is a placeholder on the assessment (PH)",
+        },
+      ],
+    }
+    const html = renderStatic(
+      createElement(AssessmentExtractsTable, { assessments: [withVerdicts] })
+    )
+    expect(html).not.toContain("[object Object]")
+    expect(html).toContain(
+      "policy number is a placeholder on the assessment (PH)"
+    )
   })
 })

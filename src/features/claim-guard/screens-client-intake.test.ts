@@ -73,3 +73,33 @@ describe("a folder of invoices and a folder of estimates, handed over together",
     expect(html).toContain("Upload invoices and estimates")
   })
 })
+
+// The sweep is the one step of a hand-over that can fail on its own without
+// losing a file. Before this, a failed sweep left a notice and no way out of
+// it: there was no re-run control anywhere on the screen, so the only route
+// back to a paired case was uploading every file again.
+describe("a failed pairing sweep can be re-run without re-uploading", () => {
+  it("offers a standing re-run control on Document Intelligence", () => {
+    const html = renderIntake(false)
+
+    expect(html).toContain("Re-run pairing sweep")
+    expect(html).toContain(
+      "Re-pairs every invoice and engineer estimate already in this claim"
+    )
+  })
+
+  it("keeps it off Benchmark data setup, whose case has no live pairing", () => {
+    expect(renderIntake(true)).not.toContain("Re-run pairing sweep")
+  })
+})
+
+describe("the screen no longer describes itself as a demonstration", () => {
+  it("does not set an invoice aside for a demo that no longer exists", () => {
+    const html = renderIntake(true)
+
+    expect(html).not.toContain("live demonstration")
+    expect(html).toContain(
+      "Keep one fresh invoice aside to run through Document Intelligence."
+    )
+  })
+})

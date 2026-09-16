@@ -33,6 +33,7 @@ import {
   type UploadedDocument,
 } from "./document-api"
 import { ExtractsSection } from "./extracts-section"
+import { runIntakeBatch, type IntakeBatchEntry } from "./intake-batch"
 import { ScreenHeading, StatusBadge } from "./shared"
 
 const labels: Record<IntakeGroup, string> = {
@@ -59,9 +60,6 @@ function isSupportedDocument(file: File) {
   return [".pdf", ".doc", ".docx"].some((extension) => name.endsWith(extension))
 }
 
-/** One row of the hand-over, in the order it will be sent. */
-type BatchEntry = { file: File; role: "invoice" | "estimate" }
-
 export function ClientIntakeScreen({
   caseReference,
   setup,
@@ -83,7 +81,14 @@ export function ClientIntakeScreen({
   const [estimates, setEstimates] = useState<File[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  /** The per-file failure summary lives in its own state, not in `error`.
+   * It used to be written into `error` and then immediately overwritten by
+   * the outer catch if the refresh that followed threw, so the one message
+   * naming which files failed was the easiest thing on the screen to lose. */
+  const [fileFailures, setFileFailures] = useState<string[]>([])
   const [sweepNotice, setSweepNotice] = useState<string | null>(null)
+  const [sweepResult, setSweepResult] = useState<string | null>(null)
+  const [sweeping, setSweeping] = useState(false)
   const [results, setResults] = useState<
     Array<{ name: string; role: string; status: string }>
   >([])
@@ -170,29 +175,48 @@ export function ClientIntakeScreen({
     return "Ingested"
   }
 
+  /** Re-run the case-wide link / gap-fill sweep on what is already in the
+   * claim. The sweep is idempotent -- `run_case_gap_fill` reverses its own
+   * earlier writes before re-evaluating -- so this is safe to press again,
+   * and it is the only way out of a failed sweep that does not involve
+   * re-uploading every file. It uploads nothing and touches no handler
+   * decision. */
+  async function rerunSweep() {
+    if (sweeping || busy || finalised) return
+    setSweeping(true)
+    setSweepNotice(null)
+    setSweepResult(null)
+    try {
+      const summary = await runCaseLinkSweep(caseReference)
+      setSweepResult(
+        `Pairing sweep finished: ${summary.paired} of ${summary.assessments} engineer estimates are linked to an invoice.`
+      )
+      await refresh()
+      await onProcessed()
+    } catch (e) {
+      setSweepNotice(getApiErrorMessage(e))
+    } finally {
+      setSweeping(false)
+    }
+  }
+
   /** A whole hand-over at once: a folder of repair invoices and a folder of
-   * engineer estimates. The sequencing matters and is deliberate.
-   *
-   * 1. Every invoice goes first, then every estimate -- an estimate can only
-   *    be linked to an invoice the case already holds.
-   * 2. Every file is uploaded under the same `intake_group`. The backend
-   *    refuses to pair an estimate with an invoice from another group, so a
-   *    mixed-group hand-over would silently never pair.
-   * 3. A file that fails does not abort the batch. A folder of ten is not
-   *    worth losing to one unreadable scan; the failure is reported on its
-   *    own row and summarised at the end.
-   * 4. The case-wide link / gap-fill sweep runs exactly **once**, after the
-   *    last file. See `runCaseLinkSweep`. */
+   * engineer estimates. The sequencing, the shared intake group, the per-file
+   * isolation and the exactly-once sweep all live in `runIntakeBatch`, where
+   * they can be tested without a browser; this only supplies the ports and
+   * paints the result. */
   async function upload(group: IntakeGroup) {
     const invoiceFiles = files[group] ?? []
     const estimateFiles = group === "live" ? estimates : []
-    if (busy || finalised || (!invoiceFiles.length && !estimateFiles.length))
-      return
-    const batch: BatchEntry[] = [
+    // Estimates alone are refused: they would upload with nothing in the case
+    // to pair against, and the label above the picker says invoices are
+    // required.
+    if (busy || finalised || !invoiceFiles.length) return
+    const batch: IntakeBatchEntry[] = [
       ...invoiceFiles.map((file) => ({ file, role: "invoice" as const })),
       ...estimateFiles.map((file) => ({ file, role: "estimate" as const })),
     ]
-    const roleLabel = (role: BatchEntry["role"]) =>
+    const roleLabel = (role: IntakeBatchEntry["role"]) =>
       role === "estimate"
         ? "Engineer estimate"
         : group === "live"
@@ -200,7 +224,9 @@ export function ClientIntakeScreen({
           : "Client document"
     setBusy(true)
     setError(null)
+    setFileFailures([])
     setSweepNotice(null)
+    setSweepResult(null)
     setResults(
       batch.map(({ file, role }) => ({
         name: file.name,
@@ -208,64 +234,31 @@ export function ClientIntakeScreen({
         status: "Queued",
       }))
     )
-    const setStatus = (index: number, status: string) =>
-      setResults((rows) =>
-        rows.map((row, position) =>
-          position === index ? { ...row, status } : row
-        )
-      )
-    // The backend only accepts an explicit invoice link when the estimate
-    // names a single-invoice document, so the hint is kept for the one
-    // invoice + one estimate hand-over that used to be the only option. With
-    // a folder of each, which estimate belongs to which invoice is the
-    // sweep's job -- it sees the whole set, this loop does not.
-    const explicitPairing =
-      invoiceFiles.length === 1 && estimateFiles.length === 1
-    let pairTarget: string | undefined
-    // The reviewer is sent to the first invoice of the hand-over: with a
-    // folder, any other choice is alphabetical accident.
-    let firstInvoiceDocumentId: string | undefined
-    const failures: string[] = []
     try {
-      for (const [index, { file, role }] of batch.entries()) {
-        setStatus(index, `Uploading (${index + 1} of ${batch.length})`)
-        try {
-          const doc = await uploadCurrentDocument(
-            file,
-            caseReference,
-            group,
-            role === "estimate" && explicitPairing ? pairTarget : undefined
-          )
-          setStatus(index, "Extracting…")
-          const result = await processUploadedDocument(doc.id)
-          if (result.document.kind === "repair_invoice") {
-            pairTarget ??= doc.id
-            firstInvoiceDocumentId ??= doc.id
-          }
-          setStatus(index, describeProcessed(result.document))
-        } catch (e) {
-          const message = getApiErrorMessage(e)
-          failures.push(`${file.name}: ${message}`)
-          setStatus(index, message)
-        }
+      const outcome = await runIntakeBatch(batch, caseReference, group, {
+        upload: uploadCurrentDocument,
+        process: processUploadedDocument,
+        sweep: runCaseLinkSweep,
+        errorMessage: getApiErrorMessage,
+        describeProcessed,
+        onStatus: (index, status) =>
+          setResults((rows) =>
+            rows.map((row, position) =>
+              position === index ? { ...row, status } : row
+            )
+          ),
+      })
+      // Written before anything that can throw, and into its own state, so
+      // that a failing refresh below cannot replace the one message naming
+      // which files did not make it in.
+      setFileFailures(outcome.failures)
+      setSweepNotice(outcome.sweepError)
+      try {
+        await refresh()
+        await onProcessed(outcome.firstInvoiceDocumentId)
+      } catch (e) {
+        setError(getApiErrorMessage(e))
       }
-      if (failures.length < batch.length) {
-        try {
-          await runCaseLinkSweep(caseReference)
-        } catch (e) {
-          // The documents are stored either way; only the pairing pass is
-          // missing, and it can be re-run. Say so instead of presenting the
-          // whole hand-over as failed.
-          setSweepNotice(getApiErrorMessage(e))
-        }
-      }
-      if (failures.length) {
-        setError(
-          `${failures.length} of ${batch.length} files could not be processed. ${failures.join(" · ")}`
-        )
-      }
-      await refresh()
-      await onProcessed(firstInvoiceDocumentId)
     } catch (e) {
       setError(getApiErrorMessage(e))
       await refresh().catch(() => undefined)
@@ -285,7 +278,7 @@ export function ClientIntakeScreen({
         title={setup ? "Benchmark data setup" : "Document Intelligence"}
         description={
           setup
-            ? "Build your reference dataset from client-provided documents. Keep one fresh invoice aside for the live demonstration."
+            ? "Build your reference dataset from client-provided documents. Keep one fresh invoice aside to run through Document Intelligence."
             : "Upload a fresh repair invoice, inspect its source pages, then review the extraction before benchmarking."
         }
         action={
@@ -297,6 +290,23 @@ export function ClientIntakeScreen({
           </Button>
         }
       />
+      {fileFailures.length > 0 && (
+        <Alert variant="destructive">
+          <AlertTitle>
+            {fileFailures.length}{" "}
+            {fileFailures.length === 1 ? "file" : "files"} could not be
+            processed
+          </AlertTitle>
+          <AlertDescription>
+            Everything else in the hand-over was accepted. These were not:
+            <ul className="mt-2 list-disc space-y-1 pl-5">
+              {fileFailures.map((failure, index) => (
+                <li key={index}>{failure}</li>
+              ))}
+            </ul>
+          </AlertDescription>
+        </Alert>
+      )}
       {error && (
         <Alert variant="destructive">
           <AlertTitle>Intake needs attention</AlertTitle>
@@ -307,10 +317,17 @@ export function ClientIntakeScreen({
         <Alert>
           <AlertTitle>Documents stored, pairing sweep did not run</AlertTitle>
           <AlertDescription>
-            Every file was ingested, but the case-wide link and gap-fill sweep
-            failed: {sweepNotice} Invoices and estimates may stay unpaired
-            until it is re-run.
+            Every file that was accepted is stored and extracted, but the
+            case-wide link and gap-fill sweep failed: {sweepNotice} Nothing was
+            lost and nothing needs re-uploading — invoices and estimates may
+            simply stay unpaired until the sweep is re-run below.
           </AlertDescription>
+        </Alert>
+      )}
+      {sweepResult && (
+        <Alert>
+          <AlertTitle>Pairing sweep complete</AlertTitle>
+          <AlertDescription>{sweepResult}</AlertDescription>
         </Alert>
       )}
       {finalised && (
@@ -348,7 +365,9 @@ export function ClientIntakeScreen({
                   onChange={(e) =>
                     setFiles((current) => ({
                       ...current,
-                      [group]: Array.from(e.target.files ?? []),
+                      [group]: Array.from(e.target.files ?? []).filter(
+                        isSupportedDocument
+                      ),
                     }))
                   }
                 />
@@ -385,7 +404,11 @@ export function ClientIntakeScreen({
                     multiple
                     disabled={busy || finalised}
                     onChange={(e) =>
-                      setEstimates(Array.from(e.target.files ?? []))
+                      setEstimates(
+                        Array.from(e.target.files ?? []).filter(
+                          isSupportedDocument
+                        )
+                      )
                     }
                   />
                   <Input
@@ -411,18 +434,23 @@ export function ClientIntakeScreen({
                   </span>
                 </label>
               )}
+              {/* Invoices are required, and the gate says so. It used to pass
+                  on estimates alone, which uploaded a folder of engineer
+                  estimates into a case with nothing to pair them against. */}
               <Button
-                disabled={
-                  busy ||
-                  finalised ||
-                  !(files[group]?.length || (group === "live" && estimates.length))
-                }
+                disabled={busy || finalised || !files[group]?.length}
                 onClick={() => void upload(group)}
               >
                 {busy
                   ? "Processing documents…"
                   : `Upload ${group === "live" ? "invoices and estimates" : "documents"}`}
               </Button>
+              {group === "live" && !files[group]?.length && estimates.length ? (
+                <p className="text-sm text-amber-700 dark:text-amber-300">
+                  Add the repair invoices these estimates belong to. An
+                  estimate uploaded on its own has nothing to pair against.
+                </p>
+              ) : null}
               <p className="text-sm text-muted-foreground">
                 {
                   documents.filter(
@@ -437,6 +465,28 @@ export function ClientIntakeScreen({
           </Card>
         ))}
       </div>
+      {/* The sweep is the one step of the hand-over that can fail on its own
+          without losing a file, so it is the one step that needs its own
+          control. Standing, not only offered after a failure: a sweep that
+          ran before the last estimate finished extracting, or against a case
+          whose invoices arrived in an earlier batch, is re-run from here
+          rather than by uploading everything again. */}
+      {!setup && (
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            variant="outline"
+            disabled={busy || sweeping || finalised}
+            onClick={() => void rerunSweep()}
+          >
+            {sweeping ? "Re-running pairing sweep…" : "Re-run pairing sweep"}
+          </Button>
+          <p className="text-sm text-muted-foreground">
+            Re-pairs every invoice and engineer estimate already in this claim.
+            Uploads nothing, changes no handler decision, and is safe to run
+            again at any time.
+          </p>
+        </div>
+      )}
       {results.length > 0 && (
         <Card>
           <CardHeader>
