@@ -47,7 +47,12 @@ import {
   ApiUnavailablePanel,
   ConnectingPanel,
   NoClaimsPanel,
+  WorkspaceErrorPanel,
 } from "@/features/claim-guard/workspace-state"
+import {
+  manualReviewUnavailableNotice,
+  noWorkspaceNotice,
+} from "@/features/claim-guard/workspace-notices"
 import { documentIntelligenceViews } from "@/features/claim-guard/types"
 import type {
   ClaimWorkspace,
@@ -309,12 +314,20 @@ export function App() {
   }
 
   function navigate(screen: ScreenId) {
+    if (!workspace) {
+      // The screen arms below are chosen on the bootstrap status, not on
+      // activeScreen, so changing activeScreen here would move nothing on
+      // screen now and would silently land the user somewhere they never
+      // asked for once a workspace arrives. Say why instead of doing nothing.
+      const notice = noWorkspaceNotice()
+      toast.info(notice.title, { description: notice.description })
+      return
+    }
     if (screen === "price-comparison") {
       setChallengedInvoiceDetailOpen(false)
       setSelectedChallengeLineId(null)
     }
     setActiveScreen(screen)
-    if (!workspace) return
     const preferredInvoiceId = preferredInvoiceIdForScreen(
       [
         "document-pages",
@@ -1091,6 +1104,12 @@ export function App() {
           />
         ) : bootstrap.status === "no-claims" ? (
           <NoClaimsPanel onRetry={() => void connectToApi()} />
+        ) : bootstrap.status === "workspace-error" ? (
+          <WorkspaceErrorPanel
+            caseReference={bootstrap.caseReference}
+            message={bootstrap.message}
+            onRetry={() => void connectToApi()}
+          />
         ) : bootstrap.status === "awaiting-documents" ? (
           <div className="flex flex-col gap-6" data-testid="state-awaiting">
             <Alert>
@@ -1107,7 +1126,14 @@ export function App() {
             <ClientIntakeScreen
               caseReference={bootstrap.caseReference}
               setup={false}
-              onOpenManualReview={openManualReview}
+              // Manual review is rendered from the workspace, and there is
+              // none in this state, so `openManualReview` would be a silent
+              // no-op on the only button the intake screen offers out of a
+              // failed extraction. Report the real reason instead.
+              onOpenManualReview={() => {
+                const notice = manualReviewUnavailableNotice()
+                toast.info(notice.title, { description: notice.description })
+              }}
               finalised={false}
               onProcessed={async () => {
                 await connectToApi()

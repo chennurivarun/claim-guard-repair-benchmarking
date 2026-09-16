@@ -404,5 +404,12 @@ export type WorkspaceBootstrap =
   | { status: "no-claims" }
   /** A claim exists, but nothing has been extracted from it yet. */
   | { status: "awaiting-documents"; caseReference: string; message: string }
+  /**
+   * The API answered and the claim exists, but its workspace could not be
+   * built — the backend said why. Distinct from `unavailable` (nothing
+   * answered) and from `awaiting-documents` (which asserts the claim holds no
+   * extracted document, and must only be used when that is actually true).
+   */
+  | { status: "workspace-error"; caseReference: string; message: string }
   /** A claim with an extracted invoice is ready to review. */
   | { status: "ready"; caseReference: string; workspace: ClaimWorkspace }

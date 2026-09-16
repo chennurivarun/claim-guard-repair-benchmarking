@@ -789,10 +789,109 @@ export interface ClaimListEntry {
   invoice_count: number
 }
 
-/** Every claim in the database, most recently created first (the backend
- * orders by `created_at` descending). */
-export function fetchClaims(): Promise<ClaimListEntry[]> {
-  return requestJson("/api/v1/claims")
+/**
+ * Every claim in the database, most recently created first (the backend
+ * orders by `created_at` descending).
+ *
+ * The endpoint answers with a JSON array. A 200 carrying anything else is a
+ * broken response, not an empty database, so it is raised as an API error
+ * rather than being allowed to reach the screen as "the database holds no
+ * claims" — a statement about the client's data that would simply be untrue.
+ */
+export async function fetchClaims(): Promise<ClaimListEntry[]> {
+  const payload = await requestJson<unknown>("/api/v1/claims")
+  if (!Array.isArray(payload)) {
+    throw new ApiRequestError(
+      "The claims list came back in a shape this app cannot read.",
+      200,
+      "MALFORMED_CLAIM_LIST"
+    )
+  }
+  return payload as ClaimListEntry[]
+}
+
+/**
+ * Which claim to open out of everything the database holds.
+ *
+ * `GET /claims` is ordered newest first, so `claims[0]` is the most recently
+ * created case. Taking it unconditionally makes earlier work unreachable:
+ * a reset — or any freshly created case — puts an empty stub in front of a
+ * claim that may hold a batch of reviewed invoices, and there is no claim
+ * picker to get back to it. Preferring the newest claim that actually holds
+ * an invoice keeps that work reachable, and still lands on the fresh empty
+ * case when that is the only thing there is.
+ */
+export function claimToOpen(claims: ClaimListEntry[]): ClaimListEntry | null {
+  return (
+    claims.find((claim) => (claim.invoice_count ?? 0) > 0) ?? claims[0] ?? null
+  )
+}
+
+/**
+ * The workspace endpoint's "this claim is not ready" answer.
+ *
+ * `backend/app/api/router.py` raises `409` with an object detail carrying
+ * `code: "WORKSPACE_NOT_READY"`. `apiError` only reads `code` off an object
+ * detail, so a plain-string 409 — from a proxy, or any handler that passes
+ * `detail` as a string — arrives with `code === null`; that still has to
+ * count as the same condition rather than being reported as an outage.
+ */
+function isWorkspaceNotReady(error: unknown): error is ApiRequestError {
+  return (
+    error instanceof ApiRequestError &&
+    error.status === 409 &&
+    (error.code === "WORKSPACE_NOT_READY" || error.code === null)
+  )
+}
+
+/** The claim named in the URL no longer resolves (`404 Claim not found`). */
+function isClaimGone(error: unknown): error is ApiRequestError {
+  return error instanceof ApiRequestError && error.status === 404
+}
+
+/** Returned by `openClaimWorkspace` when the claim vanished under it. */
+const CLAIM_GONE = Symbol("claim-gone")
+
+async function openClaimWorkspace(
+  entry: ClaimListEntry,
+  p90ThresholdPct?: number
+): Promise<WorkspaceBootstrap | typeof CLAIM_GONE> {
+  const caseReference = entry.case_reference
+  try {
+    return {
+      status: "ready",
+      caseReference,
+      workspace: await fetchClaimWorkspace(
+        caseReference,
+        undefined,
+        p90ThresholdPct
+      ),
+    }
+  } catch (error) {
+    if (isClaimGone(error)) return CLAIM_GONE
+    if (isWorkspaceNotReady(error)) {
+      // The backend raises WORKSPACE_NOT_READY for *every* `ValueError`
+      // escaping `build_claim_workspace`, not only "the claim has no
+      // extracted invoice" — so the code alone does not license a screen
+      // that states nothing has been extracted. The list row says whether
+      // this claim holds any invoice at all; only when it holds none is that
+      // statement true. Anything else is reported with the backend's own
+      // words instead of a guess about the claim's contents.
+      if (entry.invoice_count === 0) {
+        return {
+          status: "awaiting-documents",
+          caseReference,
+          message: error.message,
+        }
+      }
+      return {
+        status: "workspace-error",
+        caseReference,
+        message: error.message,
+      }
+    }
+    return { status: "unavailable", message: getApiErrorMessage(error) }
+  }
 }
 
 /**
@@ -813,31 +912,35 @@ export async function bootstrapClaimWorkspace(
     return { status: "unavailable", message: getApiErrorMessage(error) }
   }
 
-  const mostRecent = claims[0]
-  if (!mostRecent) return { status: "no-claims" }
+  let entry = claimToOpen(claims)
+  if (!entry) return { status: "no-claims" }
 
-  const caseReference = mostRecent.case_reference
+  let result = await openClaimWorkspace(entry, p90ThresholdPct)
+  if (result !== CLAIM_GONE) return result
+
+  // The claim disappeared between the list call and the workspace call. The
+  // reset wipes every case and creates a fresh one, so losing the race is an
+  // ordinary event — the API is healthy and saying it is down would be a lie.
+  // Re-read the list once and open whatever is there now.
   try {
-    return {
-      status: "ready",
-      caseReference,
-      workspace: await fetchClaimWorkspace(
-        caseReference,
-        undefined,
-        p90ThresholdPct
-      ),
-    }
+    claims = await fetchClaims()
   } catch (error) {
-    // 409 WORKSPACE_NOT_READY means the claim exists but has no extracted
-    // invoice yet — the expected state straight after a reset.
-    if (error instanceof ApiRequestError && error.status === 409) {
-      return {
-        status: "awaiting-documents",
-        caseReference,
-        message: error.message,
-      }
-    }
     return { status: "unavailable", message: getApiErrorMessage(error) }
+  }
+
+  entry = claimToOpen(claims)
+  if (!entry) return { status: "no-claims" }
+
+  result = await openClaimWorkspace(entry, p90ThresholdPct)
+  if (result !== CLAIM_GONE) return result
+
+  // Two claims in a row vanished as we reached for them. Report exactly that
+  // rather than retrying forever or blaming the connection.
+  return {
+    status: "workspace-error",
+    caseReference: entry.case_reference,
+    message:
+      "The claim list keeps changing while it is being opened, so no claim could be read.",
   }
 }
 

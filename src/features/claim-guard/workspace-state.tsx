@@ -50,6 +50,37 @@ export function ApiUnavailablePanel({
   )
 }
 
+export function WorkspaceErrorPanel({
+  caseReference,
+  message,
+  onRetry,
+}: {
+  caseReference: string
+  message: string
+  onRetry: () => void
+}) {
+  return (
+    <Alert variant="destructive" data-testid="state-workspace-error">
+      <AlertTitle>Claim {caseReference} could not be opened</AlertTitle>
+      <AlertDescription className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <span>
+          {message} Nothing is shown for this claim, because its review data
+          could not be built.
+        </span>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="shrink-0"
+          onClick={onRetry}
+        >
+          Try again
+        </Button>
+      </AlertDescription>
+    </Alert>
+  )
+}
+
 export function NoClaimsPanel({ onRetry }: { onRetry: () => void }) {
   return (
     <Alert data-testid="state-no-claims">

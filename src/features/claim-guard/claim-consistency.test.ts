@@ -124,14 +124,118 @@ describe("claim/invoice consistency checks", () => {
     })
   })
 
-  it("skips the chronology check when either date is missing or unparseable", () => {
+  it("skips the chronology check when either date was not printed at all", () => {
     expect(
       claimInvoiceConsistencyChecks(workspace({ accidentDate: "19 Nov 2025" }))
     ).toEqual([])
     expect(
-      claimInvoiceConsistencyChecks(
-        workspace({ accidentDate: "not a date" }, { date: "26 Nov 2025" })
-      )
+      claimInvoiceConsistencyChecks(workspace({}, { date: "26 Nov 2025" }))
     ).toEqual([])
+  })
+})
+
+// Registrations are compared after uppercasing. `toLocaleUpperCase` would map
+// "i" to "İ" under a Turkish or Azeri host locale; the non-ASCII filter then
+// strips it while a printed "I" survives, manufacturing a mismatch row for
+// two registrations that are the same.
+describe("registration comparison under a Turkish host locale", () => {
+  it("matches a dotted-i registration regardless of the browser's locale", () => {
+    const checks = claimInvoiceConsistencyChecks(
+      workspace({ insuredVrm: "ai12 bcd" }, { vrm: "AI12BCD" })
+    )
+
+    expect(checks).toHaveLength(1)
+    expect(checks[0]).toMatchObject({
+      check: "Invoice vehicle",
+      status: "PASS",
+    })
+  })
+
+  it("does not depend on toLocaleUpperCase for the Turkish dotted capital", () => {
+    // Proves the hazard is real: this is what the old implementation did.
+    expect("ai12bcd".toLocaleUpperCase("tr")).not.toBe("AI12BCD")
+    // …and that the check no longer follows it.
+    expect(
+      claimInvoiceConsistencyChecks(
+        workspace({ insuredVrm: "ai12bcd" }, { vrm: "ai12bcd" })
+      )[0]
+    ).toMatchObject({ status: "PASS" })
+  })
+})
+
+// The backend prints dates with Python's `%b`, which follows LC_TIME. Under a
+// non-English locale it emits e.g. "16 sept. 2026". `new Date()` used to turn
+// that into an Invalid Date, and the chronology row simply vanished — the
+// screen then looked identical to one where the chronology had been checked
+// and passed.
+describe("a date the app cannot read", () => {
+  it("reports that the chronology could not be checked instead of dropping it", () => {
+    const checks = claimInvoiceConsistencyChecks(
+      workspace({ accidentDate: "19 Nov 2025" }, { date: "16 sept. 2026" })
+    )
+
+    expect(checks).toHaveLength(1)
+    expect(checks[0].check).toBe("Invoice chronology")
+    expect(checks[0].status).toBe("REVIEW")
+    expect(checks[0].finding).toContain("Could not be checked")
+    expect(checks[0].finding).toContain("16 sept. 2026")
+    expect(checks[0].finding).not.toContain("on or after")
+  })
+
+  it("names both dates when neither can be read", () => {
+    const checks = claimInvoiceConsistencyChecks(
+      workspace({ accidentDate: "not a date" }, { date: "also not a date" })
+    )
+
+    expect(checks[0].finding).toContain("also not a date")
+    expect(checks[0].finding).toContain("not a date")
+    expect(checks[0].status).toBe("REVIEW")
+  })
+
+  it("rejects a day that does not exist in that month", () => {
+    const checks = claimInvoiceConsistencyChecks(
+      workspace({ accidentDate: "19 Nov 2025" }, { date: "31 Feb 2026" })
+    )
+
+    expect(checks[0].finding).toContain("Could not be checked")
+  })
+})
+
+describe("date parsing does not rely on the engine's Date parser", () => {
+  it("orders D MMM YYYY dates correctly across a month and year boundary", () => {
+    expect(
+      claimInvoiceConsistencyChecks(
+        workspace({ accidentDate: "31 Dec 2025" }, { date: "1 Jan 2026" })
+      )[0]
+    ).toMatchObject({ status: "PASS" })
+    expect(
+      claimInvoiceConsistencyChecks(
+        workspace({ accidentDate: "1 Jan 2026" }, { date: "31 Dec 2025" })
+      )[0]
+    ).toMatchObject({ status: "REVIEW" })
+  })
+
+  it("treats the same day on both sides as on or after", () => {
+    expect(
+      claimInvoiceConsistencyChecks(
+        workspace({ accidentDate: "9 Mar 2026" }, { date: "9 Mar 2026" })
+      )[0]
+    ).toMatchObject({ status: "PASS" })
+  })
+
+  it("accepts a lowercase month abbreviation but not a localised month name", () => {
+    expect(
+      claimInvoiceConsistencyChecks(
+        workspace({ accidentDate: "1 jan 2026" }, { date: "2 jan 2026" })
+      )[0]
+    ).toMatchObject({ status: "PASS" })
+    // Finnish "marras" is November; its first three letters are English March.
+    // Guessing would silently shift the date by eight months, so it is
+    // reported as unreadable instead.
+    expect(
+      claimInvoiceConsistencyChecks(
+        workspace({ accidentDate: "1 Jan 2026" }, { date: "16 marras 2026" })
+      )[0].finding
+    ).toContain("Could not be checked")
   })
 })

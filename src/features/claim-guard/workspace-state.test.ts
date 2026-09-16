@@ -6,7 +6,12 @@ import {
   ApiUnavailablePanel,
   ConnectingPanel,
   NoClaimsPanel,
+  WorkspaceErrorPanel,
 } from "./workspace-state"
+import {
+  manualReviewUnavailableNotice,
+  noWorkspaceNotice,
+} from "./workspace-notices"
 
 // Values from the retired demo workspace. None of them may appear on a screen
 // that has no data to show.
@@ -51,6 +56,52 @@ describe("no-claims state", () => {
     expect(html).toContain("Upload a repair invoice")
     expect(html).toContain("Check again")
     expectNoFabricatedData(html)
+  })
+})
+
+describe("workspace-error state", () => {
+  it("names the claim and repeats the backend's reason, without claiming it is empty", () => {
+    const html = renderToStaticMarkup(
+      createElement(WorkspaceErrorPanel, {
+        caseReference: "CG-CLIENT-001",
+        message: "The selected invoice does not belong to this claim.",
+        onRetry: () => {},
+      })
+    )
+
+    expect(html).toContain("CG-CLIENT-001")
+    expect(html).toContain(
+      "The selected invoice does not belong to this claim."
+    )
+    // The two statements this panel exists to avoid making.
+    expect(html).not.toContain("has no documents")
+    expect(html).not.toContain("nothing has been extracted")
+    expect(html).toContain("Try again")
+    expectNoFabricatedData(html)
+  })
+})
+
+// A document flagged for manual review on a claim with nothing extracted used
+// to wire the intake screen's only escape hatch to a handler that changed no
+// screen, showed no message and raised no error.
+describe("notices shown when there is no workspace to open", () => {
+  it("explains that manual review cannot open, and what to do instead", () => {
+    const notice = manualReviewUnavailableNotice()
+
+    expect(notice.title).toBeTruthy()
+    expect(notice.description).toContain("Reprocess the document")
+    // It must not imply the document is now under review.
+    expect(notice.description).not.toMatch(/opening|opened/i)
+  })
+
+  it("explains that no review screen can be opened while nothing is loaded", () => {
+    const notice = noWorkspaceNotice()
+
+    expect(notice.title).toBeTruthy()
+    expect(notice.description).toContain("extracted invoice")
+    expect(notice.description).not.toBe(
+      manualReviewUnavailableNotice().description
+    )
   })
 })
 
