@@ -1,13 +1,11 @@
-import { demoWorkspace } from "@/features/claim-guard/demo-data"
 import type {
-  ApiWorkspaceResult,
   ClaimWorkspace,
   LiabilityStatus,
+  WorkspaceBootstrap,
 } from "@/features/claim-guard/types"
 
 const configuredApiBase = import.meta.env.VITE_API_URL as string | undefined
 const API_BASE = (configuredApiBase?.trim() || "").replace(/\/+$/, "")
-const DEFAULT_CASE_REFERENCE = "CG-2026-0048"
 
 export type ReportFormat = "json" | "xlsx" | "sqlite" | "docx" | "pdf"
 
@@ -520,17 +518,37 @@ function apiPath(path: string) {
   return `${API_BASE}${path}`
 }
 
+/** An API error that keeps the HTTP status and the backend's error code, so a
+ * caller can tell an expected state apart from an unreachable service. The
+ * bootstrap needs this to distinguish "this claim has no extracted invoice
+ * yet" (409 WORKSPACE_NOT_READY) from "the API is down". */
+export class ApiRequestError extends Error {
+  readonly status: number
+  readonly code: string | null
+
+  constructor(message: string, status: number, code: string | null) {
+    super(message)
+    this.name = "ApiRequestError"
+    this.status = status
+    this.code = code
+  }
+}
+
 async function apiError(response: Response) {
   let message = `API returned ${response.status}`
+  let code: string | null = null
   try {
     const payload = (await response.json()) as ApiErrorPayload
     const detail = payload.detail
     if (typeof detail === "string") message = detail
-    else if (detail?.message) message = detail.message
+    else if (detail) {
+      if (detail.message) message = detail.message
+      code = detail.code ?? null
+    }
   } catch {
     // Preserve the status-based fallback when an upstream error is not JSON.
   }
-  return new Error(message)
+  return new ApiRequestError(message, response.status, code)
 }
 
 async function requestJson<T>(
@@ -551,7 +569,7 @@ export function getApiErrorMessage(error: unknown) {
 }
 
 export function fetchClaimWorkspace(
-  caseReference = DEFAULT_CASE_REFERENCE,
+  caseReference: string,
   invoiceId?: string,
   p90ThresholdPct?: number
 ): Promise<ClaimWorkspace> {
@@ -579,7 +597,7 @@ export function fetchLinePriceEvidence(
 }
 
 export function fetchClaimInvoices(
-  caseReference = DEFAULT_CASE_REFERENCE,
+  caseReference: string,
   p90ThresholdPct = 10
 ): Promise<ClaimInvoiceSummary[]> {
   return requestJson(
@@ -588,7 +606,7 @@ export function fetchClaimInvoices(
 }
 
 export function fetchEngineerAssessments(
-  caseReference = DEFAULT_CASE_REFERENCE
+  caseReference: string
 ): Promise<EngineerAssessmentPayload[]> {
   return requestJson(
     `/api/v1/claims/${encodeURIComponent(caseReference)}/engineer-assessments`
@@ -596,7 +614,7 @@ export function fetchEngineerAssessments(
 }
 
 export function fetchClaimExtracts(
-  caseReference = DEFAULT_CASE_REFERENCE
+  caseReference: string
 ): Promise<ClaimExtractsPayload> {
   return requestJson(`/api/v1/claims/${encodeURIComponent(caseReference)}/extracts`)
 }
@@ -761,24 +779,65 @@ export function fetchBenchmarkObservations(
   )
 }
 
-export async function loadClaimWorkspace(
+/** One row of `GET /api/v1/claims`. The endpoint returns the full case payload;
+ * only the fields the bootstrap needs are typed here. */
+export interface ClaimListEntry {
+  id: string
+  case_reference: string
+  status: string
+  created_at: string
+  invoice_count: number
+}
+
+/** Every claim in the database, most recently created first (the backend
+ * orders by `created_at` descending). */
+export function fetchClaims(): Promise<ClaimListEntry[]> {
+  return requestJson("/api/v1/claims")
+}
+
+/**
+ * Discover which claim to open instead of assuming a fixed case reference.
+ *
+ * The client asked for a clean slate: after a reset the database may hold no
+ * claims at all, or a brand new claim with nothing uploaded against it yet.
+ * Both are ordinary states, not failures, and neither may be papered over
+ * with invented data — so each gets its own result the UI can render honestly.
+ */
+export async function bootstrapClaimWorkspace(
   p90ThresholdPct?: number
-): Promise<ApiWorkspaceResult> {
+): Promise<WorkspaceBootstrap> {
+  let claims: ClaimListEntry[]
+  try {
+    claims = await fetchClaims()
+  } catch (error) {
+    return { status: "unavailable", message: getApiErrorMessage(error) }
+  }
+
+  const mostRecent = claims[0]
+  if (!mostRecent) return { status: "no-claims" }
+
+  const caseReference = mostRecent.case_reference
   try {
     return {
+      status: "ready",
+      caseReference,
       workspace: await fetchClaimWorkspace(
-        undefined,
+        caseReference,
         undefined,
         p90ThresholdPct
       ),
-      mode: "api",
     }
   } catch (error) {
-    return {
-      workspace: demoWorkspace,
-      mode: "demo",
-      errorMessage: getApiErrorMessage(error),
+    // 409 WORKSPACE_NOT_READY means the claim exists but has no extracted
+    // invoice yet — the expected state straight after a reset.
+    if (error instanceof ApiRequestError && error.status === 409) {
+      return {
+        status: "awaiting-documents",
+        caseReference,
+        message: error.message,
+      }
     }
+    return { status: "unavailable", message: getApiErrorMessage(error) }
   }
 }
 
@@ -1023,7 +1082,7 @@ export function finaliseClaim(caseReference: string, finalisedBy: string) {
 
 export async function requestReport(
   format: ReportFormat,
-  caseReference = DEFAULT_CASE_REFERENCE
+  caseReference: string
 ) {
   const response = await fetchWithTimeout(
     apiPath(
@@ -1059,11 +1118,4 @@ export async function downloadInHouseRepairCsv() {
   )
   if (!response.ok) throw await apiError(response)
   downloadBlob(await response.blob(), "claimguard-in-house-repair-data.csv")
-}
-
-export function downloadDemoJson() {
-  const blob = new Blob([JSON.stringify(demoWorkspace, null, 2)], {
-    type: "application/json",
-  })
-  downloadBlob(blob, "claimguard-CG-2026-0048-audit.json")
 }

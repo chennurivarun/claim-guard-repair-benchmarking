@@ -5,18 +5,11 @@ import {
   CheckIcon,
   CheckCircle2Icon,
   EyeIcon,
-  FileCheck2Icon,
-  FileSpreadsheetIcon,
-  FileTextIcon,
-  LockKeyholeIcon,
   PencilLineIcon,
-  RefreshCwIcon,
   ShieldAlertIcon,
   Undo2Icon,
-  UploadCloudIcon,
   XIcon,
 } from "lucide-react"
-import { toast } from "sonner"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import {
@@ -66,16 +59,9 @@ import {
 } from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
 
-import {
-  consistencyChecks,
-  evidenceRows,
-  pageClassifications,
-} from "./demo-data"
+import { claimInvoiceConsistencyChecks } from "./claim-consistency"
 import { formatMoney } from "./format"
-import {
-  DocumentPagesWorkflow,
-  UploadProcessingWorkflow,
-} from "./screens-document-workflow"
+import { DocumentPagesWorkflow } from "./screens-document-workflow"
 import { DataCard, ScreenHeading, StatusBadge } from "./shared"
 import {
   InvoiceSourceViewer,
@@ -111,6 +97,11 @@ export function ClaimLiabilityScreen({
   const [splitPercentage, setSplitPercentage] = useState(
     workspace.liability.splitLiabilityPercentage?.toString() ?? ""
   )
+
+  const consistencyChecks = claimInvoiceConsistencyChecks(workspace)
+  const invoiceLabel = workspace.invoice.number.trim()
+    ? `invoice ${workspace.invoice.number.trim()}`
+    : ""
 
   const canIssue =
     confirmed && (status === "ADMITTED" || status === "SPLIT LIABILITY")
@@ -397,11 +388,15 @@ export function ClaimLiabilityScreen({
         </Card>
       </div>
 
-      <div className="grid min-w-0 gap-6 2xl:grid-cols-2">
-        <DataCard
-          title="Consistency checks"
-          description="Claim facts checked against invoice 91283."
-        >
+      <DataCard
+        title="Consistency checks"
+        description={
+          invoiceLabel
+            ? `Claim facts compared against ${invoiceLabel}.`
+            : "Claim facts compared against the loaded invoice."
+        }
+      >
+        {consistencyChecks.length ? (
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
@@ -412,15 +407,15 @@ export function ClaimLiabilityScreen({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {consistencyChecks.map(([check, finding, result]) => (
-                  <TableRow key={check}>
-                    <TableCell className="font-medium">{check}</TableCell>
+                {consistencyChecks.map((row) => (
+                  <TableRow key={row.check}>
+                    <TableCell className="font-medium">{row.check}</TableCell>
                     <TableCell className="text-muted-foreground">
-                      {finding}
+                      {row.finding}
                     </TableCell>
                     <TableCell>
                       <div className="flex justify-end">
-                        <StatusBadge status={result} />
+                        <StatusBadge status={row.status} />
                       </div>
                     </TableCell>
                   </TableRow>
@@ -428,291 +423,19 @@ export function ClaimLiabilityScreen({
               </TableBody>
             </Table>
           </div>
-        </DataCard>
-
-        <DataCard
-          title="Evidence register"
-          description="Evidence supports review; it does not automate fault."
-        >
-          <div className="overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Evidence</TableHead>
-                  <TableHead>Date</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Finding</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {evidenceRows.map(([evidence, date, review, finding]) => (
-                  <TableRow key={evidence}>
-                    <TableCell className="font-medium">{evidence}</TableCell>
-                    <TableCell>{date}</TableCell>
-                    <TableCell>
-                      <StatusBadge status={review} />
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {finding}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        </DataCard>
-      </div>
-    </>
-  )
-}
-
-function UploadCard({
-  title,
-  description,
-  status,
-  detail,
-  icon: Icon,
-  action,
-}: {
-  title: string
-  description: string
-  status: string
-  detail: string
-  icon: typeof FileTextIcon
-  action: string
-}) {
-  return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex min-w-0 items-start gap-3">
-            <span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-muted">
-              <Icon className="size-5" aria-hidden />
-            </span>
-            <div className="min-w-0">
-              <CardTitle>{title}</CardTitle>
-              <CardDescription>{description}</CardDescription>
-            </div>
-          </div>
-          <StatusBadge status={status} />
-        </div>
-      </CardHeader>
-      <CardContent>
-        <p className="truncate text-sm font-medium">{detail}</p>
-      </CardContent>
-      <CardFooter>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() =>
-            toast.success(`${title} ready`, { description: detail })
-          }
-        >
-          <RefreshCwIcon data-icon="inline-start" />
-          {action}
-        </Button>
-      </CardFooter>
-    </Card>
-  )
-}
-
-export function LegacyUploadProcessingScreen({
-  onContinue,
-}: {
-  onContinue: () => void
-}) {
-  return (
-    <>
-      <ScreenHeading
-        title="Upload & Processing"
-        description="The current repair invoice is required. Active ontology and previous-invoice banks can be reused."
-        action={
-          <Button onClick={onContinue}>
-            Review pages
-            <ArrowRightIcon data-icon="inline-end" />
-          </Button>
-        }
-      />
-
-      <Alert>
-        <LockKeyholeIcon />
-        <AlertTitle>Liability gate passed</AlertTitle>
-        <AlertDescription>
-          Handler-confirmed ADMITTED liability unlocked quantum processing for
-          this claim.
-        </AlertDescription>
-      </Alert>
-
-      <div className="grid gap-6 lg:grid-cols-3">
-        <UploadCard
-          title="Current repair invoice"
-          description="Required for this claim"
-          status="UPLOADED"
-          detail="1643919_doc_16439191.pdf.pdf · 2 pages"
-          icon={FileTextIcon}
-          action="Replace PDF"
-        />
-        <UploadCard
-          title="Ontology / reference bank"
-          description="Optional pilot or admin import"
-          status="ACTIVE V1.0"
-          detail="72 ontology items · active bank reused"
-          icon={FileSpreadsheetIcon}
-          action="Use active bank"
-        />
-        <UploadCard
-          title="Previous invoice bank"
-          description="Optional supporting evidence"
-          status="READY"
-          detail="191 previous repair & service lines"
-          icon={UploadCloudIcon}
-          action="Use active bank"
-        />
-      </div>
-
-      <DataCard
-        title="Processing run"
-        description="Native extraction is attempted before OCR or vision."
-      >
-        <div className="overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Stage</TableHead>
-                <TableHead>Method</TableHead>
-                <TableHead>Result</TableHead>
-                <TableHead className="text-right">Status</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {[
-                [
-                  "File intake",
-                  "SHA-256 + MIME validation",
-                  "No duplicate file detected",
-                  "PASS",
-                ],
-                [
-                  "Page scan",
-                  "Native text and coordinates",
-                  "2 of 2 pages classified",
-                  "PASS",
-                ],
-                [
-                  "Table extraction",
-                  "Native PDF table",
-                  "18 invoice lines extracted",
-                  "PASS",
-                ],
-                [
-                  "Calculation validation",
-                  "Deterministic Python rules",
-                  "6 of 6 checks passed",
-                  "PASS",
-                ],
-                [
-                  "Ontology mapping",
-                  "Candidate retrieval + structured mapping",
-                  "14 matched · 4 provisional",
-                  "REVIEW",
-                ],
-              ].map(([stage, method, result, status]) => (
-                <TableRow key={stage}>
-                  <TableCell className="font-medium">{stage}</TableCell>
-                  <TableCell>{method}</TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {result}
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex justify-end">
-                      <StatusBadge status={status} />
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            Nothing to compare yet. A check appears here only when the same
+            fact — the vehicle registration, the accident and invoice dates —
+            was read from both the claim record and the invoice. Fields absent
+            from either side are not compared and are never guessed.
+          </p>
+        )}
       </DataCard>
     </>
   )
 }
 
-export function LegacyDocumentPagesScreen({
-  onContinue,
-}: {
-  onContinue: () => void
-}) {
-  return (
-    <>
-      <ScreenHeading
-        title="Document Pages"
-        description="Every page is classified before any invoice unit is created."
-        action={
-          <Button onClick={onContinue}>
-            Review extraction
-            <ArrowRightIcon data-icon="inline-end" />
-          </Button>
-        }
-      />
-
-      <DataCard
-        title="1643919_doc_16439191.pdf.pdf"
-        description="2 pages · native text available"
-      >
-        <div className="overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Page</TableHead>
-                <TableHead>Classification</TableHead>
-                <TableHead>Extraction path</TableHead>
-                <TableHead>Finding</TableHead>
-                <TableHead className="text-right">Confidence</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {pageClassifications.map((page) => (
-                <TableRow key={page.page}>
-                  <TableCell>
-                    <div className="flex items-center gap-3">
-                      <span className="flex size-9 items-center justify-center rounded-md bg-muted">
-                        <FileTextIcon className="size-5" aria-hidden />
-                      </span>
-                      <span className="font-medium">Page {page.page}</span>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <StatusBadge status={page.type} />
-                  </TableCell>
-                  <TableCell>{page.extraction}</TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {page.note}
-                  </TableCell>
-                  <TableCell className="text-right font-medium tabular-nums">
-                    {page.confidence}%
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-      </DataCard>
-
-      <Alert>
-        <FileCheck2Icon />
-        <AlertTitle>One invoice unit identified</AlertTitle>
-        <AlertDescription>
-          Both pages reference invoice 91283 and were grouped together.
-          Estimates, MOT history and unrelated pages would remain separate
-          document units.
-        </AlertDescription>
-      </Alert>
-    </>
-  )
-}
-
-export const UploadProcessingScreen = UploadProcessingWorkflow
 export const DocumentPagesScreen = DocumentPagesWorkflow
 
 export function ExtractedInvoiceScreen({

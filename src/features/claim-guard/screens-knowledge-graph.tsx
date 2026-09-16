@@ -10,7 +10,6 @@ import {
 } from "@/lib/api"
 import {
   buildChallengeNetwork,
-  demoGraphPayload,
   evidenceKey,
   graphColors,
   graphKindLabels,
@@ -28,30 +27,22 @@ const money = (value: number | null) =>
     : value.toLocaleString("en-GB", { style: "currency", currency: "GBP" })
 
 export function KnowledgeGraphScreen({
-  apiMode,
   caseReference,
   challengeThreshold,
   onBack,
 }: {
-  apiMode: "api" | "demo"
   caseReference: string
   challengeThreshold: number
   onBack: () => void
 }) {
   const [retry, setRetry] = useState(0)
-  const requestKey = JSON.stringify([
-    apiMode,
-    caseReference,
-    challengeThreshold,
-    retry,
-  ])
+  const requestKey = JSON.stringify([caseReference, challengeThreshold, retry])
   const [result, setResult] = useState<{
     key: string
     payload: ChallengeKnowledgeGraphPayload | null
     error: boolean
   } | null>(null)
   useEffect(() => {
-    if (apiMode === "demo") return
     let cancelled = false
     void fetchChallengeKnowledgeGraph(caseReference, challengeThreshold).then(
       (payload) => {
@@ -65,9 +56,9 @@ export function KnowledgeGraphScreen({
     return () => {
       cancelled = true
     }
-  }, [apiMode, caseReference, challengeThreshold, requestKey])
+  }, [caseReference, challengeThreshold, requestKey])
   const currentResult = result?.key === requestKey ? result : null
-  const payload = apiMode === "demo" ? demoGraphPayload : currentResult?.payload
+  const payload = currentResult?.payload
 
   return (
     <div className="flex flex-col gap-6">
@@ -81,15 +72,6 @@ export function KnowledgeGraphScreen({
           </Button>
         }
       />
-      {apiMode === "demo" ? (
-        <Alert>
-          <AlertTitle>Demo graph</AlertTitle>
-          <AlertDescription>
-            Illustrative sample only. Uploaded-invoice results appear when the
-            API is connected.
-          </AlertDescription>
-        </Alert>
-      ) : null}
       {currentResult?.error ? (
         <Alert variant="destructive">
           <NetworkIcon aria-hidden />

@@ -390,8 +390,19 @@ export interface ClaimWorkspace {
   }
 }
 
-export interface ApiWorkspaceResult {
-  workspace: ClaimWorkspace
-  mode: "api" | "demo"
-  errorMessage?: string
-}
+/**
+ * The outcome of discovering which claim to open at start-up.
+ *
+ * There is deliberately no "demo" arm: every arm describes something that is
+ * actually true of the database or the connection, so the UI never has to
+ * render invented rows to have something to show.
+ */
+export type WorkspaceBootstrap =
+  /** The API could not be reached, or returned an unexpected error. */
+  | { status: "unavailable"; message: string }
+  /** The API answered, and there are no claims at all. */
+  | { status: "no-claims" }
+  /** A claim exists, but nothing has been extracted from it yet. */
+  | { status: "awaiting-documents"; caseReference: string; message: string }
+  /** A claim with an extracted invoice is ready to review. */
+  | { status: "ready"; caseReference: string; workspace: ClaimWorkspace }

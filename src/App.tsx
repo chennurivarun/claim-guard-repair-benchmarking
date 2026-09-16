@@ -11,8 +11,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Toaster } from "@/components/ui/sonner"
-import { AppShell } from "@/features/claim-guard/app-shell"
-import { demoWorkspace } from "@/features/claim-guard/demo-data"
+import { AppShell, type ApiStatus } from "@/features/claim-guard/app-shell"
 import {
   LineCorrectionSheet,
   type LineCorrectionValues,
@@ -44,26 +43,31 @@ import {
   CalculationChecksScreen,
   OntologyMappingScreen,
 } from "@/features/claim-guard/screens-validation"
+import {
+  ApiUnavailablePanel,
+  ConnectingPanel,
+  NoClaimsPanel,
+} from "@/features/claim-guard/workspace-state"
 import { documentIntelligenceViews } from "@/features/claim-guard/types"
 import type {
   ClaimWorkspace,
   InvoiceLine,
   LiabilityStatus,
   ScreenId,
+  WorkspaceBootstrap,
 } from "@/features/claim-guard/types"
 import {
+  bootstrapClaimWorkspace,
   confirmLiability,
   correctInvoiceLine,
   decideExtractionLine,
   decideChallenge,
   decideLineMapping,
   downloadBlob,
-  downloadDemoJson,
   fetchClaimInvoices,
   fetchClaimWorkspace,
   finaliseClaim,
   getApiErrorMessage,
-  loadClaimWorkspace,
   approveResearchItem,
   requestReport,
   friendlyAiUnavailableMessage,
@@ -144,15 +148,15 @@ function invoiceDisplayLabel(
 }
 
 export function App() {
-  const [workspace, setWorkspace] = useState<ClaimWorkspace>(demoWorkspace)
-  const [apiMode, setApiMode] = useState<"api" | "demo">("demo")
+  // Nothing is assumed about the database before it answers: the workspace
+  // starts empty rather than pre-filled with sample values, so a slow or
+  // failed fetch can never leave invented rows on screen.
+  const [workspace, setWorkspace] = useState<ClaimWorkspace | null>(null)
+  const [bootstrap, setBootstrap] = useState<WorkspaceBootstrap | null>(null)
   const [activeScreen, setActiveScreen] = useState<ScreenId>("benchmark-setup")
-  const [liabilityStatus, setLiabilityStatus] = useState<LiabilityStatus>(
-    demoWorkspace.liability.status
-  )
-  const [liabilityConfirmed, setLiabilityConfirmed] = useState(
-    demoWorkspace.liability.humanConfirmed
-  )
+  const [liabilityStatus, setLiabilityStatus] =
+    useState<LiabilityStatus>("PENDING")
+  const [liabilityConfirmed, setLiabilityConfirmed] = useState(false)
   const [selectedLine, setSelectedLine] = useState<InvoiceLine | null>(null)
   const [correctionOpen, setCorrectionOpen] = useState(false)
   const [liabilitySaving, setLiabilitySaving] = useState(false)
@@ -170,46 +174,46 @@ export function App() {
   const [focusDocumentId, setFocusDocumentId] = useState<string | null>(null)
   const [p90ThresholdPct, setP90ThresholdPct] = useState(10)
   const [thresholdApplying, setThresholdApplying] = useState(false)
-  const [apiError, setApiError] = useState<string | null>(null)
-  const [apiConnecting, setApiConnecting] = useState(true)
   const [challengedInvoiceDetailOpen, setChallengedInvoiceDetailOpen] =
     useState(false)
   const [selectedChallengeLineId, setSelectedChallengeLineId] = useState<
     string | null
   >(null)
 
-  async function finishApiConnection(
-    result: Awaited<ReturnType<typeof loadClaimWorkspace>>
-  ) {
-    try {
-      setWorkspace(result.workspace)
-      setApiMode(result.mode)
-      setLiabilityStatus(result.workspace.liability.status)
-      setLiabilityConfirmed(result.workspace.liability.humanConfirmed)
-      if (result.errorMessage) {
-        setApiError(result.errorMessage)
-        setInvoices([])
+  async function applyBootstrap(result: WorkspaceBootstrap) {
+    setBootstrap(result)
+    if (result.status !== "ready") {
+      setWorkspace(null)
+      setInvoices([])
+      setLiabilityStatus("PENDING")
+      setLiabilityConfirmed(false)
+      if (result.status === "unavailable") {
         toast.error("ClaimGuard API is not ready", {
-          description: `${result.errorMessage} Live invoice data is hidden until the connection is restored.`,
+          description: `${result.message} Nothing is shown until the connection is restored.`,
         })
-      } else {
-        setInvoices(
-          await fetchClaimInvoices(result.workspace.claim.id, p90ThresholdPct)
-        )
-        setApiError(null)
       }
-    } finally {
-      setApiConnecting(false)
+      return
+    }
+    applyWorkspace(result.workspace)
+    try {
+      setInvoices(
+        await fetchClaimInvoices(result.workspace.claim.id, p90ThresholdPct)
+      )
+    } catch (error) {
+      setInvoices([])
+      toast.error("The invoice list could not be loaded", {
+        description: getApiErrorMessage(error),
+      })
     }
   }
 
   async function connectToApi() {
-    setApiConnecting(true)
-    await finishApiConnection(await loadClaimWorkspace(p90ThresholdPct))
+    setBootstrap(null)
+    await applyBootstrap(await bootstrapClaimWorkspace(p90ThresholdPct))
   }
 
   useEffect(() => {
-    void loadClaimWorkspace(p90ThresholdPct).then(finishApiConnection)
+    void bootstrapClaimWorkspace(p90ThresholdPct).then(applyBootstrap)
     // Only the initial p90ThresholdPct matters here; later changes are
     // handled by the dedicated threshold-refetch effect below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -221,16 +225,14 @@ export function App() {
 
   // The server now computes the operational price decision (P90 policy) for
   // every line — the client no longer overlays it. Toggling the threshold
-  // just refetches the workspace with the new p90_threshold_pct. Demo mode
-  // has no backend to refetch from, so the toggle is a silent no-op there,
-  // matching how the benchmark dashboard already treats demo mode.
+  // just refetches the workspace with the new p90_threshold_pct.
   const isFirstThresholdRender = useRef(true)
   useEffect(() => {
     if (isFirstThresholdRender.current) {
       isFirstThresholdRender.current = false
       return
     }
-    if (apiMode !== "api") return
+    if (!workspace) return
     // Synchronous setState here is intentional: it flips on the Benchmarks
     // screen's "Applying threshold…" indicator for the refetch this effect
     // triggers, mirroring the saving-flag pattern used by the handlers above.
@@ -257,10 +259,15 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [p90ThresholdPct])
 
+  const apiStatus: ApiStatus = !bootstrap
+    ? "connecting"
+    : bootstrap.status === "unavailable"
+      ? "unavailable"
+      : "connected"
   const issuanceAllowed =
     liabilityConfirmed &&
     (liabilityStatus === "ADMITTED" || liabilityStatus === "SPLIT LIABILITY")
-  const caseStatus = workspace.claim.status.toLowerCase()
+  const caseStatus = workspace?.claim.status.toLowerCase() ?? ""
   const caseFinalised = caseStatus === "finalised"
   const comparisonReady = caseStatus === "comparison_review"
   const caseUnresolvedChallenges = invoices.reduce(
@@ -270,7 +277,7 @@ export function App() {
   const clientInvoices = invoices.filter((invoice) => invoice.intake_group)
   const challengedInvoices = selectChallengedInvoices(clientInvoices)
   const pendingOntologyItems =
-    workspace.researchItems?.filter(
+    workspace?.researchItems?.filter(
       (item) =>
         item.initiatedAutomatically && item.status.toLowerCase() !== "approved"
     ).length ?? 0
@@ -281,7 +288,7 @@ export function App() {
   const screenInvoiceReady =
     activeScreen !== "price-comparison" ||
     !challengedInvoiceDetailOpen ||
-    challengedInvoices.some((invoice) => invoice.id === workspace.invoice.id)
+    challengedInvoices.some((invoice) => invoice.id === workspace?.invoice.id)
 
   function applyWorkspace(nextWorkspace: ClaimWorkspace) {
     setWorkspace(nextWorkspace)
@@ -290,6 +297,7 @@ export function App() {
   }
 
   async function refreshWorkspace(invoiceId?: string) {
+    if (!workspace) throw new Error("No claim is open.")
     const next = await fetchClaimWorkspace(
       workspace.claim.id,
       invoiceId,
@@ -306,6 +314,7 @@ export function App() {
       setSelectedChallengeLineId(null)
     }
     setActiveScreen(screen)
+    if (!workspace) return
     const preferredInvoiceId = preferredInvoiceIdForScreen(
       [
         "document-pages",
@@ -349,8 +358,8 @@ export function App() {
     }
   }
 
-  async function refreshComparison(invoiceId?: string) {
-    const run = await runClaimComparison(workspace.claim.id)
+  async function refreshComparison(caseReference: string, invoiceId?: string) {
+    const run = await runClaimComparison(caseReference)
     await refreshWorkspace(invoiceId)
     return run
   }
@@ -358,13 +367,13 @@ export function App() {
   async function handleRunComparison(
     destination: ScreenId = "ontology-mapping"
   ) {
-    if (apiMode !== "api") {
-      toast.error("Comparison requires the FastAPI service")
-      return
-    }
+    if (!workspace) return
     setComparisonSaving(true)
     try {
-      const run = await refreshComparison(workspace.invoice.id)
+      const run = await refreshComparison(
+        workspace.claim.id,
+        workspace.invoice.id
+      )
       navigate(destination)
       toast.success("Ontology mapping and price comparison completed")
       const aiNotice = friendlyAiUnavailableMessage(run?.ai_failure_code)
@@ -388,25 +397,7 @@ export function App() {
     rationale: string
     splitLiabilityPercentage?: number
   }) {
-    if (apiMode === "demo") {
-      setLiabilityConfirmed(true)
-      setWorkspace((current) => ({
-        ...current,
-        liability: {
-          ...current.liability,
-          status: liabilityStatus,
-          humanConfirmed: true,
-          confirmedBy: HANDLER_ID,
-          rationale: decision.rationale,
-          splitLiabilityPercentage: decision.splitLiabilityPercentage ?? null,
-        },
-      }))
-      toast.success("Demo liability decision saved locally", {
-        description: liabilityStatus,
-      })
-      return
-    }
-
+    if (!workspace) return
     setLiabilitySaving(true)
     try {
       await confirmLiability(workspace.claim.id, {
@@ -436,17 +427,22 @@ export function App() {
       })
     } catch (error) {
       setLiabilityConfirmed(true)
-      setWorkspace((current) => ({
-        ...current,
-        liability: {
-          ...current.liability,
-          status: liabilityStatus,
-          humanConfirmed: true,
-          confirmedBy: HANDLER_ID,
-          rationale: decision.rationale,
-          splitLiabilityPercentage: decision.splitLiabilityPercentage ?? null,
-        },
-      }))
+      setWorkspace((current) =>
+        current
+          ? {
+              ...current,
+              liability: {
+                ...current.liability,
+                status: liabilityStatus,
+                humanConfirmed: true,
+                confirmedBy: HANDLER_ID,
+                rationale: decision.rationale,
+                splitLiabilityPercentage:
+                  decision.splitLiabilityPercentage ?? null,
+              },
+            }
+          : current
+      )
       toast.warning("Liability saved, but the workspace could not refresh", {
         description: getApiErrorMessage(error),
       })
@@ -456,33 +452,9 @@ export function App() {
   }
 
   async function handleLineCorrection(values: LineCorrectionValues) {
-    if (!selectedLine) return
+    if (!selectedLine || !workspace) return
     const lineTotalNet =
       Math.round(values.quantity * values.unitPrice * 100) / 100
-
-    if (apiMode === "demo") {
-      setWorkspace((current) => ({
-        ...current,
-        lines: current.lines.map((line) =>
-          line.id === selectedLine.id
-            ? {
-                ...line,
-                description: values.description,
-                quantity: values.quantity,
-                unitPrice: values.unitPrice,
-                currentTotal: lineTotalNet,
-                extractionReviewStatus: "corrected",
-                requiresExtractionReview: false,
-              }
-            : line
-        ),
-      }))
-      setCorrectionOpen(false)
-      toast.success("Demo correction saved locally", {
-        description: "Original fixture values remain available after reload.",
-      })
-      return
-    }
 
     setCorrectionSaving(true)
     try {
@@ -509,21 +481,25 @@ export function App() {
           "Reprocess the invoice and rerun comparison before challenge finalisation.",
       })
     } catch (error) {
-      setWorkspace((current) => ({
-        ...current,
-        claim: { ...current.claim, status: "extraction_review" },
-        lines: current.lines.map((line) =>
-          line.id === selectedLine.id
-            ? {
-                ...line,
-                description: values.description,
-                quantity: values.quantity,
-                unitPrice: values.unitPrice,
-                currentTotal: lineTotalNet,
-              }
-            : line
-        ),
-      }))
+      setWorkspace((current) =>
+        current
+          ? {
+              ...current,
+              claim: { ...current.claim, status: "extraction_review" },
+              lines: current.lines.map((line) =>
+                line.id === selectedLine.id
+                  ? {
+                      ...line,
+                      description: values.description,
+                      quantity: values.quantity,
+                      unitPrice: values.unitPrice,
+                      currentTotal: lineTotalNet,
+                    }
+                  : line
+              ),
+            }
+          : current
+      )
       toast.warning("Correction saved, but the workspace could not refresh", {
         description: `${getApiErrorMessage(error)} Reprocessing and recomparison are still required.`,
       })
@@ -538,24 +514,7 @@ export function App() {
     decision: ExtractionDecision,
     reason?: string
   ) {
-    const nextStatus = decision === "undo" ? "needs_review" : decision
-    if (apiMode === "demo") {
-      setWorkspace((current) => ({
-        ...current,
-        lines: current.lines.map((item) =>
-          item.id === line.id
-            ? {
-                ...item,
-                extractionReviewStatus: nextStatus,
-                requiresExtractionReview: decision === "undo",
-              }
-            : item
-        ),
-      }))
-      toast.success(`Demo extraction ${decision} saved locally`)
-      return
-    }
-
+    if (!workspace) return
     setExtractionSavingLineId(line.id)
     try {
       await decideExtractionLine(line.id, {
@@ -582,12 +541,7 @@ export function App() {
     line: InvoiceLine,
     input: Omit<MappingDecisionInput, "actor">
   ) {
-    if (apiMode === "demo") {
-      throw new Error(
-        "Mapping decisions require the FastAPI service; demo mode never records a fake approval."
-      )
-    }
-
+    if (!workspace) throw new Error("No claim is open.")
     setMappingSavingLineId(line.id)
     let decisionSaved = false
     try {
@@ -621,15 +575,7 @@ export function App() {
       challengePriceNet?: number
     }
   ) {
-    if (apiMode === "demo") {
-      const error = new Error(
-        "Challenge decisions require the FastAPI service; demo mode never records a fake decision."
-      )
-      toast.error("Challenge decision was not saved", {
-        description: error.message,
-      })
-      throw error
-    }
+    if (!workspace) throw new Error("No claim is open.")
     if (!line.challengeResultId) {
       throw new Error(`Challenge result is missing for ${line.description}.`)
     }
@@ -659,18 +605,12 @@ export function App() {
   }
 
   async function handleChallengeFinalise() {
+    if (!workspace) return
     if (!issuanceAllowed || !comparisonReady) {
       toast.error("Challenge issuance is gated", {
         description: !issuanceAllowed
           ? "Confirm ADMITTED or SPLIT LIABILITY before finalising."
           : "Reprocess the corrected invoice and rerun comparison before finalising.",
-      })
-      return
-    }
-
-    if (apiMode === "demo") {
-      toast.error("Finalisation requires the FastAPI service", {
-        description: "Demo mode never records a fake challenge approval.",
       })
       return
     }
@@ -709,15 +649,23 @@ export function App() {
         description: "The accepted-items CSV and final PDF are now available.",
       })
     } catch (error) {
-      setWorkspace((current) => ({
-        ...current,
-        claim: { ...current.claim, status: "finalised" },
-        lines: current.lines.map((line) =>
-          line.challenge > 0
-            ? { ...line, challengeApproved: true, challengeStatus: "approved" }
-            : line
-        ),
-      }))
+      setWorkspace((current) =>
+        current
+          ? {
+              ...current,
+              claim: { ...current.claim, status: "finalised" },
+              lines: current.lines.map((line) =>
+                line.challenge > 0
+                  ? {
+                      ...line,
+                      challengeApproved: true,
+                      challengeStatus: "approved",
+                    }
+                  : line
+              ),
+            }
+          : current
+      )
       toast.warning("Case finalised, but the workspace could not refresh", {
         description: getApiErrorMessage(error),
       })
@@ -730,15 +678,7 @@ export function App() {
     line: InvoiceLine,
     values: import("@/features/claim-guard/screens-challenge-admin").ResearchFormValues
   ) {
-    if (apiMode === "demo") {
-      const error = new Error(
-        "Research requires the FastAPI service; demo mode never creates provisional evidence."
-      )
-      toast.error("Research evidence was not saved", {
-        description: error.message,
-      })
-      throw error
-    }
+    if (!workspace) throw new Error("No claim is open.")
     const input: ManualResearchInput = {
       requestedBy: HANDLER_ID,
       queryText: `Research invoice line: ${line.description}`,
@@ -790,7 +730,7 @@ export function App() {
   async function handleResearchApproval(
     item: NonNullable<ClaimWorkspace["researchItems"]>[number]
   ) {
-    if (apiMode === "demo" || !item.researchItemId) {
+    if (!workspace || !item.researchItemId) {
       const error = new Error(
         "A persisted research item is required for approval."
       )
@@ -822,27 +762,13 @@ export function App() {
   }
 
   function handleReport(format: ReportFormat) {
-    if (apiMode === "demo") {
-      if (format === "json") {
-        downloadDemoJson()
-        toast.success("Demo JSON downloaded")
-      } else {
-        toast.info(
-          `${format.toUpperCase()} export is ready when the FastAPI service is connected`,
-          {
-            description:
-              "The JSON evidence pack remains available in demo mode.",
-          }
-        )
-      }
-      return
-    }
-
-    void requestReport(format, workspace.claim.id)
+    if (!workspace) return
+    const caseReference = workspace.claim.id
+    void requestReport(format, caseReference)
       .then((blob) => {
         downloadBlob(
           blob,
-          `claimguard-${workspace.claim.id}.${format === "sqlite" ? "db" : format}`
+          `claimguard-${caseReference}.${format === "sqlite" ? "db" : format}`
         )
         toast.success(`${format.toUpperCase()} report downloaded`)
       })
@@ -854,7 +780,8 @@ export function App() {
   }
 
   let screen
-  switch (activeScreen) {
+  if (workspace)
+    switch (activeScreen) {
     case "claim-liability":
       screen = (
         <ClaimLiabilityScreen
@@ -964,7 +891,7 @@ export function App() {
           workspace={workspace}
           onContinue={() => void handleRunComparison("price-comparison")}
           onOpenLibrary={() => navigate("ontology-bank")}
-          mappingEnabled={apiMode === "api" && !caseFinalised}
+          mappingEnabled={!caseFinalised}
           savingLineId={mappingSavingLineId}
           onMappingDecision={handleMappingDecision}
         />
@@ -989,7 +916,7 @@ export function App() {
             workspace={workspace}
             initialLineId={selectedChallengeLineId}
             p90ThresholdPct={p90ThresholdPct}
-            enabled={apiMode === "api" && !caseFinalised}
+            enabled={!caseFinalised}
             processing={challengeSaving}
             onDecision={handleChallengeDecision}
             onInspect={inspectLine}
@@ -1037,7 +964,7 @@ export function App() {
             workspace={workspace}
             mode="all"
             p90ThresholdPct={p90ThresholdPct}
-            enabled={apiMode === "api" && !caseFinalised}
+            enabled={!caseFinalised}
             processing={challengeSaving}
             onDecision={handleChallengeDecision}
             onInspect={inspectLine}
@@ -1054,7 +981,7 @@ export function App() {
       screen = (
         <MissingItemsScreen
           workspace={workspace}
-          enabled={apiMode === "api" && !caseFinalised}
+          enabled={!caseFinalised}
           saving={researchSaving}
           onResearch={handleResearch}
           onApprove={handleResearchApproval}
@@ -1071,7 +998,7 @@ export function App() {
           comparisonReady={comparisonReady}
           finalised={caseFinalised}
           processing={challengeSaving}
-          enabled={apiMode === "api"}
+          enabled
           caseUnresolvedChallenges={caseUnresolvedChallenges}
           onFinalise={() => void handleChallengeFinalise()}
           onDownload={handleReport}
@@ -1115,7 +1042,6 @@ export function App() {
     case "in-house-benchmarks":
       screen = (
         <BenchmarkDashboardScreen
-          apiMode={apiMode}
           workspace={workspace}
           challengeThreshold={p90ThresholdPct}
           onChallengeThresholdChange={setP90ThresholdPct}
@@ -1132,7 +1058,6 @@ export function App() {
     case "knowledge-graph":
       screen = (
         <KnowledgeGraphScreen
-          apiMode={apiMode}
           caseReference={workspace.claim.id}
           challengeThreshold={p90ThresholdPct}
           onBack={() => navigate("benchmark-dashboard")}
@@ -1144,7 +1069,7 @@ export function App() {
         <AuditReportsScreen workspace={workspace} onExport={handleReport} />
       )
       break
-  }
+    }
 
   return (
     <>
@@ -1153,34 +1078,43 @@ export function App() {
         onNavigate={navigate}
         issuanceAllowed={issuanceAllowed}
         liabilityStatus={liabilityStatus}
-        apiMode={apiMode}
+        apiStatus={apiStatus}
       >
-        {apiConnecting ? (
-          <Alert>
-            <AlertTitle>Connecting to ClaimGuard</AlertTitle>
-            <AlertDescription>
-              Loading live invoices, documents and benchmark data.
-            </AlertDescription>
-          </Alert>
-        ) : apiError ? (
-          <Alert variant="destructive">
-            <AlertTitle>Live ClaimGuard service is unavailable</AlertTitle>
-            <AlertDescription className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <span>
-                {apiError} Static pilot invoices and prices are hidden so they
-                cannot be mistaken for uploaded scan results.
-              </span>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="shrink-0"
-                onClick={() => void connectToApi()}
-              >
-                Retry connection
-              </Button>
-            </AlertDescription>
-          </Alert>
+        {!bootstrap ? (
+          // Honestly empty: no figures, no rows, nothing that could be read as
+          // data until the database has actually answered.
+          <ConnectingPanel />
+        ) : bootstrap.status === "unavailable" ? (
+          <ApiUnavailablePanel
+            message={bootstrap.message}
+            onRetry={() => void connectToApi()}
+          />
+        ) : bootstrap.status === "no-claims" ? (
+          <NoClaimsPanel onRetry={() => void connectToApi()} />
+        ) : bootstrap.status === "awaiting-documents" ? (
+          <div className="flex flex-col gap-6" data-testid="state-awaiting">
+            <Alert>
+              <AlertTitle>
+                Claim {bootstrap.caseReference} has no documents yet
+              </AlertTitle>
+              <AlertDescription>
+                Nothing has been extracted for this claim, so there is nothing
+                to review. Upload a repair invoice and its engineer estimate
+                below; the review screens open as soon as the first invoice has
+                been read.
+              </AlertDescription>
+            </Alert>
+            <ClientIntakeScreen
+              caseReference={bootstrap.caseReference}
+              setup={false}
+              onOpenManualReview={openManualReview}
+              finalised={false}
+              onProcessed={async () => {
+                await connectToApi()
+              }}
+              onContinue={() => void connectToApi()}
+            />
+          </div>
         ) : (
           <>
             {activeScreen === "price-comparison" &&
@@ -1246,7 +1180,7 @@ export function App() {
                 </div>
                 <select
                   className="h-9 min-w-56 rounded-md border bg-background px-3 text-sm"
-                  value={workspace.invoice.id}
+                  value={workspace?.invoice.id}
                   disabled={comparisonSaving}
                   onChange={(event) =>
                     void handleInvoiceSelection(event.target.value)

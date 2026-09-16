@@ -937,9 +937,8 @@ export function OntologyMappingScreen({
           <ShieldCheckIcon />
           <AlertTitle>Mapping decisions are read-only</AlertTitle>
           <AlertDescription>
-            This case is read-only. Mapping decisions require a connected
-            FastAPI workspace and an unfinalised case; demo mode never simulates
-            an approval.
+            This case is read-only. Mapping decisions require an unfinalised
+            case; a finalised case keeps its recorded decisions unchanged.
           </AlertDescription>
         </Alert>
       )}
