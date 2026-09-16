@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import asdict
 from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, Decimal
@@ -24,6 +25,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.schemas import (
+    CaseDataResetRequest,
     ClaimCreateRequest,
     ExtractionDecisionRequest,
     FinaliseCaseRequest,
@@ -93,6 +95,7 @@ from app.models import (
     Settlement,
     Vehicle,
 )
+from app.reset import CONFIRMATION_PHRASE, clear_reset_paths, reset_case_data
 from app.services.benchmarking import (
     benchmark_observations,
     build_benchmark_dashboard,
@@ -598,15 +601,20 @@ def confirm_liability(
     }
 
 
-@router.post("/claims/{case_reference}/documents", tags=["documents"])
-def upload_document(
-    case_reference: str,
-    db: DatabaseSession,
-    file: Annotated[UploadFile, File()],
-    role: Annotated[str, Form()] = "current",
-    intake_group: Annotated[str | None, Form()] = None,
-    paired_document_id: Annotated[str | None, Form()] = None,
-) -> dict[str, Any]:
+_INTAKE_GROUPS = frozenset({None, "historical_claim", "in_house", "live"})
+
+
+def _resolve_document_role(role: str, intake_group: str | None) -> DocumentRole:
+    """One rule for both the single-file and the batch upload paths."""
+
+    if intake_group not in _INTAKE_GROUPS:
+        raise ValueError("Unknown intake group")
+    if intake_group:
+        return DocumentRole.CURRENT if intake_group == "live" else DocumentRole.HISTORICAL
+    return DocumentRole(role)
+
+
+def _uploadable_case(db: Session, case_reference: str) -> Case:
     case = db.scalar(select(Case).where(Case.case_reference == case_reference))
     if case is None:
         raise _not_found("Claim not found")
@@ -618,12 +626,21 @@ def upload_document(
                 "message": "Create a new case revision before uploading another invoice.",
             },
         )
+    return case
+
+
+@router.post("/claims/{case_reference}/documents", tags=["documents"])
+def upload_document(
+    case_reference: str,
+    db: DatabaseSession,
+    file: Annotated[UploadFile, File()],
+    role: Annotated[str, Form()] = "current",
+    intake_group: Annotated[str | None, Form()] = None,
+    paired_document_id: Annotated[str | None, Form()] = None,
+) -> dict[str, Any]:
+    case = _uploadable_case(db, case_reference)
     try:
-        if intake_group not in {None, "historical_claim", "in_house", "live"}:
-            raise ValueError("Unknown intake group")
-        document_role = (
-            DocumentRole.CURRENT if intake_group == "live" else DocumentRole.HISTORICAL
-        ) if intake_group else DocumentRole(role)
+        document_role = _resolve_document_role(role, intake_group)
         if paired_document_id:
             target = db.get(Document, paired_document_id)
             if target is None or target.case_id != case.id or not target.invoices:
@@ -650,6 +667,276 @@ def upload_document(
             detail={"code": "INVALID_DOCUMENT", "message": str(exc)},
         ) from exc
     return serialise_document(document)
+
+
+def _batch_entry(slot: str, filename: str | None) -> dict[str, Any]:
+    return {
+        "slot": slot,
+        "filename": filename,
+        "status": "failed",
+        "document_id": None,
+        "invoice_units": 0,
+        "assessment_id": None,
+        "error": None,
+        "detail": None,
+    }
+
+
+# One request holds one SQLite write lock for as long as it runs, and OCR is
+# 3-10 s per file.  Uncapped, 200 invoices is a 10-30 minute request during
+# which every concurrent write fails against the busy timeout and the client
+# has long since timed out and lost the per-file report it came for.  Fifty
+# files is roughly ten times Neha's first population pass and still finishes
+# inside a normal proxy timeout.
+MAX_BATCH_FILES = 50
+MAX_BATCH_BYTES = 500 * 1024 * 1024
+
+
+def _upload_size(upload: UploadFile) -> int:
+    """Bytes in an upload without reading it into memory."""
+
+    if upload.size is not None:
+        return upload.size
+    position = upload.file.tell()
+    upload.file.seek(0, os.SEEK_END)
+    size = upload.file.tell()
+    upload.file.seek(position)
+    return size
+
+
+def _batch_failure(entry: dict[str, Any], exc: Exception) -> dict[str, Any]:
+    """Record a per-file failure without swallowing what actually went wrong.
+
+    ``detail`` carries the real cause - "corrupt PDF", "OCR timeout" - because
+    the whole point of a per-file report is telling the operator which file to
+    look at and why.  ``error`` stays the sentence a handler can act on.
+    """
+
+    entry["status"] = "failed"
+    entry["error"] = (
+        str(exc)
+        if isinstance(exc, ValueError)
+        else "The file could not be processed. It has not been added to the claim."
+    )
+    entry["detail"] = f"{type(exc).__name__}: {exc}"[:500]
+    return entry
+
+
+@router.post("/claims/{case_reference}/documents/batch", tags=["documents"])
+def upload_document_batch(
+    case_reference: str,
+    db: DatabaseSession,
+    invoice_files: Annotated[list[UploadFile] | None, File()] = None,
+    estimate_files: Annotated[list[UploadFile] | None, File()] = None,
+    role: Annotated[str, Form()] = "current",
+    intake_group: Annotated[str | None, Form()] = None,
+    process: Annotated[bool, Form()] = True,
+    run_sweep: Annotated[bool, Form()] = True,
+) -> dict[str, Any]:
+    """Accept a folder of repair invoices and a folder of engineer estimates.
+
+    Two decisions worth stating.
+
+    *Why an endpoint rather than a documented client loop.* A loop would have
+    to get two things right on every call, and the cost of getting either wrong
+    is silent: both folders must carry the **same** ``intake_group``, because
+    ``_select_invoice`` refuses to pair an assessment with an invoice in a
+    different bucket, and the invoices must be processed before the estimates,
+    or each estimate pairs against a case that has no invoice in it yet. Both
+    are properties of the batch as a whole, so they belong where the batch is.
+    The endpoint also turns N round trips into one.
+
+    *Why per-file results rather than all-or-nothing.* Handing over five pairs
+    and being told only "422" is unusable. Each file is committed on its own, so
+    one unreadable PDF fails alone and the report names it with a real reason;
+    the caller keeps every file that worked.
+
+    *Why a commit per file rather than one SAVEPOINT per file.* Two reasons,
+    and they are the same reason. ``process_document``'s failure handler calls
+    ``Session.rollback()`` and then ``Session.commit()`` to write the FAILED
+    document and the FAILED run; inside a ``with db.begin_nested():`` that
+    rollback closes the context-managed transaction and the handler's very next
+    statement raises ``InvalidRequestError`` - so the document was never marked
+    FAILED, no FAILED run was written, the case status was never restored, and
+    the real cause was replaced by a SQLAlchemy-internals message. And a single
+    transaction spanning the batch holds the SQLite write lock for the whole
+    run, so every concurrent write fails against the busy timeout and one
+    failure in the final sweep rolls back all N files. Committing the stored
+    row before processing it, and the processed result after, fixes both: the
+    handler has a durable row to mark, and no file's work depends on the next
+    file's.
+
+    The single-file endpoint is untouched and still the right call for the
+    setup screen's one-invoice-one-estimate flow.
+    """
+
+    case = _uploadable_case(db, case_reference)
+    try:
+        document_role = _resolve_document_role(role, intake_group)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "INVALID_DOCUMENT", "message": str(exc)},
+        ) from exc
+
+    queue: list[tuple[str, UploadFile]] = [
+        # Invoices first: an assessment processed before any invoice exists can
+        # only report "no invoice to pair with".
+        *(("invoice", upload) for upload in invoice_files or []),
+        *(("estimate", upload) for upload in estimate_files or []),
+    ]
+    if not queue:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "EMPTY_BATCH",
+                "message": "Attach at least one file to invoice_files or estimate_files.",
+            },
+        )
+    total_bytes = sum(_upload_size(upload) for _, upload in queue)
+    if len(queue) > MAX_BATCH_FILES or total_bytes > MAX_BATCH_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "code": "BATCH_TOO_LARGE",
+                "message": (
+                    f"This batch has {len(queue)} files ({total_bytes} bytes). "
+                    f"Send at most {MAX_BATCH_FILES} files and "
+                    f"{MAX_BATCH_BYTES} bytes per request, in several batches if "
+                    "needed, then call the link-sweep endpoint once at the end."
+                ),
+                "files": len(queue),
+                "bytes": total_bytes,
+                "max_files": MAX_BATCH_FILES,
+                "max_bytes": MAX_BATCH_BYTES,
+            },
+        )
+
+    results: list[dict[str, Any]] = []
+    for slot, upload in queue:
+        entry = _batch_entry(slot, upload.filename)
+        try:
+            content = upload.file.read()
+            document = store_pdf(
+                db,
+                case=case,
+                filename=upload.filename or f"{slot}.pdf",
+                content=content,
+                role=document_role,
+                intake_group=intake_group,
+            )
+            entry["document_id"] = document.id
+            already_processed = document.page_count is not None and bool(document.pages)
+            entry["status"] = "already_processed" if already_processed else "stored"
+            # Durable before processing, so ``process_document``'s failure
+            # handler has a row to mark FAILED after its own rollback.
+            db.commit()
+        except Exception as exc:  # noqa: BLE001 - one bad file must not sink the batch
+            logger.exception("Batch upload failed for %s", upload.filename)
+            db.rollback()
+            results.append(_batch_failure(entry, exc))
+            continue
+
+        if process and entry["status"] == "stored":
+            try:
+                run = process_document(db, document)
+                entry["status"] = "processed"
+                entry["metrics"] = run.metrics_json
+                db.commit()
+            except Exception as exc:  # noqa: BLE001 - one bad file must not sink the batch
+                logger.exception("Batch processing failed for %s", upload.filename)
+                # ``process_document`` has already committed the FAILED document
+                # and the FAILED run; this only clears the session.
+                db.rollback()
+                results.append(_batch_failure(entry, exc))
+                continue
+
+        entry["invoice_units"] = len(document.invoices)
+        if document.engineer_assessment is not None:
+            entry["assessment_id"] = document.engineer_assessment.id
+        results.append(entry)
+
+    swept = None
+    if run_sweep and process and any(row["status"] == "processed" for row in results):
+        # Every file above is already committed. A sweep failure must therefore
+        # be reported, never raised: letting it propagate would close the
+        # session on a rolled-back transaction and hand the client a bare 500
+        # with none of the per-file rows this endpoint exists to provide.
+        try:
+            run_case_gap_fill(db, case.id)
+            db.commit()
+            swept = _pairing_summary(db, case)
+        except Exception as exc:  # noqa: BLE001 - the files are already safe
+            logger.exception("Batch link sweep failed for case %s", case.id)
+            db.rollback()
+            swept = {
+                "error": (
+                    "The files were accepted but the pairing sweep failed. "
+                    "Call the link-sweep endpoint to retry it."
+                ),
+                "detail": f"{type(exc).__name__}: {exc}"[:500],
+            }
+
+    return {
+        "case_reference": case.case_reference,
+        "intake_group": intake_group,
+        "document_role": document_role.value,
+        "accepted": sum(1 for row in results if row["status"] != "failed"),
+        "failed": sum(1 for row in results if row["status"] == "failed"),
+        "results": results,
+        "pairing": swept,
+    }
+
+
+def _pairing_summary(db: Session, case: Case) -> dict[str, Any]:
+    assessments = db.scalars(
+        select(EngineerAssessment)
+        .where(EngineerAssessment.case_id == case.id)
+        .options(selectinload(EngineerAssessment.paired_invoice))
+        .order_by(EngineerAssessment.created_at, EngineerAssessment.id)
+    ).all()
+    rows = [
+        {
+            "assessment_id": assessment.id,
+            "document_id": assessment.document_id,
+            "assessment_number": assessment.assessment_number,
+            "pair_status": assessment.pair_status,
+            "pair_confidence": assessment.pair_confidence,
+            "pair_reasons": assessment.pair_reasons_json or [],
+            "paired_invoice_id": assessment.paired_invoice_id,
+            "paired_invoice_number": (
+                assessment.paired_invoice.invoice_number if assessment.paired_invoice else None
+            ),
+        }
+        for assessment in assessments
+    ]
+    return {
+        "assessments": len(rows),
+        "paired": sum(1 for row in rows if row["pair_status"] == "paired"),
+        "unpaired": sum(1 for row in rows if row["pair_status"] != "paired"),
+        "details": rows,
+    }
+
+
+@router.post("/claims/{case_reference}/documents/link-sweep", tags=["documents"])
+def run_document_link_sweep(case_reference: str, db: DatabaseSession) -> dict[str, Any]:
+    """Re-pair and gap-fill every assessment in the case, once, after a batch.
+
+    Neha's step 3: "at the end, run a check" over all documents. Until now this
+    sweep only ran per-document inside ``process_document`` and again inside
+    ``POST /compare``, so a batch whose estimates arrived before their invoices
+    stayed unpaired until someone ran a comparison. It delegates to
+    ``run_case_gap_fill`` and is idempotent - the fill reverses its own earlier
+    writes before re-evaluating.
+    """
+
+    case = db.scalar(select(Case).where(Case.case_reference == case_reference))
+    if case is None:
+        raise _not_found("Claim not found")
+    run_case_gap_fill(db, case.id)
+    summary = _pairing_summary(db, case)
+    db.commit()
+    return {"case_reference": case.case_reference, **summary}
 
 
 @router.get("/claims/{case_reference}/documents", tags=["documents"])
@@ -1524,6 +1811,62 @@ def download_synthetic_in_house_data(db: DatabaseSession) -> Response:
             "Content-Disposition": 'attachment; filename="claim-guard-in-house-repair-data.csv"'
         },
     )
+
+
+@router.post("/admin/case-data/reset", tags=["admin"])
+def reset_case_data_endpoint(
+    request: CaseDataResetRequest, db: DatabaseSession
+) -> dict[str, Any]:
+    """Delete every per-case document artefact and open one empty case.
+
+    Destructive and irreversible, so it is gated twice: the caller has to send
+    the exact confirmation phrase, and nothing is deleted until that matches.
+    Reference data - ontology, price library, seed benchmark history, vehicle
+    lookup, regulatory rules, configuration - is kept, and so is the schema.
+
+    Files go *after* the commit, never before. ``reset_case_data`` resolves the
+    roots and returns them; only once ``db.commit()`` has returned does
+    ``clear_reset_paths`` sweep them. The other order means a commit that fails
+    on a locked or full database leaves every case row in place and every PDF
+    behind it permanently gone - strictly worse than doing nothing.
+
+    The sweep itself never aborts the request: by the time it runs the database
+    half is durable, so a ``PermissionError`` halfway through is reported in
+    ``sweep_failures`` rather than raised as a 500 that tells the operator
+    nothing about which directories survived.
+
+    Not authenticated, matching the other ``/admin`` routes - see the reset
+    endpoint's note in the commit message. That is a real gap for a route that
+    erases the audit chain, and the audit export is the mitigation, not a fix.
+    """
+
+    if request.confirm != CONFIRMATION_PHRASE:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "RESET_CONFIRMATION_REQUIRED",
+                "message": (
+                    "This permanently deletes every case, document and extract. "
+                    f'Send confirm="{CONFIRMATION_PHRASE}" to proceed.'
+                ),
+            },
+        )
+    try:
+        report = reset_case_data(
+            db,
+            new_case_reference=request.new_case_reference or None,
+            purge_derived_history=request.purge_derived_history,
+            actor=request.actor,
+        )
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "RESET_FAILED", "message": str(exc)},
+        ) from exc
+    clear_reset_paths(report)
+    return report.as_dict()
 
 
 @router.get("/benchmarks/dashboard", tags=["benchmarks"])
