@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import asdict
 from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, Decimal
@@ -94,7 +95,7 @@ from app.models import (
     Settlement,
     Vehicle,
 )
-from app.reset import CONFIRMATION_PHRASE, reset_case_data
+from app.reset import CONFIRMATION_PHRASE, clear_reset_paths, reset_case_data
 from app.services.benchmarking import (
     benchmark_observations,
     build_benchmark_dashboard,
@@ -677,7 +678,48 @@ def _batch_entry(slot: str, filename: str | None) -> dict[str, Any]:
         "invoice_units": 0,
         "assessment_id": None,
         "error": None,
+        "detail": None,
     }
+
+
+# One request holds one SQLite write lock for as long as it runs, and OCR is
+# 3-10 s per file.  Uncapped, 200 invoices is a 10-30 minute request during
+# which every concurrent write fails against the busy timeout and the client
+# has long since timed out and lost the per-file report it came for.  Fifty
+# files is roughly ten times Neha's first population pass and still finishes
+# inside a normal proxy timeout.
+MAX_BATCH_FILES = 50
+MAX_BATCH_BYTES = 500 * 1024 * 1024
+
+
+def _upload_size(upload: UploadFile) -> int:
+    """Bytes in an upload without reading it into memory."""
+
+    if upload.size is not None:
+        return upload.size
+    position = upload.file.tell()
+    upload.file.seek(0, os.SEEK_END)
+    size = upload.file.tell()
+    upload.file.seek(position)
+    return size
+
+
+def _batch_failure(entry: dict[str, Any], exc: Exception) -> dict[str, Any]:
+    """Record a per-file failure without swallowing what actually went wrong.
+
+    ``detail`` carries the real cause - "corrupt PDF", "OCR timeout" - because
+    the whole point of a per-file report is telling the operator which file to
+    look at and why.  ``error`` stays the sentence a handler can act on.
+    """
+
+    entry["status"] = "failed"
+    entry["error"] = (
+        str(exc)
+        if isinstance(exc, ValueError)
+        else "The file could not be processed. It has not been added to the claim."
+    )
+    entry["detail"] = f"{type(exc).__name__}: {exc}"[:500]
+    return entry
 
 
 @router.post("/claims/{case_reference}/documents/batch", tags=["documents"])
@@ -705,9 +747,24 @@ def upload_document_batch(
     The endpoint also turns N round trips into one.
 
     *Why per-file results rather than all-or-nothing.* Handing over five pairs
-    and being told only "422" is unusable. Each file is stored and processed in
-    its own SAVEPOINT, so one unreadable PDF fails alone and the report names
-    it; the caller keeps every file that worked.
+    and being told only "422" is unusable. Each file is committed on its own, so
+    one unreadable PDF fails alone and the report names it with a real reason;
+    the caller keeps every file that worked.
+
+    *Why a commit per file rather than one SAVEPOINT per file.* Two reasons,
+    and they are the same reason. ``process_document``'s failure handler calls
+    ``Session.rollback()`` and then ``Session.commit()`` to write the FAILED
+    document and the FAILED run; inside a ``with db.begin_nested():`` that
+    rollback closes the context-managed transaction and the handler's very next
+    statement raises ``InvalidRequestError`` - so the document was never marked
+    FAILED, no FAILED run was written, the case status was never restored, and
+    the real cause was replaced by a SQLAlchemy-internals message. And a single
+    transaction spanning the batch holds the SQLite write lock for the whole
+    run, so every concurrent write fails against the busy timeout and one
+    failure in the final sweep rolls back all N files. Committing the stored
+    row before processing it, and the processed result after, fixes both: the
+    handler has a durable row to mark, and no file's work depends on the next
+    file's.
 
     The single-file endpoint is untouched and still the right call for the
     setup screen's one-invoice-one-estimate flow.
@@ -736,44 +793,89 @@ def upload_document_batch(
                 "message": "Attach at least one file to invoice_files or estimate_files.",
             },
         )
+    total_bytes = sum(_upload_size(upload) for _, upload in queue)
+    if len(queue) > MAX_BATCH_FILES or total_bytes > MAX_BATCH_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "code": "BATCH_TOO_LARGE",
+                "message": (
+                    f"This batch has {len(queue)} files ({total_bytes} bytes). "
+                    f"Send at most {MAX_BATCH_FILES} files and "
+                    f"{MAX_BATCH_BYTES} bytes per request, in several batches if "
+                    "needed, then call the link-sweep endpoint once at the end."
+                ),
+                "files": len(queue),
+                "bytes": total_bytes,
+                "max_files": MAX_BATCH_FILES,
+                "max_bytes": MAX_BATCH_BYTES,
+            },
+        )
 
     results: list[dict[str, Any]] = []
     for slot, upload in queue:
         entry = _batch_entry(slot, upload.filename)
         try:
             content = upload.file.read()
-            with db.begin_nested():
-                document = store_pdf(
-                    db,
-                    case=case,
-                    filename=upload.filename or f"{slot}.pdf",
-                    content=content,
-                    role=document_role,
-                    intake_group=intake_group,
-                )
-                entry["document_id"] = document.id
-                already_processed = document.page_count is not None and bool(document.pages)
-                entry["status"] = "already_processed" if already_processed else "stored"
-                if process and not already_processed:
-                    run = process_document(db, document)
-                    entry["status"] = "processed"
-                    entry["metrics"] = run.metrics_json
-                entry["invoice_units"] = len(document.invoices)
-                if document.engineer_assessment is not None:
-                    entry["assessment_id"] = document.engineer_assessment.id
+            document = store_pdf(
+                db,
+                case=case,
+                filename=upload.filename or f"{slot}.pdf",
+                content=content,
+                role=document_role,
+                intake_group=intake_group,
+            )
+            entry["document_id"] = document.id
+            already_processed = document.page_count is not None and bool(document.pages)
+            entry["status"] = "already_processed" if already_processed else "stored"
+            # Durable before processing, so ``process_document``'s failure
+            # handler has a row to mark FAILED after its own rollback.
+            db.commit()
         except Exception as exc:  # noqa: BLE001 - one bad file must not sink the batch
             logger.exception("Batch upload failed for %s", upload.filename)
-            entry["status"] = "failed"
-            entry["error"] = str(exc) if isinstance(exc, ValueError) else (
-                "The file could not be processed. It has not been added to the claim."
-            )
+            db.rollback()
+            results.append(_batch_failure(entry, exc))
+            continue
+
+        if process and entry["status"] == "stored":
+            try:
+                run = process_document(db, document)
+                entry["status"] = "processed"
+                entry["metrics"] = run.metrics_json
+                db.commit()
+            except Exception as exc:  # noqa: BLE001 - one bad file must not sink the batch
+                logger.exception("Batch processing failed for %s", upload.filename)
+                # ``process_document`` has already committed the FAILED document
+                # and the FAILED run; this only clears the session.
+                db.rollback()
+                results.append(_batch_failure(entry, exc))
+                continue
+
+        entry["invoice_units"] = len(document.invoices)
+        if document.engineer_assessment is not None:
+            entry["assessment_id"] = document.engineer_assessment.id
         results.append(entry)
 
     swept = None
     if run_sweep and process and any(row["status"] == "processed" for row in results):
-        run_case_gap_fill(db, case.id)
-        swept = _pairing_summary(db, case)
-    db.commit()
+        # Every file above is already committed. A sweep failure must therefore
+        # be reported, never raised: letting it propagate would close the
+        # session on a rolled-back transaction and hand the client a bare 500
+        # with none of the per-file rows this endpoint exists to provide.
+        try:
+            run_case_gap_fill(db, case.id)
+            db.commit()
+            swept = _pairing_summary(db, case)
+        except Exception as exc:  # noqa: BLE001 - the files are already safe
+            logger.exception("Batch link sweep failed for case %s", case.id)
+            db.rollback()
+            swept = {
+                "error": (
+                    "The files were accepted but the pairing sweep failed. "
+                    "Call the link-sweep endpoint to retry it."
+                ),
+                "detail": f"{type(exc).__name__}: {exc}"[:500],
+            }
 
     return {
         "case_reference": case.case_reference,
@@ -1721,6 +1823,21 @@ def reset_case_data_endpoint(
     the exact confirmation phrase, and nothing is deleted until that matches.
     Reference data - ontology, price library, seed benchmark history, vehicle
     lookup, regulatory rules, configuration - is kept, and so is the schema.
+
+    Files go *after* the commit, never before. ``reset_case_data`` resolves the
+    roots and returns them; only once ``db.commit()`` has returned does
+    ``clear_reset_paths`` sweep them. The other order means a commit that fails
+    on a locked or full database leaves every case row in place and every PDF
+    behind it permanently gone - strictly worse than doing nothing.
+
+    The sweep itself never aborts the request: by the time it runs the database
+    half is durable, so a ``PermissionError`` halfway through is reported in
+    ``sweep_failures`` rather than raised as a 500 that tells the operator
+    nothing about which directories survived.
+
+    Not authenticated, matching the other ``/admin`` routes - see the reset
+    endpoint's note in the commit message. That is a real gap for a route that
+    erases the audit chain, and the audit export is the mitigation, not a fix.
     """
 
     if request.confirm != CONFIRMATION_PHRASE:
@@ -1748,6 +1865,7 @@ def reset_case_data_endpoint(
             status_code=409,
             detail={"code": "RESET_FAILED", "message": str(exc)},
         ) from exc
+    clear_reset_paths(report)
     return report.as_dict()
 
 

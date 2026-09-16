@@ -7,6 +7,8 @@ circular processing-run FK, and the files no cascade ever touches.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import date
 from pathlib import Path
 
@@ -16,10 +18,12 @@ from sqlalchemy import create_engine, event, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+import app.bootstrap as bootstrap
 import app.reset as reset_module
 from app.config import get_settings
 from app.database import get_db
 from app.enums import (
+    ApprovalStatus,
     AuditActorType,
     CaseStatus,
     DocumentRole,
@@ -41,14 +45,18 @@ from app.models import (
     ConfigVersion,
     Document,
     DocumentPage,
+    ExternalEvidence,
     HistoricalObservation,
     Invoice,
     InvoiceLineItem,
     OntologyItem,
+    OntologySynonym,
     OntologyVersion,
     PriceObservation,
     ProcessingRun,
     RegulatoryRule,
+    ResearchItem,
+    ResearchTask,
     SourceImport,
     SourceProvider,
     Vehicle,
@@ -57,6 +65,7 @@ from app.models import (
 from app.reset import CONFIRMATION_PHRASE, DEFAULT_NEW_CASE_REFERENCE, reset_case_data
 from app.services import document_processing
 from app.services.in_house_repair_data import PROVIDER_NAME as SYNTHETIC_PROVIDER_NAME
+from app.services.research_workflow import AUTO_STAGED_SOURCE_TYPE
 
 DEMO_CASE_REFERENCE = "CG-2026-0048"
 
@@ -110,16 +119,28 @@ def exports_root(tmp_path: Path, monkeypatch) -> Path:
 
 
 @pytest.fixture
-def run_reset(session_factory, storage_root: Path, exports_root: Path):
-    """Call the reset with explicit roots, so no test can depend on settings."""
+def audit_export_root(tmp_path: Path) -> Path:
+    return tmp_path / "audit-exports"
+
+
+@pytest.fixture
+def run_reset(
+    session_factory, storage_root: Path, exports_root: Path, audit_export_root: Path
+):
+    """Call the reset with explicit roots, so no test can depend on settings.
+
+    Mirrors the caller contract exactly: the database half commits first, and
+    only then does ``clear_reset_paths`` touch the disk.
+    """
 
     def _run(**kwargs) -> reset_module.ResetReport:
         kwargs.setdefault("storage_dir", storage_root)
         kwargs.setdefault("exports_dir", exports_root)
+        kwargs.setdefault("audit_export_dir", audit_export_root)
         with session_factory() as session:
             report = reset_case_data(session, **kwargs)
             session.commit()
-        return report
+        return reset_module.clear_reset_paths(report)
 
     return _run
 
@@ -543,8 +564,11 @@ def test_cli_wipes_and_prints_a_table(cli, populated, session_factory, capsys) -
     assert cli(["--confirm", CONFIRMATION_PHRASE, "--case-reference", "CG-CLIENT-CLI"]) == 0
     printed = capsys.readouterr().out
     assert "Rows deleted" in printed
-    assert "Reference data kept" in printed
+    assert "Rows kept" in printed
+    # The operator must be able to tell reference data from case-derived data.
+    assert "reference  case-derived" in printed
     assert "Files removed:" in printed
+    assert "Audit log exported before deletion:" in printed
     assert "CG-CLIENT-CLI" in printed
 
     with session_factory() as session:
@@ -556,3 +580,566 @@ def test_cli_can_wipe_without_creating_a_case(cli, populated, session_factory) -
     assert cli(["--confirm", CONFIRMATION_PHRASE, "--no-new-case", "--json"]) == 0
     with session_factory() as session:
         assert session.scalar(select(func.count(Case.id))) == 0
+
+
+# --------------------------------------------------------------------------
+# The "kept reference library" that was really case data
+# --------------------------------------------------------------------------
+
+
+def _seed_case_derived_reference(
+    session: Session, *, case_id: str, invoice: Invoice, line: InvoiceLineItem
+) -> dict[str, str]:
+    """Exactly what ``stage_unmatched_line_proposal`` writes for one line.
+
+    ResearchTask -> OntologyVersion(``research-<task>``) -> provisional
+    OntologyItem -> ExternalEvidence -> PriceObservation, plus the approved
+    variant that a handler promotion produces. 58 of the 130 ontology items and
+    58 of the 123 price observations in the developer's database look like this.
+    """
+
+    task = ResearchTask(
+        case_id=case_id,
+        invoice_line_item_id=line.id,
+        requested_by="claimguard.auto-staging",
+        initiated_automatically=True,
+        query_text="Auto-staged ontology proposal for an unmatched priced invoice line",
+        source_allow_list_version="internal-invoice-provenance-v1",
+    )
+    session.add(task)
+    session.flush()
+    version = OntologyVersion(
+        sequence_number=90,
+        label=f"research-{task.id}",
+        status=OntologyVersionStatus.DRAFT,
+        created_by="claimguard.auto-staging",
+    )
+    session.add(version)
+    session.flush()
+    item = OntologyItem(
+        canonical_code="AUTO-STAGED-BUMPER",
+        canonical_name="Rear bumper (auto-staged)",
+        item_type=LineItemKind.PART,
+        category="body_panel",
+        unit="each",
+        price_source=AUTO_STAGED_SOURCE_TYPE,
+        source_url_or_ref=f"invoice-line:{line.id}",
+        created_by="claimguard.auto-staging",
+        created_in_version_id=version.id,
+    )
+    session.add(item)
+    session.flush()
+    evidence = ExternalEvidence(
+        research_task_id=task.id,
+        source_record_id=line.id,
+        source_uri=f"invoice-line://{invoice.id}/{line.id}",
+        title="Invoice 91283 line: Rear bumper",
+        content_hash="a" * 64,
+    )
+    session.add(evidence)
+    session.flush()
+    session.add(
+        ResearchItem(
+            research_task_id=task.id,
+            provisional_ontology_item_id=item.id,
+            suggested_canonical_name="Rear bumper (auto-staged)",
+            suggested_item_type=LineItemKind.PART,
+            suggested_category="body_panel",
+            suggested_unit="each",
+            suggested_price_net="410.00",
+            vat_basis=PriceVatBasis.NET,
+            date_checked=date(2026, 1, 4),
+            rationale="Machine-staged proposal from an unmatched priced invoice line.",
+        )
+    )
+    provisional = PriceObservation(
+        ontology_item_id=item.id,
+        price_net="410.00",
+        vat_basis=PriceVatBasis.NET,
+        unit="each",
+        source_type=AUTO_STAGED_SOURCE_TYPE,
+        source_record_id=line.id,
+        source_url_or_ref=evidence.source_uri,
+        effective_from=date(2026, 1, 4),
+        approval_status=ApprovalStatus.PROVISIONAL,
+        observation_kind=PriceObservationKind.PROVISIONAL,
+        evidence_id=evidence.id,
+        created_in_version_id=version.id,
+    )
+    # The one in the developer's database that a handler already promoted: it
+    # is APPROVED and MARKET, so nothing downstream filters it out.
+    approved = PriceObservation(
+        ontology_item_id=item.id,
+        price_net="415.00",
+        vat_basis=PriceVatBasis.NET,
+        unit="each",
+        source_type=AUTO_STAGED_SOURCE_TYPE,
+        source_record_id=line.id,
+        source_url_or_ref=evidence.source_uri,
+        effective_from=date(2026, 1, 4),
+        approval_status=ApprovalStatus.APPROVED,
+        observation_kind=PriceObservationKind.MARKET,
+        evidence_id=evidence.id,
+        created_in_version_id=version.id,
+    )
+    session.add_all([provisional, approved])
+    session.flush()
+
+    # ``mapping_review._learn_approved_synonym``: attached to a *surviving*
+    # reference item, with a reference into the invoice line that is about to
+    # be deleted. Zero rows today; real the first time a handler approves.
+    reference_item = session.scalar(
+        select(OntologyItem).where(OntologyItem.canonical_code == "PANEL-FRONT-WING")
+    )
+    published = session.scalar(
+        select(OntologyVersion).where(OntologyVersion.status == OntologyVersionStatus.PUBLISHED)
+    )
+    session.add(
+        OntologySynonym(
+            ontology_item_id=reference_item.id,
+            synonym="Front wing o/s",
+            normalised_synonym="front wing os",
+            source_type="handler_approved_invoice_mapping",
+            source_reference=f"invoice_line:{line.id}",
+            created_in_version_id=published.id,
+        )
+    )
+    session.flush()
+    return {"item": item.id, "version": version.id, "observations": [provisional.id, approved.id]}
+
+
+@pytest.fixture
+def contaminated(session_factory, populated) -> dict[str, object]:
+    with session_factory() as session:
+        invoice = session.scalar(select(Invoice))
+        line = session.scalar(select(InvoiceLineItem))
+        seeded = _seed_case_derived_reference(
+            session, case_id=invoice.case_id, invoice=invoice, line=line
+        )
+        session.commit()
+    return seeded
+
+
+def test_reset_deletes_the_case_derived_reference_population(
+    session_factory, contaminated, run_reset
+) -> None:
+    """A benchmark derived from the erased invoice must not price the next claim.
+
+    ``external_evidence`` is wiped, so these observations also cannot be
+    audited or explained any more -- they would be unfalsifiable numbers.
+    """
+
+    report = run_reset()
+
+    assert report.deleted_rows["price_observations (case-derived)"] == 2
+    assert report.deleted_rows["ontology_items (case-derived)"] == 1
+    assert report.deleted_rows["ontology_versions (case-derived)"] == 1
+    assert report.deleted_rows["ontology_synonyms (case-derived)"] == 1
+
+    with session_factory() as session:
+        surviving_observations = session.scalars(select(PriceObservation)).all()
+        assert [row.source_type for row in surviving_observations] == ["seed_workbook"]
+        assert all(row.evidence_id is None for row in surviving_observations)
+        surviving_items = session.scalars(select(OntologyItem)).all()
+        assert [row.canonical_code for row in surviving_items] == ["PANEL-FRONT-WING"]
+        # The governed seed row and its published version are untouched.
+        assert session.scalars(select(OntologySynonym)).all() == []
+        labels = {row.label for row in session.scalars(select(OntologyVersion)).all()}
+        assert not any(label.startswith("research-") for label in labels)
+        assert labels
+
+
+def test_report_separates_reference_rows_from_case_derived_rows(
+    contaminated, run_reset
+) -> None:
+    """``price_observations: 123`` reads as reassurance until you split it."""
+
+    report = run_reset()
+    payload = report.as_dict()
+
+    assert payload["kept_rows"]["price_observations"] == 1
+    assert payload["kept_rows_reference"]["price_observations"] == 1
+    assert payload["kept_rows_case_derived"]["price_observations"] == 0
+    assert payload["kept_rows_case_derived"]["ontology_items"] == 0
+    assert payload["total_case_derived_kept"] == 0
+
+
+def test_keeping_the_derived_history_says_so_instead_of_hiding_it(
+    contaminated, run_reset
+) -> None:
+    """Opting out is allowed; opting out quietly is not."""
+
+    report = run_reset(purge_derived_history=False)
+    payload = report.as_dict()
+
+    assert payload["kept_rows_case_derived"]["price_observations"] == 2
+    assert payload["kept_rows_case_derived"]["ontology_items"] == 1
+    assert payload["kept_rows_case_derived"]["ontology_versions"] == 1
+    # The synthetic in-house bank and the finalised write-back are counted too.
+    assert payload["kept_rows_case_derived"]["historical_observations"] == 2
+    assert payload["total_case_derived_kept"] > 0
+    assert "WARNING" in reset_module.render_report(report)
+
+
+def test_an_observation_is_case_derived_because_its_evidence_was(
+    session_factory, populated, run_reset
+) -> None:
+    """The marker that the wipe itself erases.
+
+    ``price_observations.evidence_id`` is ``ON DELETE SET NULL``: deleting
+    ``external_evidence`` first destroys the only proof that an observation can
+    no longer be audited. So the set is snapshotted before the wipe, and an
+    observation with an innocuous ``source_type`` still goes.
+    """
+
+    with session_factory() as session:
+        invoice = session.scalar(select(Invoice))
+        line = session.scalar(select(InvoiceLineItem))
+        task = ResearchTask(
+            case_id=invoice.case_id,
+            invoice_line_item_id=line.id,
+            requested_by="handler",
+            query_text="manual research",
+            source_allow_list_version="v1",
+        )
+        session.add(task)
+        session.flush()
+        evidence = ExternalEvidence(
+            research_task_id=task.id,
+            source_uri="https://example.invalid/part",
+            title="Supplier listing",
+            content_hash="b" * 64,
+        )
+        session.add(evidence)
+        session.flush()
+        item = session.scalar(
+            select(OntologyItem).where(OntologyItem.canonical_code == "PANEL-FRONT-WING")
+        )
+        session.add(
+            PriceObservation(
+                ontology_item_id=item.id,
+                price_net="99.00",
+                vat_basis=PriceVatBasis.NET,
+                unit="each",
+                source_type="looks_like_reference_data",
+                effective_from=date(2026, 2, 1),
+                observation_kind=PriceObservationKind.MARKET,
+                evidence_id=evidence.id,
+            )
+        )
+        session.commit()
+
+    report = run_reset()
+
+    assert report.deleted_rows["price_observations (case-derived)"] == 1
+    with session_factory() as session:
+        assert [row.source_type for row in session.scalars(select(PriceObservation)).all()] == [
+            "seed_workbook"
+        ]
+        # Its item keeps a governed observation, so the item itself survives.
+        assert session.scalar(select(func.count(OntologyItem.id))) == 1
+
+
+# --------------------------------------------------------------------------
+# Files: after the commit, contained, and never aborting
+# --------------------------------------------------------------------------
+
+
+def test_a_failed_commit_leaves_every_file_in_place(
+    session_factory, populated, storage_root: Path, exports_root: Path, audit_export_root: Path
+) -> None:
+    """The scenario the old docstring promised could not happen.
+
+    Files used to be deleted inside ``reset_case_data``, before the caller's
+    ``commit()``. A commit that then failed -- SQLite ``database is locked``
+    past the busy timeout, a full disk, a killed process -- rolled the database
+    back and left every case row in place with every PDF behind it gone.
+    """
+
+    with session_factory() as session:
+        report = reset_case_data(
+            session,
+            storage_dir=storage_root,
+            exports_dir=exports_root,
+            audit_export_dir=audit_export_root,
+        )
+        # Stand-in for the commit failing.
+        session.rollback()
+
+    assert report.pending_roots
+    assert report.removed_paths == []
+    assert populated["orphan"].exists()
+    assert populated["export_dir"].exists()
+    assert any((storage_root / "cases").iterdir())
+    with session_factory() as session:
+        assert session.scalar(select(func.count(Case.id))) == 1
+        assert session.scalar(select(Case.case_reference)) == DEMO_CASE_REFERENCE
+        assert session.scalar(select(func.count(Document.id))) == 1
+
+
+@pytest.mark.parametrize(
+    ("value", "reason"),
+    [
+        ("", "empty"),
+        (".", "empty"),
+        ("storage", "relative"),
+        ("/", "root"),
+        ("/cases", "root"),
+    ],
+)
+def test_reset_refuses_an_uncontained_storage_root(
+    session_factory, populated, exports_root: Path, audit_export_root: Path, value, reason
+) -> None:
+    """``CLAIM_GUARD_STORAGE_DIR`` is an unvalidated env-fed ``Path``.
+
+    ``''`` and ``'storage'`` resolve against the process cwd, so the API server
+    (cwd ``backend/``) and ``claimguard-reset`` run from the repo root address
+    different trees -- the CLI deletes nothing, prints ``Files removed: 0`` and
+    exits 0. ``'/'`` turns the sweep into an ``rm -rf /cases``.
+    """
+
+    with session_factory() as session:
+        with pytest.raises(ValueError, match="Refusing to reset"):
+            reset_case_data(
+                session,
+                storage_dir=value,
+                exports_dir=exports_root,
+                audit_export_dir=audit_export_root,
+            )
+        session.rollback()
+
+    # Nothing moved: the check runs before the first delete.
+    with session_factory() as session:
+        assert session.scalar(select(Case.case_reference)) == DEMO_CASE_REFERENCE
+        assert session.scalar(select(func.count(Document.id))) == 1
+
+
+def test_reset_refuses_a_root_the_writer_does_not_use(
+    session_factory, populated, tmp_path: Path, exports_root: Path, audit_export_root: Path
+) -> None:
+    """Deleting a tree nobody writes to removes nothing and reports success.
+
+    ``document_processing`` binds its ``settings`` at import; this module used
+    to call ``get_settings()`` fresh. Identical in production, divergent the
+    moment the cache is cleared or one of the two is patched.
+    """
+
+    elsewhere = tmp_path / "not-the-writers-tree"
+    elsewhere.mkdir()
+    with session_factory() as session:
+        with pytest.raises(ValueError, match="store_pdf"):
+            reset_case_data(
+                session,
+                storage_dir=elsewhere,
+                exports_dir=exports_root,
+                audit_export_dir=audit_export_root,
+            )
+        session.rollback()
+
+
+def test_a_permission_error_mid_sweep_is_reported_not_raised(
+    session_factory, populated, run_reset, storage_root: Path, monkeypatch
+) -> None:
+    """The database half is already committed, so raising here helps nobody."""
+
+    real_rmtree = reset_module.shutil.rmtree
+    blocked = populated["orphan"]
+
+    def selective_rmtree(path, *args, **kwargs):
+        if Path(path) == blocked:
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(reset_module.shutil, "rmtree", selective_rmtree)
+
+    report = run_reset()
+
+    assert [failure.path for failure in report.sweep_failures] == [str(blocked)]
+    assert "Permission denied" in report.sweep_failures[0].error
+    assert blocked.exists()
+    # Every other directory still went, and the wipe still happened.
+    assert report.removed_paths
+    assert "COULD NOT REMOVE" in reset_module.render_report(report)
+    with session_factory() as session:
+        assert session.scalar(select(func.count(Document.id))) == 0
+
+
+def test_the_report_names_the_roots_before_anything_is_deleted(
+    session_factory, populated, storage_root: Path, exports_root: Path, audit_export_root: Path
+) -> None:
+    with session_factory() as session:
+        report = reset_case_data(
+            session,
+            storage_dir=storage_root,
+            exports_dir=exports_root,
+            audit_export_dir=audit_export_root,
+        )
+        session.commit()
+
+    assert report.pending_roots == [
+        str((storage_root / "cases").resolve()),
+        str(exports_root.resolve()),
+    ]
+    printed = reset_module.render_report(report)
+    assert "Delete roots (resolved before anything was removed)" in printed
+    assert "Nothing removed yet" in printed
+    assert str(exports_root.resolve()) in printed
+    reset_module.clear_reset_paths(report)
+    assert report.pending_roots == []
+
+
+# --------------------------------------------------------------------------
+# The audit chain leaves before it is destroyed
+# --------------------------------------------------------------------------
+
+
+def test_the_audit_chain_is_exported_before_it_is_wiped(
+    session_factory, populated, run_reset, audit_export_root: Path
+) -> None:
+    """Wiping ``audit_events`` erases the tamper evidence it exists to provide.
+
+    That is only defensible if the log leaves first, in full, with a digest.
+    """
+
+    with session_factory() as session:
+        before = session.scalars(select(AuditEvent)).all()
+        expected = {row.id for row in before}
+    assert expected
+
+    report = run_reset()
+
+    export = Path(report.audit_export["path"])
+    assert export.parent == audit_export_root
+    assert export.is_file()
+    lines = export.read_text(encoding="utf-8").splitlines()
+    assert report.audit_export["events"] == len(lines) == len(expected)
+    assert {json.loads(line)["id"] for line in lines} == expected
+    # Every column, not a summary: the chain has to be reconstructable.
+    first = json.loads(lines[0])
+    assert {"event_hash", "previous_event_hash", "event_type", "actor_id"} <= set(first)
+    digest = hashlib.sha256(export.read_bytes()).hexdigest()
+    assert digest == report.audit_export["sha256"]
+
+    assert report.deleted_rows["audit_events"] == len(expected)
+    with session_factory() as session:
+        remaining = session.scalars(select(AuditEvent)).all()
+        assert [row.event_type for row in remaining] == ["CASE_DATA_RESET"]
+        assert remaining[0].event_payload_json["audit_export"]["sha256"] == digest
+
+
+def test_a_reset_without_a_new_case_still_records_itself(
+    session_factory, populated, run_reset
+) -> None:
+    """The only row that says the old chain was deleted on purpose."""
+
+    run_reset(new_case_reference=None)
+
+    with session_factory() as session:
+        events = session.scalars(select(AuditEvent)).all()
+        assert [row.event_type for row in events] == ["CASE_DATA_RESET"]
+        assert events[0].case_id is None
+
+
+def test_reset_endpoint_reports_an_uncontained_root_instead_of_deleting(
+    client: TestClient, session_factory, monkeypatch
+) -> None:
+    """A misconfigured env var must fail the request, not the database."""
+
+    monkeypatch.setattr(document_processing.settings, "storage_dir", Path("/"))
+    response = client.post(
+        "/api/v1/admin/case-data/reset", json={"confirm": CONFIRMATION_PHRASE}
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "RESET_FAILED"
+    assert "filesystem root" in response.json()["detail"]["message"]
+
+    with session_factory() as session:
+        assert session.scalar(select(Case.case_reference)) == DEMO_CASE_REFERENCE
+        assert session.scalar(select(func.count(Document.id))) == 1
+
+
+def test_reset_endpoint_reports_the_split_and_the_audit_export(
+    client: TestClient, contaminated, audit_export_root: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        reset_module, "AUDIT_EXPORT_DIRNAME", audit_export_root.name
+    )
+    response = client.post(
+        "/api/v1/admin/case-data/reset", json={"confirm": CONFIRMATION_PHRASE}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_case_derived_kept"] == 0
+    assert body["kept_rows_case_derived"]["price_observations"] == 0
+    assert body["deleted_rows"]["price_observations (case-derived)"] == 2
+    assert Path(body["audit_export"]["path"]).is_file()
+    assert body["sweep_failures"] == []
+    # The sweep runs after the commit, so by the time the client sees the body
+    # the roots are cleared and nothing is still pending.
+    assert body["pending_roots"] == []
+    # ...but the roots this run addressed are still named, because the silent
+    # failure mode is a wrong root, not a missing one.
+    assert len(body["resolved_roots"]) == 2
+    assert all(root.startswith("/") for root in body["resolved_roots"])
+    assert body["removed_paths"]
+
+
+def test_cli_exits_non_zero_when_files_are_left_behind(
+    cli, populated, capsys, monkeypatch
+) -> None:
+    """Rows gone, files still on disk: that is not "done"."""
+
+    monkeypatch.setattr(
+        reset_module.shutil,
+        "rmtree",
+        lambda path, *a, **k: (_ for _ in ()).throw(PermissionError(13, "Permission denied")),
+    )
+    assert cli(["--confirm", CONFIRMATION_PHRASE]) == 1
+    captured = capsys.readouterr()
+    assert "Clearing" in captured.err
+    assert "Could not remove" in captured.err
+    assert "COULD NOT REMOVE" in captured.out
+
+
+# --------------------------------------------------------------------------
+# claimguard-bootstrap must not undo the reset
+# --------------------------------------------------------------------------
+
+
+def test_bootstrap_refuses_to_rebuild_a_case_the_reset_removed(
+    session_factory, populated, run_reset
+) -> None:
+    """Renaming the demo case would not help: the harm is the data, not the label.
+
+    ``claimguard-bootstrap``'s idempotence check is "does this reference
+    exist", which is the right question until a reset makes the answer
+    deliberately no. Rebuilding would re-ingest the demo invoice and re-mint the
+    ontology rows derived from it -- exactly what the client asked to be rid of.
+    """
+
+    with session_factory() as session:
+        # Before any reset the guard is silent.
+        bootstrap._refuse_after_reset(session, bootstrap.DEFAULT_CASE_REFERENCE, force=False)
+
+    run_reset()
+
+    with session_factory() as session:
+        with pytest.raises(RuntimeError, match="deliberately"):
+            bootstrap._refuse_after_reset(
+                session, bootstrap.DEFAULT_CASE_REFERENCE, force=False
+            )
+        # ``--force`` is the deliberate override.
+        bootstrap._refuse_after_reset(session, bootstrap.DEFAULT_CASE_REFERENCE, force=True)
+
+
+def test_bootstrap_default_reference_is_still_the_demo_case_but_overridable(
+    session_factory, populated, run_reset
+) -> None:
+    assert bootstrap.DEFAULT_CASE_REFERENCE == DEMO_CASE_REFERENCE
+    assert bootstrap.CASE_REFERENCE == bootstrap.DEFAULT_CASE_REFERENCE
+
+    run_reset()
+    # The refusal is on the reset marker, so a different reference is refused too.
+    with session_factory() as session:
+        with pytest.raises(RuntimeError, match="CG-SOMETHING-ELSE"):
+            bootstrap._refuse_after_reset(session, "CG-SOMETHING-ELSE", force=False)

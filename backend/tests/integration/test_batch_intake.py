@@ -14,13 +14,15 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event, select
+from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.api import router
 from app.database import get_db
+from app.enums import RunStatus, UploadStatus
 from app.init_db import initialize_database
 from app.main import app
-from app.models import Case, Document, EngineerAssessment
+from app.models import Case, Document, EngineerAssessment, ProcessingRun
 from app.services import document_processing
 
 PAIR_DIR = Path(__file__).resolve().parents[3] / "sample-data" / "engineer-invoice-pairs"
@@ -234,3 +236,132 @@ def test_batch_rejects_an_unknown_case_and_intake_group(client: TestClient, case
     )
     assert bad_group.status_code == 422
     assert bad_group.json()["detail"]["code"] == "INVALID_DOCUMENT"
+
+
+# --------------------------------------------------------------------------
+# Failure isolation: none of the three ways a batch used to lose work
+# --------------------------------------------------------------------------
+
+# A real PDF header followed by nothing usable. ``normalise_document_upload``
+# only checks the first five bytes, so unlike ``b"not a pdf at all"`` this file
+# gets stored and reaches ``process_document`` -- which is where the savepoint
+# bug lived.
+TRUNCATED_PDF = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog"
+
+
+def test_truncated_pdf_is_marked_failed_with_a_real_reason(
+    client: TestClient, case: str, session_factory
+) -> None:
+    """The file that actually reaches ``process_document`` and fails there.
+
+    ``process_document``'s failure handler calls ``Session.rollback()`` and then
+    ``Session.commit()``. Run inside ``with db.begin_nested():`` the rollback
+    closes the context-managed transaction and the next statement raises
+    ``InvalidRequestError: Can't operate on closed transaction inside context
+    manager`` -- so the document was never marked FAILED, no FAILED run was
+    written, and the reported cause was a SQLAlchemy internals message instead
+    of what was wrong with the PDF.
+    """
+
+    good = PAIR_DIR / "CLM-UK-001_Repair_Invoice.pdf"
+    response = client.post(
+        f"/api/v1/claims/{case}/documents/batch",
+        files=[
+            ("invoice_files", (good.name, good.read_bytes(), "application/pdf")),
+            ("invoice_files", ("truncated.pdf", TRUNCATED_PDF, "application/pdf")),
+        ],
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["accepted"] == 1
+    assert body["failed"] == 1
+
+    failed = next(row for row in body["results"] if row["status"] == "failed")
+    assert failed["filename"] == "truncated.pdf"
+    # It was stored, so the operator can look it up; and the reason names the
+    # PDF, not the ORM.
+    assert failed["document_id"]
+    assert failed["detail"]
+    assert "closed transaction" not in failed["detail"]
+    assert "InvalidRequestError" not in failed["detail"]
+
+    with session_factory() as session:
+        document = session.get(Document, failed["document_id"])
+        assert document is not None
+        assert document.upload_status == UploadStatus.FAILED
+        runs = session.scalars(
+            select(ProcessingRun).where(ProcessingRun.status == RunStatus.FAILED)
+        ).all()
+        assert len(runs) == 1
+        assert runs[0].error_summary
+        assert "closed transaction" not in runs[0].error_summary
+        # The good file is untouched, and the case was restored to the last
+        # run that succeeded rather than left pointing at the failed one.
+        assert session.scalar(select(func.count(Document.id))) == 2
+        restored = session.get(Case, runs[0].case_id)
+        assert restored.current_processing_run_id != runs[0].id
+        assert (
+            session.get(ProcessingRun, restored.current_processing_run_id).status
+            == RunStatus.SUCCEEDED
+        )
+
+
+def test_a_failing_sweep_does_not_discard_the_batch(
+    client: TestClient, case: str, session_factory, monkeypatch
+) -> None:
+    """Ten files in, sweep raises: previously all ten Document rows vanished.
+
+    ``run_case_gap_fill`` and the commit used to sit outside every ``try``, so
+    the exception propagated, ``session.close()`` rolled the whole request back,
+    and the client got a bare 500 with none of the per-file rows the endpoint
+    exists to provide -- while the PDFs stayed on disk.
+    """
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("pairing blew up")
+
+    monkeypatch.setattr(router, "run_case_gap_fill", explode)
+
+    response = client.post(
+        f"/api/v1/claims/{case}/documents/batch",
+        files=[*_files("invoice_files", "Repair_Invoice"), *_files("estimate_files", "Engineer_Assessment")],
+        data={"intake_group": "live"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["accepted"] == 10
+    assert body["failed"] == 0
+    assert body["pairing"]["error"]
+    assert "pairing blew up" in body["pairing"]["detail"]
+
+    with session_factory() as session:
+        assert session.scalar(select(func.count(Document.id))) == 10
+
+
+def test_batch_rejects_more_files_than_the_cap(client: TestClient, case: str) -> None:
+    """One request must not hold the SQLite write lock for half an hour."""
+
+    good = (PAIR_DIR / "CLM-UK-001_Repair_Invoice.pdf").read_bytes()
+    payload = [
+        ("invoice_files", (f"invoice-{index}.pdf", good, "application/pdf"))
+        for index in range(router.MAX_BATCH_FILES + 1)
+    ]
+    response = client.post(f"/api/v1/claims/{case}/documents/batch", files=payload)
+    assert response.status_code == 413
+    detail = response.json()["detail"]
+    assert detail["code"] == "BATCH_TOO_LARGE"
+    assert detail["files"] == router.MAX_BATCH_FILES + 1
+    assert detail["max_files"] == router.MAX_BATCH_FILES
+
+
+def test_batch_rejects_more_bytes_than_the_cap(
+    client: TestClient, case: str, monkeypatch
+) -> None:
+    monkeypatch.setattr(router, "MAX_BATCH_BYTES", 10)
+    good = PAIR_DIR / "CLM-UK-001_Repair_Invoice.pdf"
+    response = client.post(
+        f"/api/v1/claims/{case}/documents/batch",
+        files=[("invoice_files", (good.name, good.read_bytes(), "application/pdf"))],
+    )
+    assert response.status_code == 413
+    assert response.json()["detail"]["code"] == "BATCH_TOO_LARGE"
