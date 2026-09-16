@@ -5,7 +5,59 @@ import {
   acceptedChallengeRows,
   buildAcceptedChallengeCsv,
 } from "./challenge-decision-export"
-import { demoWorkspace } from "./demo-data"
+import type { ClaimWorkspace } from "./types"
+
+// A test-only workspace. `acceptedChallengeRows` only falls back to the
+// workspace when no invoices are supplied, which neither test below does, so
+// this exists purely to satisfy the parameter type.
+function testWorkspace(): ClaimWorkspace {
+  return {
+    liability: { status: "ADMITTED", humanConfirmed: true },
+    claim: {
+      id: "TEST-CLAIM",
+      status: "comparison_review",
+      policyNumber: "",
+      accidentDate: "",
+      accidentLocation: "",
+      accidentDescription: "",
+      damageDescription: "",
+      payingInsurer: "",
+      claimingParty: "",
+      insuredDriver: "",
+      thirdPartyDriver: "",
+      insuredVehicle: "",
+      insuredVrm: "",
+      thirdPartyVehicle: "",
+      thirdPartyVrm: "",
+    },
+    invoice: {
+      id: "test-invoice",
+      number: "",
+      date: "",
+      garage: "",
+      address: "",
+      vehicle: "",
+      vrm: "",
+      mileage: 0,
+      partsNet: 0,
+      labourNet: 0,
+      taxableNet: 0,
+      vat: 0,
+      mot: 0,
+      netIncludingMot: 0,
+      gross: 0,
+    },
+    lines: [],
+    summary: {
+      challengePrice: 0,
+      challengeAmount: 0,
+      vatImpact: 0,
+      grossEffect: 0,
+      challengePercentage: 0,
+      challengeStrength: 0,
+    },
+  }
+}
 
 function invoice(): ClaimInvoiceSummary {
   return {
@@ -55,7 +107,7 @@ function invoice(): ClaimInvoiceSummary {
 
 describe("accepted challenge summary", () => {
   it("includes approved challenge lines only", () => {
-    const rows = acceptedChallengeRows([invoice()], demoWorkspace)
+    const rows = acceptedChallengeRows([invoice()], testWorkspace())
 
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({
@@ -67,7 +119,7 @@ describe("accepted challenge summary", () => {
 
   it("exports challenge amount as the first CSV column", () => {
     const csv = buildAcceptedChallengeCsv(
-      acceptedChallengeRows([invoice()], demoWorkspace)
+      acceptedChallengeRows([invoice()], testWorkspace())
     )
 
     expect(csv.split("\n")[0]).toBe(

@@ -2,24 +2,68 @@ import { describe, expect, it } from "vitest"
 import type { ChallengeKnowledgeGraphPayload } from "@/lib/api"
 import {
   buildChallengeNetwork,
-  demoGraphPayload,
   graphNodeId,
   type GraphEvidence,
 } from "./knowledge-graph-model"
+
+// Test-only skeleton. `payload()` below overrides every field the assertions
+// care about; these values exist only to satisfy the payload shape.
+const basePayload: ChallengeKnowledgeGraphPayload = {
+  caseReference: "TEST-CLAIM",
+  storage: "relational-fallback",
+  summary: {
+    mostChallengedRepairer: null,
+    mostChallengedItem: null,
+    challengedInvoiceCount: 0,
+    potentialReduction: 0,
+  },
+  repairers: [],
+  items: [],
+  edges: [],
+}
+
+const baseEdge: ChallengeKnowledgeGraphPayload["edges"][number] = {
+  id: "edge",
+  repairer: "Repairer A",
+  itemId: "spark",
+  item: "Spark plugs",
+  invoiceCount: 1,
+  challengeCount: 1,
+  totalChallenge: 10,
+  maximumChallenge: 10,
+  evidence: [],
+}
+
+const baseEvidence: GraphEvidence = {
+  itemId: "spark",
+  item: "Spark plugs",
+  lineId: "line",
+  invoiceId: "invoice-1",
+  invoiceNumber: "9510",
+  repairer: "Repairer A",
+  description: "Spark plugs",
+  billedPrice: 30,
+  supportedPrice: 20,
+  challengeAmount: 10,
+  inHouseP90: null,
+  historicalClaimsP90: 20,
+  externalReferencePrice: null,
+  status: "review",
+}
 
 function payload(
   rows: Array<Partial<GraphEvidence>>
 ): ChallengeKnowledgeGraphPayload {
   return {
-    ...demoGraphPayload,
+    ...basePayload,
     edges: rows.map((row, index) => ({
-      ...demoGraphPayload.edges[0],
+      ...baseEdge,
       id: `edge-${index}`,
       itemId: row.itemId ?? "spark",
       item: row.item ?? "Spark plugs",
       evidence: [
         {
-          ...demoGraphPayload.edges[0].evidence[0],
+          ...baseEvidence,
           lineId: `line-${index}`,
           invoiceId: "invoice-1",
           invoiceNumber: "9510",

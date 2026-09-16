@@ -1,8 +1,6 @@
 const configuredApiBase = import.meta.env.VITE_API_URL as string | undefined
 const API_BASE = (configuredApiBase?.trim() || "").replace(/\/+$/, "")
 
-export const DEFAULT_CASE_REFERENCE = "CG-2026-0048"
-
 export const PAGE_TYPES = [
   "invoice",
   "engineer_assessment",
@@ -137,13 +135,13 @@ export function documentApiErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "The document request failed."
 }
 
-export function fetchDocumentPages(caseReference = DEFAULT_CASE_REFERENCE) {
+export function fetchDocumentPages(caseReference: string) {
   return requestJson<DocumentPageRecord[]>(
     `/api/v1/claims/${encodeURIComponent(caseReference)}/pages`
   )
 }
 
-export function fetchCaseDocuments(caseReference = DEFAULT_CASE_REFERENCE) {
+export function fetchCaseDocuments(caseReference: string) {
   return requestJson<UploadedDocument[]>(
     `/api/v1/claims/${encodeURIComponent(caseReference)}/documents`
   )
@@ -151,7 +149,7 @@ export function fetchCaseDocuments(caseReference = DEFAULT_CASE_REFERENCE) {
 
 export function uploadCurrentDocument(
   file: File,
-  caseReference = DEFAULT_CASE_REFERENCE,
+  caseReference: string,
   intakeGroup?: IntakeGroup,
   pairedDocumentId?: string
 ) {
