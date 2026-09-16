@@ -79,9 +79,11 @@ cd backend
 cp .env.example .env
 uv sync --extra dev
 uv run alembic upgrade head
-uv run claimguard-bootstrap
+uv run claimguard-setup
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
+
+`claimguard-setup` imports the reference library — ontology seed, historical invoice history and the UK external price benchmarks — and opens a single empty case (`CG-CLIENT-001` by default, `--case-reference` to choose another, `--no-case` for the reference library alone). It creates no demo case and ingests no demo invoice. The bundled demo case is still available for the sample-data walkthrough via `uv run claimguard-bootstrap`; do not run it on a machine that is about to take real client documents.
 
 Keep that terminal open. Open a second terminal in the same `claim-guard` folder and run:
 
@@ -90,7 +92,7 @@ npm install
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173). The bundled demo works without an AI key. To enable the hosted Gemini adjudicator, add `CLAIM_GUARD_LLM_API_KEY=...` to `backend/.env` and restart FastAPI.
+Open [http://localhost:5173](http://localhost:5173). The empty case opens on the upload form; each picker accepts a whole folder as well as individual files. The app works without an AI key. To enable the hosted Gemini adjudicator, add `CLAIM_GUARD_LLM_API_KEY=...` to `backend/.env` and restart FastAPI.
 
 For scanned invoices, configure the company-provided Azure AI Document Intelligence endpoint and key in `backend/.env`:
 
@@ -117,7 +119,7 @@ This backfills page and field coordinates while preserving reviewed invoice line
 |    2 | `cp .env.example .env`                                      | Uses the local Vite API proxy; set `VITE_API_URL` only for a separately hosted API.                                                                                    |
 |    3 | `cd backend && cp .env.example .env && uv sync --extra dev` | Creates the backend environment and installs runtime plus test dependencies.                                                                                           |
 |    4 | `uv run alembic upgrade head`                               | Applies the managed SQLAlchemy schema migration. Run from `backend/`.                                                                                                  |
-|    5 | `uv run claimguard-bootstrap`                               | Idempotently imports the supplied seed workbooks and builds pilot case `CG-2026-0048`. Run from `backend/`.                                                            |
+|    5 | `uv run claimguard-setup`                                   | Idempotently imports the supplied seed workbooks and the external UK benchmarks, and opens one empty case (`CG-CLIENT-001`). No demo case, no demo invoice. Run from `backend/`. `uv run claimguard-bootstrap` instead builds the demo case `CG-2026-0048` for the sample-data walkthrough. |
 |    6 | `uv run uvicorn app.main:app --reload`                      | Starts FastAPI at `http://localhost:8000`.                                                                                                                             |
 |    7 | In another terminal: `npm install && npm run dev`           | Starts the UI at `http://localhost:5173`.                                                                                                                              |
 
@@ -126,7 +128,7 @@ This backfills page and field coordinates while preserving reviewed invoice line
 | ClaimGuard UI        | [http://localhost:5173](http://localhost:5173)                                                                           |
 | API documentation    | [http://localhost:8000/docs](http://localhost:8000/docs)                                                                 |
 | Health check         | [http://localhost:8000/health](http://localhost:8000/health)                                                             |
-| Pilot workspace JSON | [http://localhost:8000/api/v1/claims/CG-2026-0048/workspace](http://localhost:8000/api/v1/claims/CG-2026-0048/workspace) |
+| Workspace JSON       | `http://localhost:8000/api/v1/claims/<case-reference>/workspace` (`CG-CLIENT-001` after `claimguard-setup`)              |
 
 When `VITE_API_URL` is empty, Vite proxies `/api` and `/health` to the local FastAPI service. If that API is unavailable, the UI displays the connection failure instead of silently presenting demo data as a live result. Governed XLSX, SQLite, DOCX and PDF outputs require the live API.
 
@@ -139,7 +141,7 @@ The handover includes these fixtures in `sample-data/`, so bootstrap and demo se
 | `1185790_doc_11857903.pdf`     | Three scanned invoice pages remain three invoice units.                                                                                          |
 | `1381115_doc_13811151.pdf`     | All 20 pages are analysed; page 17 is an invoice and page 20 is an estimate/order excluded from challenge totals.                                |
 | `1597491_doc_15974912.pdf`     | Invoice 90538: labour £266.00; parts £220.03; taxable £486.03; VAT £97.21; MOT £54.85; gross £638.09.                                            |
-| `1643919_doc_16439191.pdf.pdf` | Invoice 91283: 18 lines; labour £335.00; parts £253.41; taxable £588.41; VAT £117.68; MOT £54.85; gross £760.94. This is the default pilot case. |
+| `1643919_doc_16439191.pdf.pdf` | Invoice 91283: 18 lines; labour £335.00; parts £253.41; taxable £588.41; VAT £117.68; MOT £54.85; gross £760.94. The invoice `claimguard-bootstrap` builds the demo case from; the documented setup does not load it. |
 | `1646540_doc_16465407.pdf`     | Image pages are detected, pages 9–12 are rotation-corrected, and ambiguous historical rows are flagged.                                          |
 | `ontology_seed.xlsx`           | 72 ontology items imported; 63 have price observations and all seed observations remain provisional pending approval.                            |
 | `historical_claims_seed.xlsx`  | 191 runtime observations imported; 34 gold-set rows are kept out of live benchmark evidence.                                                     |
@@ -205,7 +207,7 @@ The bootstrapped case deliberately remains unfinalised: its mappings/evidence re
 
 ## Reports
 
-For case `CG-2026-0048`, request `GET /api/v1/claims/CG-2026-0048/reports/{format}`.
+For a case reference, request `GET /api/v1/claims/<case-reference>/reports/{format}`.
 
 | Format   | Contents                                                                                                                   | Availability                          |
 | -------- | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
@@ -238,7 +240,9 @@ Generated files are written beneath `backend/data/exports/<case-reference>/`. Ru
 | OCR acceptance suite | `cd backend && uv run pytest -m slow`       | Uses the configured OCR provider and any supplied large fixtures; local-only tests may require the optional Tesseract extra.            |
 | Full backend suite   | `cd backend && uv run pytest`               | Runs all available tests; missing external fixture/tool prerequisites may cause marked acceptance tests to skip. |
 | Migration replay     | `cd backend && uv run alembic upgrade head` | Applies or safely replays the current managed schema revision.                                                       |
-| Bootstrap replay     | `cd backend && uv run claimguard-bootstrap` | Re-running creates no duplicate seed, case, document, or comparison records.                                     |
+| Setup replay         | `cd backend && uv run claimguard-setup`     | Re-running creates no duplicate seed rows and no second case; an existing case is left untouched.                |
+| Bootstrap replay     | `cd backend && uv run claimguard-bootstrap` | Demo-case path. Re-running creates no duplicate seed, case, document, or comparison records.                     |
+| Clean slate          | `cd backend && uv run claimguard-reset --confirm "DELETE ALL CASE DATA"` | Deletes every case artefact, keeps the reference library, exports the audit log first, and leaves one empty case. |
 
 ## Configuration
 

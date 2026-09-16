@@ -62,7 +62,7 @@ From `backend/`, after the normal environment setup:
 uv run claimguard-import-external-benchmarks
 ```
 
-Normal `claimguard-bootstrap` also stages the file idempotently after importing the supplied ontology and historical workbooks.
+Normal `claimguard-setup` (and `claimguard-bootstrap`) also stages the file idempotently after importing the supplied ontology and historical workbooks.
 
 ## Primary sources checked
 

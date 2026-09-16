@@ -20,11 +20,20 @@ cd backend
 cp .env.example .env
 uv sync --extra dev
 uv run alembic upgrade head
-uv run claimguard-bootstrap
+uv run claimguard-setup
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
 Leave this terminal open. On Windows use `copy .env.example .env` instead of `cp`.
+
+`claimguard-setup` imports the reference library the tool compares against — the
+standard-item bank, the historical invoice history and the UK price benchmarks —
+and opens one empty claim, `CG-CLIENT-001`, for you to upload into. It creates no
+demo documents and no demo claim. To name the claim yourself:
+
+```bash
+uv run claimguard-setup --case-reference YOUR-REFERENCE
+```
 
 ## Step 2 — start the app (terminal 2)
 
@@ -37,9 +46,15 @@ npm run dev
 
 ## Step 3 — open it
 
-Go to <http://localhost:5173> in your browser. The demo claim CG-2026-0048 is
-already loaded. Health check: <http://localhost:8000/health> should say
-`"status": "ok"`.
+Go to <http://localhost:5173> in your browser. You land on the claim from step 1
+(`CG-CLIENT-001` unless you renamed it) with nothing in it yet — it says *"Claim
+CG-CLIENT-001 has no documents yet"* — and the upload form below, with one picker
+for repair invoices and one for engineer estimates.
+
+Each picker takes **a whole folder** as well as individual files, so a set of
+invoices and the matching estimates can be handed over in one go.
+
+Health check: <http://localhost:8000/health> should say `"status": "ok"`.
 
 ## Step 4 — turn on the AI (recommended, 2 minutes)
 
@@ -76,6 +91,20 @@ Upload PDFs on the **Documents** screen (sample invoices are in
 Documents → Benchmarks → Challenged invoices → Challenge decision.
 Documents the tool can't read automatically appear under
 **Advanced tools → Manual review** with an AI explanation.
+
+## Starting over with a clean database
+
+To clear every uploaded document and decision and go back to an empty claim, from
+`backend/`:
+
+```bash
+uv run claimguard-reset --confirm "DELETE ALL CASE DATA"
+```
+
+It keeps the reference library imported in step 1, exports the full audit log to
+`backend/data/audit-exports/` before it deletes anything, and leaves one empty
+claim (`CG-CLIENT-001`) ready for the next set of documents. Add
+`--case-reference YOUR-REFERENCE` to name that claim, or `--no-new-case` for none.
 
 ## Updating to a newer version WITHOUT losing your work
 

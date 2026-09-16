@@ -84,7 +84,7 @@ These banks are not uploaded again for every claim.
 
 | File | Why it is included |
 | --- | --- |
-| `1643919_doc_16439191.pdf.pdf` | Default demo invoice used to create case `CG-2026-0048`. |
+| `1643919_doc_16439191.pdf.pdf` | Demo invoice, ingested only by `claimguard-bootstrap` when it builds case `CG-2026-0048`. The documented setup does not load it. |
 | `1597491_doc_15974912.pdf` | Clear native invoice acceptance test. |
 | `1185790_doc_11857903.pdf` | Scanned-document and OCR acceptance test. |
 | `1381115_doc_13811151.pdf` | Mixed 20-page bundle acceptance test. |
@@ -787,11 +787,14 @@ cd backend
 cp .env.example .env
 uv sync --extra dev
 uv run alembic upgrade head
-uv run claimguard-bootstrap
+uv run claimguard-setup
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-This creates the SQLite schema and bootstraps demo case `CG-2026-0048` from bundled sample data.
+This creates the SQLite schema, imports the reference banks from the bundled seed
+workbooks, and opens a single empty case (`CG-CLIENT-001`) with no documents in it.
+To build the bundled demo case `CG-2026-0048` instead — for the sample-data
+walkthrough only — run `uv run claimguard-bootstrap`.
 
 ## Frontend
 
