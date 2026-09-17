@@ -25,6 +25,7 @@ const SHARED_INVOICE_NUMBER = "343653726836/1~3538"
 const invoiceOne: InvoiceExtractPayload = {
   invoice_id: "invoice-1",
   invoice_number: SHARED_INVOICE_NUMBER,
+  paired_assessment_number: "D7576879",
   vehicle_make: "SKODA",
   vehicle_model: "KAROQ SE TSI 115",
   vehicle_registration: "A30DRY",
@@ -50,6 +51,7 @@ const invoiceOne: InvoiceExtractPayload = {
 const invoiceSeven: InvoiceExtractPayload = {
   invoice_id: "invoice-7",
   invoice_number: SHARED_INVOICE_NUMBER,
+  paired_assessment_number: "D9911002",
   vehicle_make: null,
   vehicle_model: null,
   vehicle_registration: "JK21MNO",
@@ -178,8 +180,8 @@ function render(payload: ClaimExtractsPayload | null, loading = false, error: st
 describe("invoice and assessment extracts section", () => {
   it("renders both tables with their identity columns", () => {
     const html = render(fixture)
-    expect(html).toContain("Invoice extracts")
-    expect(html).toContain("Assessment extracts")
+    expect(html).toContain("Invoice extracts and associated engineer assessment")
+    expect(html).toContain("Engineer assessment extracts and invoice association")
     expect(html).toContain(SHARED_INVOICE_NUMBER)
     expect(html).toContain("D7576879")
     expect(html).toContain("SKODA")
@@ -191,22 +193,11 @@ describe("invoice and assessment extracts section", () => {
     expect(html).toContain("from assessment")
   })
 
-  // The client's whole ask: "total parts in invoice = 110 means from the
-  // engineer estimate we shud show what all parts line items r taken exactly
-  // to get tht total parts cost". Both fixture invoices roll their costs up
-  // into a section total, so both open themselves and show the assessment
-  // rows behind the total -- with no click anywhere. `renderToStaticMarkup`
-  // has no pointer, so anything in this markup was reached without one.
-  it("shows the split for a rolled-up total with no interaction at all", () => {
-    const html = render(fixture)
-    expect(html).toContain("Rolled-up total")
-    expect(html).toContain("Assessment breakdown")
-    expect(html).toContain("Total Labour £1,910.00 billed")
-    expect(html).toContain("Front bumper replace")
-    expect(html).toContain("Rear bumper replace")
-  })
-
-  it("leaves a fully itemised invoice collapsed: it has no split to show", () => {
+  // Every row now starts collapsed. Auto-expansion existed only to reveal
+  // the assessment split without a click; with the split off this screen
+  // (§3.7) there is nothing left for it to reveal, so the rule was removed
+  // rather than left running against nothing.
+  it("starts every invoice row collapsed", () => {
     const itemised: InvoiceExtractPayload = {
       ...invoiceOne,
       invoice_id: "invoice-itemised",
@@ -226,67 +217,33 @@ describe("invoice and assessment extracts section", () => {
       ],
     }
     const html = renderStatic(
-      createElement(InvoiceExtractsTable, {
-        invoices: [itemised],
-        breakdowns: [],
-      })
+      createElement(InvoiceExtractsTable, { invoices: [itemised] })
     )
     expect(html).not.toContain("Bonnet panel")
+    expect(html).toContain("Expand lines for invoice")
   })
 
-  it("leaves a rolled-up invoice collapsed once it runs past the auto-expand line limit", () => {
-    // 41 lines is one past AUTO_EXPAND_LINE_LIMIT. Opening a 300-line
-    // invoice would bury the very breakdown it was opened for.
-    const long: InvoiceExtractPayload = {
-      ...invoiceOne,
-      invoice_id: "invoice-long",
-      lines: [
-        ...invoiceOne.lines,
-        ...Array.from({ length: 40 }, (_unused, index) => ({
-          id: `invoice-long-line-${index + 2}`,
-          sequence_no: index + 2,
-          line_item_type: "parts",
-          raw_category: "PARTS",
-          description: `Filler part ${index + 2}`,
-          quantity: "1",
-          unit_price: "10.00",
-          line_total: "10.00",
-          is_section_total: false,
-          item_kind: "part",
-        })),
-      ],
-    }
+  it("keeps a manual collapse control on a row opened with expansion=all", () => {
     const html = renderStatic(
       createElement(InvoiceExtractsTable, {
-        invoices: [long],
-        breakdowns: [{ ...breakdownOne, invoice_id: "invoice-long" }],
+        invoices: [invoiceOne],
+        expansion: "all",
       })
     )
-    expect(html).not.toContain("Assessment breakdown")
-    expect(html).not.toContain("Filler part 2")
-  })
-
-  it("keeps a manual collapse control on every auto-expanded disclosure", () => {
-    const html = render(fixture)
-    // Auto-expanding must not take the control away: an opened invoice row
-    // and the breakdown inside it both still advertise aria-expanded="true"
-    // on a button that closes them again.
     expect(html).toContain('aria-expanded="true"')
     expect(html).toContain("Collapse lines for invoice")
-    expect(html).toContain("Collapse the assessment breakdown for")
   })
 
-  it("leaves assessment rows collapsed: the split already lives on the invoice side", () => {
+  it("leaves assessment rows collapsed: a 120-operation report would bury the page", () => {
     const html = render(fixture)
-    // assessmentOne's only operation is already visible inside the invoice's
-    // breakdown; its own disclosure stays shut so a 120-operation report
-    // does not push everything else off the page.
-    expect(html).toContain("Expand lines for assessment D7576879")
+    expect(html).toContain("Expand lines for engineer assessment D7576879")
   })
 
   it("shows a loading state and an error state", () => {
     const loadingHtml = render(null, true, null)
-    expect(loadingHtml).toContain("Loading invoice and assessment extracts")
+    expect(loadingHtml).toContain(
+      "Loading invoice and engineer assessment extracts"
+    )
 
     const errorHtml = render(null, false, "The API request failed.")
     expect(errorHtml).toContain("Extracts could not be loaded")
@@ -301,28 +258,26 @@ describe("invoice and assessment extracts section", () => {
     }
     const html = render(emptyFixture)
     expect(html).toContain(
-      "No invoice or assessment extracts are available for this claim yet."
+      "No invoice or engineer assessment extracts are available for this claim yet."
     )
   })
 })
 
 describe("keying by invoice_id instead of the non-unique invoice_number", () => {
-  it("keeps each shared-invoice-number invoice's own breakdown total separate when expanded", () => {
+  it("keeps each shared-invoice-number invoice's own lines separate when expanded", () => {
     const html = renderStatic(
       createElement(InvoiceExtractsTable, {
         invoices: [invoiceOne, invoiceSeven],
-        breakdowns: [breakdownOne, breakdownSeven],
         expansion: "all",
       })
     )
-    // Both invoices share one invoice_number, so if the breakdown lookup
-    // keyed on invoice_number instead of invoice_id, both rows would show
-    // the same total. They must not.
-    expect(html).toContain("Rolled-up total")
-    expect(html).toContain("Total Labour £1,910.00 billed")
-    expect(html).toContain("Total Labour £2,509.20 billed")
-    expect(html).toContain("Front bumper replace")
-    expect(html).toContain("Rear bumper replace")
+    // Both invoices print the same invoice_number, so anything keyed on that
+    // rather than on invoice_id would collapse the two rows into one set of
+    // lines -- and one association.
+    expect(html).toContain("£1,910.00")
+    expect(html).toContain("£2,509.20")
+    expect(html).toContain("D7576879")
+    expect(html).toContain("D9911002")
   })
 })
 
@@ -526,81 +481,32 @@ describe("the fourth empty-breakdown case: resolvable, but the assessment prints
   })
 })
 
-// `get_claim_extracts` emits a breakdown for *every* `is_section_total` line
-// unconditionally, paired or not. Auto-expanding on "a breakdown exists" meant
-// that uploading invoices before any estimate blew every rolled-up invoice
-// open onto four "No assessment is paired to this invoice" boxes -- the
-// opposite of putting the split in front of the reader. The same
-// `ExtractsSection` renders on Review findings, so this covers both screens.
-describe("auto-expansion needs a breakdown that actually resolves", () => {
-  const unpairedBreakdown: SectionBreakdownPayload = {
-    ...breakdownOne,
-    assessment_id: null,
-    assessment_total: null,
-    matches: null,
-    difference: null,
-    breakdown_available: false,
-    rows_total: null,
-    rows: [],
-  }
+// The section's own payload still carries `section_breakdowns` -- the
+// backend still emits them, and benchmark analysis will need them -- but
+// nothing on Document Intelligence may read them. These guard the ways a
+// breakdown used to leak onto the screen.
+describe("no breakdown reaches the screen, whatever the payload carries", () => {
+  it("shows no breakdown even when the payload is full of them", () => {
+    const html = render(fixture)
+    expect(html).not.toContain("Assessment breakdown")
+    expect(html).not.toContain("No assessment is paired to this invoice")
+    expect(html).not.toContain("Rolled-up total")
+  })
 
-  it("leaves a rolled-up invoice collapsed when nothing is paired to it", () => {
+  it("opens nothing under expansion=\"none\"", () => {
     const html = renderStatic(
       createElement(InvoiceExtractsTable, {
         invoices: [invoiceOne],
-        breakdowns: [unpairedBreakdown],
+        expansion: "none",
       })
     )
     expect(html).not.toContain("Assessment breakdown")
-    expect(html).not.toContain("No assessment is paired to this invoice")
     expect(html).toContain("Expand lines for invoice")
   })
 
-  it("does not dump a whole claim of unpaired invoices open", () => {
-    const payload: ClaimExtractsPayload = {
-      invoice_extracts: [invoiceOne, invoiceSeven],
-      assessment_extracts: [],
-      section_breakdowns: [
-        { ...unpairedBreakdown, invoice_id: "invoice-1" },
-        {
-          ...unpairedBreakdown,
-          invoice_id: "invoice-7",
-          invoice_line_item_id: "invoice-7-line-1",
-        },
-      ],
-    }
-    const html = render(payload)
-    expect(html).not.toContain("Assessment breakdown")
-    // Every invoice row still advertises "Expand", never "Collapse": not one
-    // of them was pre-opened. (The card's own Hide/Show trigger is a
-    // different control and is open by design.)
-    expect(html).not.toContain("Collapse lines for invoice")
-    expect(html.match(/Expand lines for invoice/g) ?? []).toHaveLength(2)
-  })
-
-  it("still opens an invoice whose breakdown carries rows", () => {
+  it("opens nothing under the default expansion either", () => {
     const html = renderStatic(
-      createElement(InvoiceExtractsTable, {
-        invoices: [invoiceOne],
-        breakdowns: [breakdownOne],
-      })
-    )
-    expect(html).toContain("Assessment breakdown")
-    expect(html).toContain("Front bumper replace")
-  })
-
-  // The old prop was `defaultExpanded?: boolean`, under which `undefined`
-  // meant "apply the auto-expand rule" and `false` meant "open nothing" --
-  // two spellings of "not pre-expanded" that behaved differently, with
-  // nothing on the type to say so. The three named states each mean one
-  // thing.
-  it("opens nothing at all under expansion=\"none\", auto-expand rule or not", () => {
-    const html = renderStatic(
-      createElement(InvoiceExtractsTable, {
-        invoices: [invoiceOne],
-        breakdowns: [breakdownOne],
-        expansion: "none",
-      })
+      createElement(InvoiceExtractsTable, { invoices: [invoiceOne] })
     )
     expect(html).not.toContain("Assessment breakdown")
     expect(html).toContain("Expand lines for invoice")
@@ -704,5 +610,103 @@ describe("per-key pairing verdicts render their own sentences", () => {
     expect(html).toContain(
       "policy number is a placeholder on the assessment (PH)"
     )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 17 Sep walkthrough, §3: headings, association columns, and each section
+// showing only what its own document contains.
+// ---------------------------------------------------------------------------
+
+describe("the two tables are headed and associated the way the client asked", () => {
+  it("heads the invoice table with its associated engineer assessment", () => {
+    expect(render(fixture)).toContain(
+      "Invoice extracts and associated engineer assessment"
+    )
+  })
+
+  it("heads the assessment table with its invoice association", () => {
+    expect(render(fixture)).toContain(
+      "Engineer assessment extracts and invoice association"
+    )
+  })
+
+  it("puts the associated assessment number straight after the invoice number", () => {
+    const html = renderStatic(
+      createElement(InvoiceExtractsTable, { invoices: [invoiceOne] })
+    )
+    expect(html).toContain("Associated assessment number")
+    expect(html.indexOf("Invoice number")).toBeLessThan(
+      html.indexOf("Associated assessment number")
+    )
+    // The number itself, not just the heading.
+    expect(html).toContain("D7576879")
+  })
+
+  it("puts the associated invoice number straight after the assessment number", () => {
+    const html = renderStatic(
+      createElement(AssessmentExtractsTable, { assessments: [assessmentOne] })
+    )
+    expect(html).toContain("Associated invoice number")
+    expect(html.indexOf("Assessment number")).toBeLessThan(
+      html.indexOf("Associated invoice number")
+    )
+  })
+
+  // "A blank association must render as a visible 'not paired' state, not an
+  // empty cell." The em dash used for every other identity column means "the
+  // document did not print it"; an absent association is a different fact
+  // about a different document and must not borrow that wording.
+  it("says in words that an invoice has no associated assessment", () => {
+    const html = renderStatic(
+      createElement(InvoiceExtractsTable, {
+        invoices: [{ ...invoiceOne, paired_assessment_number: null }],
+      })
+    )
+    expect(html).toContain("Not paired")
+  })
+
+  it("says in words that an assessment has no associated invoice", () => {
+    const html = renderStatic(
+      createElement(AssessmentExtractsTable, {
+        assessments: [
+          {
+            ...assessmentOne,
+            pair_status: "unpaired" as const,
+            paired_invoice_number: null,
+          },
+        ],
+      })
+    )
+    expect(html).toContain("Not paired")
+  })
+})
+
+// §3.7: "If the invoice is not talking about parts, you won't show the part
+// line items there. You would show those parts in the assessment section,
+// which is below." The split is not cancelled -- it moves to benchmark
+// analysis -- but it must not render inside the invoice extracts table.
+describe("the invoice table shows only what the invoice itself prints", () => {
+  it("renders no assessment breakdown under a rolled-up total, even fully expanded", () => {
+    const html = renderStatic(
+      createElement(InvoiceExtractsTable, {
+        invoices: [invoiceOne],
+        expansion: "all",
+      })
+    )
+    // The invoice's own rolled-up line is still there, still badged.
+    expect(html).toContain("Total Labour Amount")
+    expect(html).toContain("Rolled-up total")
+    // The assessment's rows behind it are not.
+    expect(html).not.toContain("Assessment breakdown")
+    expect(html).not.toContain("Front bumper replace")
+    expect(html).not.toContain("Total Labour £1,910.00 billed")
+  })
+
+  it("opens no invoice row by itself: there is no longer a split to reveal", () => {
+    const html = render(fixture)
+    expect(html).not.toContain("Assessment breakdown")
+    expect(html).not.toContain("Collapse lines for invoice")
+    expect(html.match(/Expand lines for invoice/g) ?? []).toHaveLength(2)
   })
 })
