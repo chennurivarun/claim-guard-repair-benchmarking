@@ -11,6 +11,7 @@ fixtures are readable inputs for them.
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from pathlib import Path
 
 import fitz
@@ -50,7 +51,7 @@ def manifest() -> list[dict]:
 
 
 def test_manifest_exists_and_covers_every_fixture(manifest: list[dict]) -> None:
-    assert len(manifest) == 10
+    assert len(manifest) == 16
     filenames = {entry["filename"] for entry in manifest}
     assert filenames == {
         "DL_Auda_format_1_assessment.docx",
@@ -61,8 +62,14 @@ def test_manifest_exists_and_covers_every_fixture(manifest: list[dict]) -> None:
         "DL_Invoice_3_request_for_payment.docx",
         "DL_Auda_format_4_assessment.docx",
         "DL_Invoice_4_request_for_payment.docx",
+        "DL_Auda_format_5_assessment.docx",
+        "DL_Repair_Invoice_format_5.docx",
+        "DL_Auda_format_6_assessment.docx",
+        "DL_Repair_Invoice_format_6.docx",
         "DL_Auda_format_7_assessment.docx",
         "DL_Repair_Invoice_format_7.docx",
+        "EXL_demo_engineer_report.docx",
+        "EXL_demo_invoice.docx",
     }
     for entry in manifest:
         assert (FIXTURES_DIR / entry["filename"]).is_file()
@@ -81,4 +88,9 @@ def test_fixture_converts_and_contains_manifest_identity(
     assert entry["claim_reference"] in text
     assert entry["registration"] in text
     if entry["gross_total"] is not None:
-        assert entry["gross_total"] in text
+        # The manifest records amounts unpunctuated; the EXL report's
+        # Summary Calculation is the one block in the corpus that prints a
+        # thousands separator ("Grand Total: 5,068.87"), so both spellings
+        # of the same figure count as present.
+        grouped = f"{Decimal(entry['gross_total']):,}"
+        assert entry["gross_total"] in text or grouped in text
