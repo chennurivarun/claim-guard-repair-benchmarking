@@ -87,8 +87,6 @@ export function ClientIntakeScreen({
    * naming which files failed was the easiest thing on the screen to lose. */
   const [fileFailures, setFileFailures] = useState<string[]>([])
   const [sweepNotice, setSweepNotice] = useState<string | null>(null)
-  const [sweepResult, setSweepResult] = useState<string | null>(null)
-  const [sweeping, setSweeping] = useState(false)
   const [results, setResults] = useState<
     Array<{ name: string; role: string; status: string }>
   >([])
@@ -175,31 +173,6 @@ export function ClientIntakeScreen({
     return "Ingested"
   }
 
-  /** Re-run the case-wide link / gap-fill sweep on what is already in the
-   * claim. The sweep is idempotent -- `run_case_gap_fill` reverses its own
-   * earlier writes before re-evaluating -- so this is safe to press again,
-   * and it is the only way out of a failed sweep that does not involve
-   * re-uploading every file. It uploads nothing and touches no handler
-   * decision. */
-  async function rerunSweep() {
-    if (sweeping || busy || finalised) return
-    setSweeping(true)
-    setSweepNotice(null)
-    setSweepResult(null)
-    try {
-      const summary = await runCaseLinkSweep(caseReference)
-      setSweepResult(
-        `Pairing sweep finished: ${summary.paired} of ${summary.assessments} engineer estimates are linked to an invoice.`
-      )
-      await refresh()
-      await onProcessed()
-    } catch (e) {
-      setSweepNotice(getApiErrorMessage(e))
-    } finally {
-      setSweeping(false)
-    }
-  }
-
   /** A whole hand-over at once: a folder of repair invoices and a folder of
    * engineer estimates. The sequencing, the shared intake group, the per-file
    * isolation and the exactly-once sweep all live in `runIntakeBatch`, where
@@ -226,7 +199,6 @@ export function ClientIntakeScreen({
     setError(null)
     setFileFailures([])
     setSweepNotice(null)
-    setSweepResult(null)
     setResults(
       batch.map(({ file, role }) => ({
         name: file.name,
@@ -319,15 +291,10 @@ export function ClientIntakeScreen({
           <AlertDescription>
             Every file that was accepted is stored and extracted, but the
             case-wide link and gap-fill sweep failed: {sweepNotice} Nothing was
-            lost and nothing needs re-uploading — invoices and estimates may
-            simply stay unpaired until the sweep is re-run below.
+            lost and nothing needs re-uploading — invoices and engineer
+            assessments may simply stay unpaired until Mapping review is
+            approved, which runs the sweep again.
           </AlertDescription>
-        </Alert>
-      )}
-      {sweepResult && (
-        <Alert>
-          <AlertTitle>Pairing sweep complete</AlertTitle>
-          <AlertDescription>{sweepResult}</AlertDescription>
         </Alert>
       )}
       {finalised && (
@@ -465,28 +432,6 @@ export function ClientIntakeScreen({
           </Card>
         ))}
       </div>
-      {/* The sweep is the one step of the hand-over that can fail on its own
-          without losing a file, so it is the one step that needs its own
-          control. Standing, not only offered after a failure: a sweep that
-          ran before the last estimate finished extracting, or against a case
-          whose invoices arrived in an earlier batch, is re-run from here
-          rather than by uploading everything again. */}
-      {!setup && (
-        <div className="flex flex-wrap items-center gap-3">
-          <Button
-            variant="outline"
-            disabled={busy || sweeping || finalised}
-            onClick={() => void rerunSweep()}
-          >
-            {sweeping ? "Re-running pairing sweep…" : "Re-run pairing sweep"}
-          </Button>
-          <p className="text-sm text-muted-foreground">
-            Re-pairs every invoice and engineer estimate already in this claim.
-            Uploads nothing, changes no handler decision, and is safe to run
-            again at any time.
-          </p>
-        </div>
-      )}
       {results.length > 0 && (
         <Card>
           <CardHeader>

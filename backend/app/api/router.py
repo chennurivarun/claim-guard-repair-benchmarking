@@ -25,6 +25,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.schemas import (
+    AssessmentMappingOverrideRequest,
     CaseDataResetRequest,
     ClaimCreateRequest,
     ExtractionDecisionRequest,
@@ -33,6 +34,7 @@ from app.api.schemas import (
     InvoiceLineManualCreateRequest,
     LiabilityDecisionRequest,
     ManualResearchRequest,
+    MappingApprovalRequest,
     MappingDecisionRequest,
     PageCorrectionRequest,
     ReprocessCaseRequest,
@@ -108,9 +110,16 @@ from app.services.case_result import (
     build_uploaded_batch_benchmark_dashboard,
 )
 from app.services.comparison_workflow import run_case_comparison
+from app.services.document_mapping import (
+    DocumentMappingError,
+    approve_case_mapping,
+    case_mapping_payload,
+    override_assessment_pairing,
+)
 from app.services.document_processing import process_document, serialise_document, store_pdf
 from app.services.engineer_assessment import (
     engineer_assessment_payload,
+    manual_override_payload,
     run_case_gap_fill,
     section_breakdown_for_invoice,
 )
@@ -901,6 +910,10 @@ def _pairing_summary(db: Session, case: Case) -> dict[str, Any]:
             "document_id": assessment.document_id,
             "assessment_number": assessment.assessment_number,
             "pair_status": assessment.pair_status,
+            # Which of the two decided this link: the printed-identity rule,
+            # or a handler who linked it by hand on the mapping screen.
+            "pair_source": assessment.pair_source,
+            "manual_override": manual_override_payload(assessment),
             "pair_confidence": assessment.pair_confidence,
             "pair_reasons": assessment.pair_reasons_json or [],
             "paired_invoice_id": assessment.paired_invoice_id,
@@ -937,6 +950,97 @@ def run_document_link_sweep(case_reference: str, db: DatabaseSession) -> dict[st
     summary = _pairing_summary(db, case)
     db.commit()
     return {"case_reference": case.case_reference, **summary}
+
+
+def _mapping_error_status(code: str) -> int:
+    if code in {"ASSESSMENT_NOT_FOUND", "INVOICE_NOT_FOUND"}:
+        return 404
+    if code in {"CASE_ALREADY_FINALISED", "INVOICE_ALREADY_LINKED"}:
+        return 409
+    return 422
+
+
+@router.get("/claims/{case_reference}/document-mapping", tags=["documents"])
+def get_document_mapping(case_reference: str, db: DatabaseSession) -> dict[str, Any]:
+    """The mapping review step: which invoice each engineer assessment belongs to.
+
+    Deliberately separate from ``/invoice-lines/{id}/mapping-decision``, which
+    reviews the *ontology* mapping of one invoice line to a priced repair
+    item. This one is about which two documents describe the same repair.
+    """
+
+    case = db.scalar(select(Case).where(Case.case_reference == case_reference))
+    if case is None:
+        raise _not_found("Claim not found")
+    return case_mapping_payload(db, case)
+
+
+@router.post(
+    "/claims/{case_reference}/document-mapping/assessments/{assessment_id}",
+    tags=["documents"],
+)
+def override_document_mapping(
+    case_reference: str,
+    assessment_id: str,
+    request: AssessmentMappingOverrideRequest,
+    db: DatabaseSession,
+) -> dict[str, Any]:
+    """Set, change or clear the invoice one engineer assessment is paired to.
+
+    The pairing engine refuses to guess between two equally good candidates
+    and refuses a pair whose printed identities conflict, both of which end
+    in "manual linkage required". This is where that linkage is performed.
+    """
+
+    case = db.scalar(select(Case).where(Case.case_reference == case_reference))
+    if case is None:
+        raise _not_found("Claim not found")
+    try:
+        payload = override_assessment_pairing(
+            db,
+            case=case,
+            assessment_id=assessment_id,
+            decision=request.decision,
+            invoice_id=request.invoice_id,
+            actor=request.actor,
+            reason=request.reason.strip() if request.reason else None,
+        )
+        db.commit()
+        return payload
+    except DocumentMappingError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=_mapping_error_status(exc.code),
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+
+
+@router.post("/claims/{case_reference}/document-mapping/approve", tags=["documents"])
+def approve_document_mapping(
+    case_reference: str,
+    request: MappingApprovalRequest,
+    db: DatabaseSession,
+) -> dict[str, Any]:
+    """Approve the mapping, which runs the case-wide gap-fill sweep over it.
+
+    This is what replaced the standing "Re-run pairing sweep" button: the
+    sweep still happens, but only once a handler has said the pairs are
+    right, and against the pairs they confirmed.
+    """
+
+    case = db.scalar(select(Case).where(Case.case_reference == case_reference))
+    if case is None:
+        raise _not_found("Claim not found")
+    try:
+        payload = approve_case_mapping(db, case=case, actor=request.actor)
+        db.commit()
+        return payload
+    except DocumentMappingError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=_mapping_error_status(exc.code),
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
 
 
 @router.get("/claims/{case_reference}/documents", tags=["documents"])
@@ -1138,6 +1242,8 @@ def _assessment_extract_payload(assessment: EngineerAssessment) -> dict[str, Any
             assessment.paired_invoice.invoice_number if assessment.paired_invoice else None
         ),
         "pair_status": assessment.pair_status,
+        "pair_source": assessment.pair_source,
+        "manual_override": manual_override_payload(assessment),
         "pair_confidence": assessment.pair_confidence,
         "pair_reasons": assessment.pair_reasons_json or [],
         "lines": [

@@ -74,22 +74,23 @@ describe("a folder of invoices and a folder of estimates, handed over together",
   })
 })
 
-// The sweep is the one step of a hand-over that can fail on its own without
-// losing a file. Before this, a failed sweep left a notice and no way out of
-// it: there was no re-run control anywhere on the screen, so the only route
-// back to a paired case was uploading every file again.
-describe("a failed pairing sweep can be re-run without re-uploading", () => {
-  it("offers a standing re-run control on Document Intelligence", () => {
-    const html = renderIntake(false)
-
-    expect(html).toContain("Re-run pairing sweep")
-    expect(html).toContain(
-      "Re-pairs every invoice and engineer estimate already in this claim"
-    )
+// The standing "Re-run pairing sweep" control is gone from both variants of
+// this screen. Neha's objection was to re-running as a substitute for human
+// correction -- "you cannot keep on rerunning indefinitely; somewhere you
+// need to stop and manually correct the things" -- so the sweep now runs when
+// the handler approves the mapping on Mapping review, against the pairs they
+// confirmed. The way out of a failed sweep is still there; it is now a
+// decision rather than a retry.
+describe("the standing re-run control is retired", () => {
+  it("is offered on neither Document Intelligence nor Benchmark data setup", () => {
+    expect(renderIntake(false)).not.toContain("Re-run pairing sweep")
+    expect(renderIntake(true)).not.toContain("Re-run pairing sweep")
   })
 
-  it("keeps it off Benchmark data setup, whose case has no live pairing", () => {
-    expect(renderIntake(true)).not.toContain("Re-run pairing sweep")
+  it("points a failed sweep at the mapping approval instead of at itself", () => {
+    // The notice used to end "until the sweep is re-run below", which named
+    // a button that no longer exists.
+    expect(renderIntake(false)).not.toContain("until the sweep is re-run below")
   })
 })
 
