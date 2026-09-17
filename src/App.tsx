@@ -37,6 +37,7 @@ import {
   preferredInvoiceIdForScreen,
 } from "@/features/claim-guard/invoice-selection"
 import { ClientIntakeScreen } from "@/features/claim-guard/screens-client-intake"
+import { DocumentMappingScreen } from "@/features/claim-guard/screens-document-mapping"
 import { BenchmarkDashboardScreen } from "@/features/claim-guard/screens-benchmark-dashboard"
 import { KnowledgeGraphScreen } from "@/features/claim-guard/screens-knowledge-graph"
 import {
@@ -877,6 +878,13 @@ export function App() {
                   : undefined
                 setInvoices(latestInvoices)
                 await refreshWorkspace(preferredInvoice?.id)
+                // The mapping step comes between upload and extracts: the
+                // handler confirms which invoice each engineer assessment
+                // belongs to before anything is read against those pairs.
+                // Benchmark data setup builds the reference dataset and has
+                // no per-claim mapping to review, so it stays where it is.
+                if (activeScreen !== "benchmark-setup")
+                  setActiveScreen("document-mapping")
               }}
               onContinue={() =>
                 navigate(
@@ -888,6 +896,21 @@ export function App() {
             />
           )}
         </>
+      )
+      break
+    case "document-mapping":
+      screen = (
+        <DocumentMappingScreen
+          caseReference={workspace.claim.id}
+          finalised={caseFinalised}
+          // Approving runs the case-wide gap-fill sweep, which can change
+          // every invoice's filled fields, so the workspace is re-read
+          // before the extract tables are offered.
+          onApproved={async () => {
+            await refreshWorkspace()
+          }}
+          onContinue={() => navigate("upload-processing")}
+        />
       )
       break
     case "calculation-checks":

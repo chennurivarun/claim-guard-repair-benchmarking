@@ -195,6 +195,32 @@ class MappingDecisionRequest(BaseModel):
     bundle_components: list[BundleComponentInput] = Field(default_factory=list)
 
 
+class AssessmentMappingOverrideRequest(BaseModel):
+    """A handler's decision about which invoice one engineer assessment belongs to.
+
+    ``reset`` is distinct from ``unlink``: it withdraws the instruction and
+    hands the pairing back to the automatic rule, where ``unlink`` is an
+    instruction the rule must not overturn on the next upload.
+    """
+
+    actor: str = Field(min_length=1, max_length=160)
+    decision: Literal["link", "unlink", "reset"]
+    invoice_id: str | None = Field(default=None, max_length=36)
+    reason: str | None = Field(default=None, max_length=1000)
+
+    @model_validator(mode="after")
+    def link_requires_an_invoice(self):
+        if self.decision == "link" and not (self.invoice_id or "").strip():
+            raise ValueError("Linking requires the invoice to link to.")
+        if self.decision != "link" and self.invoice_id:
+            raise ValueError("Only a link decision carries an invoice.")
+        return self
+
+
+class MappingApprovalRequest(BaseModel):
+    actor: str = Field(min_length=1, max_length=160)
+
+
 class ResearchTriggerRequest(BaseModel):
     requested_by: str
     note: str | None = None

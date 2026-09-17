@@ -11,8 +11,11 @@ from sqlalchemy.orm import Session, object_session, selectinload
 
 from app.domain.line_item_type import ensure_line_item_type
 from app.domain.normalisation import normalise_identifier
+from app.enums import AuditActorType
 from app.models import (
     AssessmentInvoiceVariance,
+    AuditEvent,
+    Case,
     EngineerAssessment,
     Invoice,
     InvoiceLineItem,
@@ -80,6 +83,45 @@ NO_SHARED_IDENTIFIER_REASON = (
     "with this assessment"
 )
 EXPLICIT_LINK_REASON = "Uploaded together for this invoice"
+
+#: How a link came about.  ``pair_source`` carries this onto the row and onto
+#: every payload built from it, so a screen never has to infer whether a
+#: person or the rule chose a pair.
+PAIR_SOURCE_AUTOMATIC = "automatic"
+PAIR_SOURCE_MANUAL = "manual"
+
+#: The handler's standing instruction, as stored in ``manual_pair_state``.
+#: ``None`` is the third state and means "the handler has said nothing"; it is
+#: not the same as ``MANUAL_STATE_CLEARED``, which is a person saying this
+#: assessment pairs with no invoice at all.  Collapsing the two would let the
+#: next upload re-link something a handler had deliberately unlinked.
+MANUAL_STATE_LINKED = "linked"
+MANUAL_STATE_CLEARED = "cleared"
+
+MANUAL_LINK_REASON = "Linked to this invoice by hand by the claims handler"
+MANUAL_CLEAR_REASON = "Unlinked by hand by the claims handler"
+#: A handler's link takes the invoice off every automatic claimant: the rule
+#: refuses to guess, and a person who has said which report belongs to this
+#: invoice has answered the question the rule could not.
+MANUAL_OUTRANKS_REASON = (
+    "A handler linked another assessment to this invoice by hand; "
+    "manual linkage required for this one"
+)
+#: Two handler links on one invoice cannot both stand.  The API refuses to
+#: create this, so reaching it means the rows were written another way; the
+#: earliest instruction keeps the invoice and the later one is reported rather
+#: than silently applied.
+MANUAL_CONTESTED_REASON = (
+    "Two assessments are linked to this invoice by hand; the earlier link "
+    "stands and this one must be re-pointed"
+)
+#: The invoice a handler chose is no longer in the case (it was deleted, and
+#: the foreign key nulled the choice).  The instruction cannot be carried out,
+#: so the rule decides again and the stale override stays visible on the
+#: payload for the handler to re-take.
+MANUAL_STALE_REASON = (
+    "The invoice a handler linked this assessment to is no longer in this claim"
+)
 
 #: Substring that marks a per-key verdict as a disagreement rather than an
 #: absence.  Only a disagreement blocks a link.
@@ -493,7 +535,12 @@ class _Candidate:
 class _Decision:
     assessment: EngineerAssessment
     invoice: Invoice | None = None
-    confidence: float = 0.0
+    #: ``None`` on a handler's decision.  Confidence is the share of the
+    #: comparable printed identities that agree -- a property of the rule.  A
+    #: person who has read both documents is not 100% confident, they are
+    #: simply right, and printing a number beside their name would invite a
+    #: reader to compare it with the rule's.
+    confidence: float | None = 0.0
     reasons: list[str] = dataclasses.field(default_factory=list)
     #: How many pairing keys actually agreed.  ``_Candidate.strength`` ranks
     #: invoices within one assessment; this is the same evidence carried out
@@ -501,12 +548,22 @@ class _Decision:
     #: each other when two of them reach for one invoice.  ``0`` is a link
     #: that rests on an explicit upload association alone.
     matched_keys: int = 0
+    #: True when this decision is the handler's, not the rule's.  It becomes
+    #: ``pair_source`` on the row.  Kept last and never passed positionally:
+    #: ``_select_invoice`` builds a ``_Decision`` with positional arguments,
+    #: so a field inserted above ``matched_keys`` silently takes its value.
+    manual: bool = False
 
     def reject(self, reason: str) -> None:
         self.invoice = None
         self.confidence = 0.0
         self.reasons = [reason]
         self.matched_keys = 0
+        # ``pair_source`` describes how the *outcome* was reached, and this
+        # outcome was reached by the contention rule.  A handler's link that
+        # lost to another handler's link is not a handler's outcome; the
+        # instruction stays on ``manual_pair_state`` for the screen to show.
+        self.manual = False
 
 
 def _select_invoice(
@@ -610,6 +667,62 @@ def _select_invoice(
     return _Decision(assessment, None, 0.0, conflicts or [NO_SHARED_IDENTIFIER_REASON])
 
 
+def _apply_manual_overrides(
+    decisions: list[_Decision], invoices: dict[str, Invoice]
+) -> None:
+    """Let the handler's standing instruction replace the rule's proposal.
+
+    This is the answer to the sharpest problem in the manual-linkage feature:
+    ``pair_case_assessments`` re-decides every link from scratch on every
+    document upload, so a link written into ``paired_invoice_id`` by a person
+    would be silently thrown away by the next file to arrive.
+
+    The fix is not to make the pass skip overridden assessments -- it cannot,
+    because the pass also reverts and re-applies every gap-fill in the case,
+    and skipping an assessment would leave its fills reverted.  The fix is to
+    keep the *decision* and the *outcome* in different places.  The rule owns
+    ``paired_invoice_id``; the handler owns ``manual_pair_*``.  Every pass
+    re-runs the rule in full and is then overruled here, so a manual link is
+    re-applied by the very pass that would have overwritten it, and its
+    gap-fill is re-applied with it.  The instruction is durable; the outcome
+    is always freshly computed from it.
+
+    Three states, and the third is the one that is easy to miss.  ``None`` is
+    "the handler has said nothing" and leaves the rule's proposal alone.
+    ``linked`` points at an invoice.  ``cleared`` is a person saying this
+    assessment pairs with nothing -- which must be recorded, because
+    collapsing it into "no instruction" would let the next upload re-propose
+    exactly the link the handler had just removed.
+    """
+
+    for decision in decisions:
+        assessment = decision.assessment
+        state = assessment.manual_pair_state
+        if state is None:
+            continue
+        if state == MANUAL_STATE_CLEARED:
+            decision.invoice = None
+            decision.confidence = None
+            decision.reasons = [MANUAL_CLEAR_REASON]
+            decision.matched_keys = 0
+            decision.manual = True
+            continue
+        invoice = invoices.get(assessment.manual_pair_invoice_id or "")
+        if invoice is None:
+            # The chosen invoice has left the case and the foreign key nulled
+            # the choice with it.  An instruction that cannot be carried out
+            # is not carried out: the rule's proposal stands, the stale
+            # override stays on the row, and the payload says so, so the
+            # handler is asked again rather than told something untrue.
+            decision.reasons = [*decision.reasons, MANUAL_STALE_REASON]
+            continue
+        decision.invoice = invoice
+        decision.confidence = None
+        decision.reasons = [MANUAL_LINK_REASON]
+        decision.matched_keys = 0
+        decision.manual = True
+
+
 def _resolve_contention(decisions: list[_Decision]) -> None:
     """Decide, or refuse, the invoices two assessments both reach for.
 
@@ -638,6 +751,21 @@ def _resolve_contention(decisions: list[_Decision]) -> None:
             by_invoice.setdefault(decision.invoice.id, []).append(decision)
     for claimants in by_invoice.values():
         if len(claimants) < 2:
+            continue
+        manual = [claimant for claimant in claimants if claimant.manual]
+        if manual:
+            # A handler has said which report this invoice belongs to, which
+            # is the question the rule refused to guess at.  Their link takes
+            # the invoice off every automatic claimant outright -- ranking a
+            # person's decision against printed-key counts would be reasoning
+            # about evidence they have already weighed.
+            keeper = manual[0]
+            for claimant in claimants:
+                if claimant is keeper:
+                    continue
+                claimant.reject(
+                    MANUAL_CONTESTED_REASON if claimant.manual else MANUAL_OUTRANKS_REASON
+                )
             continue
         if len({_assessment_identity(row.assessment) for row in claimants}) == 1:
             # The same identity uploaded twice: the first report keeps the
@@ -812,18 +940,87 @@ def pair_case_assessments(session: Session, case_id: str) -> None:
     decisions = [
         _select_invoice(assessment, list(invoices), printed) for assessment in assessments
     ]
+    _apply_manual_overrides(decisions, {invoice.id: invoice for invoice in invoices})
     _resolve_contention(decisions)
 
     for decision in decisions:
         assessment = decision.assessment
         assessment.paired_invoice_id = decision.invoice.id if decision.invoice else None
         assessment.pair_status = "paired" if decision.invoice else "unpaired"
+        assessment.pair_source = (
+            PAIR_SOURCE_MANUAL if decision.manual else PAIR_SOURCE_AUTOMATIC
+        )
         assessment.pair_confidence = decision.confidence
         assessment.pair_reasons_json = decision.reasons
         if decision.invoice is None:
             continue
         _fill_invoice_gaps(decision.invoice, assessment)
         _record_variances(session, assessment, decision.invoice)
+
+    _expire_mapping_approval(session, case_id, _pair_map(decisions))
+
+
+def _pair_map(decisions: list[_Decision]) -> dict[str, str | None]:
+    """``{assessment id: invoice id or None}`` -- the mapping, as a value.
+
+    Approval is recorded against one of these, so the two are compared rather
+    than trusted: see ``_expire_mapping_approval``.
+    """
+
+    return {
+        decision.assessment.id: decision.invoice.id if decision.invoice else None
+        for decision in decisions
+    }
+
+
+def _expire_mapping_approval(
+    session: Session, case_id: str, pairs: dict[str, str | None]
+) -> None:
+    """Drop the handler's approval when the mapping it approved has changed.
+
+    "Approved" is a statement about a *particular* set of pairs, not a flag on
+    the case, so it cannot be allowed to outlive them.  Every path that can
+    change a pair -- a new document, a handler override, a sweep -- runs
+    through ``pair_case_assessments``, so this one comparison covers all of
+    them without any caller having to remember.
+
+    It is deliberately a comparison and not an unconditional clear: re-running
+    the sweep over an unchanged case must not silently un-approve a mapping
+    the handler has already signed off, or approval would never survive the
+    gap-fill that approval itself triggers.
+    """
+
+    case = session.get(Case, case_id)
+    if case is None or case.mapping_approved_at is None:
+        return
+    if (case.mapping_approved_pairs_json or {}) == pairs:
+        return
+    session.add(
+        AuditEvent(
+            case_id=case.id,
+            processing_run_id=case.current_processing_run_id,
+            actor_type=AuditActorType.SYSTEM,
+            actor_id="claimguard.pairing",
+            event_type="CASE_MAPPING_APPROVAL_REOPENED",
+            entity_type="case",
+            entity_id=case.id,
+            before_json={
+                "approved_by": case.mapping_approved_by,
+                "approved_at": case.mapping_approved_at.isoformat(),
+                "pairs": case.mapping_approved_pairs_json or {},
+            },
+            after_json={"approved": False, "pairs": pairs},
+            event_payload_json={
+                "reason": (
+                    "The invoice/assessment mapping changed after it was "
+                    "approved, so the approval no longer describes it."
+                )
+            },
+        )
+    )
+    case.mapping_approved_at = None
+    case.mapping_approved_by = None
+    case.mapping_approved_pairs_json = None
 
 
 def run_case_gap_fill(session: Session, case_id: str) -> None:
@@ -955,6 +1152,31 @@ def section_breakdown_for_invoice(
     return breakdowns
 
 
+def manual_override_payload(assessment: EngineerAssessment) -> dict | None:
+    """The handler's standing instruction, or ``None`` when there is none.
+
+    Carried on every payload that carries ``pair_status`` so a screen can tell
+    a link a person chose from one the rule proposed -- and can tell an
+    instruction that was applied from one that could not be (``applied`` is
+    false when the chosen invoice has left the case, or when another handler
+    link already holds it).
+    """
+
+    state = assessment.manual_pair_state
+    if state is None:
+        return None
+    invoice = assessment.manual_pair_invoice
+    return {
+        "state": state,
+        "invoice_id": assessment.manual_pair_invoice_id,
+        "invoice_number": invoice.invoice_number if invoice is not None else None,
+        "actor": assessment.manual_pair_actor,
+        "at": assessment.manual_pair_at.isoformat() if assessment.manual_pair_at else None,
+        "reason": assessment.manual_pair_reason,
+        "applied": assessment.pair_source == PAIR_SOURCE_MANUAL,
+    }
+
+
 def engineer_assessment_payload(
     assessment: EngineerAssessment, session: Session | None = None
 ) -> dict:
@@ -982,6 +1204,12 @@ def engineer_assessment_payload(
             else []
         ),
         "pair_status": assessment.pair_status,
+        # "automatic" or "manual": which of the two decided the link that is
+        # on the row now.  A handler's link carries no ``pair_confidence`` --
+        # confidence is the share of comparable printed identities that agree,
+        # which is a property of the rule and not of a person's judgement.
+        "pair_source": assessment.pair_source,
+        "manual_override": manual_override_payload(assessment),
         "pair_confidence": assessment.pair_confidence,
         "pair_reasons": assessment.pair_reasons_json or [],
         # The per-key detail behind the link, kept out of ``pair_reasons`` so

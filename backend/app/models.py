@@ -137,6 +137,18 @@ class Case(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     finalised_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: The handler's approval of the invoice/assessment mapping.  Approval is
+    #: not a flag but a statement about a *particular* mapping, so the pairs
+    #: that were approved are stored beside the actor and the timestamp:
+    #: ``{assessment_id: invoice_id | None}``.  ``pair_case_assessments``
+    #: compares the map it has just produced against this one and clears the
+    #: approval when they differ, so "approved" can never outlive the mapping
+    #: it was given for.
+    mapping_approved_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    mapping_approved_by: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    mapping_approved_pairs_json: Mapped[dict[str, str | None] | None] = mapped_column(
+        JSON, nullable=True
+    )
 
     documents: Mapped[list[Document]] = relationship(
         back_populates="case", cascade="all, delete-orphan", passive_deletes=True
@@ -564,8 +576,30 @@ class EngineerAssessment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         String(36), ForeignKey("invoices.id", ondelete="SET NULL"), nullable=True
     )
     pair_status: Mapped[str] = mapped_column(String(40), nullable=False, default="unpaired")
+    #: How the link in ``paired_invoice_id`` came about: ``"automatic"`` from
+    #: the printed-identity rule, ``"manual"`` from a handler override.  Part
+    #: of the outcome, beside ``pair_status``, so a reader of the row -- and of
+    #: every payload built from it -- can tell a decision a person took from
+    #: one the rule took.
+    pair_source: Mapped[str] = mapped_column(String(20), nullable=False, default="automatic")
     pair_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     pair_reasons_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    #: The handler's standing instruction about this assessment's invoice, kept
+    #: apart from ``paired_invoice_id`` on purpose.  ``paired_invoice_id`` is
+    #: the *outcome* and is rewritten from scratch on every upload by
+    #: ``pair_case_assessments``; these four columns are the *decision*, which
+    #: only a handler changes.  Storing the decision separately is what lets a
+    #: manual link survive a re-pairing pass that would otherwise overwrite it.
+    #: ``manual_pair_state`` is ``None`` (no instruction, the rule decides),
+    #: ``"linked"`` (use ``manual_pair_invoice_id``) or ``"cleared"`` (this
+    #: assessment pairs with nothing, whatever the rule proposes).
+    manual_pair_state: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    manual_pair_invoice_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("invoices.id", ondelete="SET NULL"), nullable=True
+    )
+    manual_pair_actor: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    manual_pair_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    manual_pair_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     assessment_number: Mapped[str | None] = mapped_column(String(160), nullable=True)
     claim_reference: Mapped[str | None] = mapped_column(String(160), nullable=True)
     policy_number: Mapped[str | None] = mapped_column(String(160), nullable=True)
@@ -602,6 +636,9 @@ class EngineerAssessment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     document: Mapped[Document] = relationship(back_populates="engineer_assessment")
     paired_invoice: Mapped[Invoice | None] = relationship(foreign_keys=[paired_invoice_id])
+    manual_pair_invoice: Mapped[Invoice | None] = relationship(
+        foreign_keys=[manual_pair_invoice_id]
+    )
     operations: Mapped[list[AssessmentOperation]] = relationship(
         back_populates="assessment", cascade="all, delete-orphan", passive_deletes=True,
         order_by="AssessmentOperation.sequence_no",
