@@ -63,7 +63,11 @@ def test_extract_columns_round_trip_through_20260915_0010(alembic_config: Config
         assert "ix_invoices_claim_policy" in invoice_indexes
         assert "ix_engineer_assessment_claim_policy" in assessment_indexes
 
-        command.downgrade(alembic_config, "-1")
+        # Pinned to the revision *before* 20260915_0010 rather than a relative
+        # "-1": this test is about one named revision, and a relative step
+        # silently starts testing a different one the moment a migration is
+        # added on top of it.
+        command.downgrade(alembic_config, "20260823_0009")
         invoices, lines, operations, invoice_indexes, assessment_indexes = extract_schema()
         assert not {"policy_number", "paint_net"} & invoices
         assert not {"line_item_type", "is_section_total"} & lines
@@ -76,5 +80,61 @@ def test_extract_columns_round_trip_through_20260915_0010(alembic_config: Config
         assert {"policy_number", "paint_net"} <= invoices
         assert {"line_item_type", "is_section_total"} <= lines
         assert "raw_category" in operations
+    finally:
+        get_settings.cache_clear()
+
+
+def test_mapping_review_columns_round_trip_through_20260917_0011(
+    alembic_config: Config,
+) -> None:
+    """The handler's override and the case's approval survive a down/up cycle.
+
+    The override columns are the load-bearing half: they are what makes a
+    manual link survive the next upload, so a migration that silently failed
+    to create them would leave the pairing pass overwriting every handler
+    decision with no error anywhere.
+    """
+
+    database_url = alembic_config.get_main_option("sqlalchemy.url")
+    assessment_columns = {
+        "pair_source",
+        "manual_pair_state",
+        "manual_pair_invoice_id",
+        "manual_pair_actor",
+        "manual_pair_at",
+        "manual_pair_reason",
+    }
+    case_columns = {
+        "mapping_approved_at",
+        "mapping_approved_by",
+        "mapping_approved_pairs_json",
+    }
+
+    def schema() -> tuple[set[str], set[str]]:
+        engine = sa.create_engine(database_url)
+        try:
+            inspector = sa.inspect(engine)
+            return (
+                {column["name"] for column in inspector.get_columns("engineer_assessments")},
+                {column["name"] for column in inspector.get_columns("cases")},
+            )
+        finally:
+            engine.dispose()
+
+    try:
+        command.upgrade(alembic_config, "head")
+        assessments, cases = schema()
+        assert assessment_columns <= assessments
+        assert case_columns <= cases
+
+        command.downgrade(alembic_config, "20260915_0010")
+        assessments, cases = schema()
+        assert not assessment_columns & assessments
+        assert not case_columns & cases
+
+        command.upgrade(alembic_config, "head")
+        assessments, cases = schema()
+        assert assessment_columns <= assessments
+        assert case_columns <= cases
     finally:
         get_settings.cache_clear()

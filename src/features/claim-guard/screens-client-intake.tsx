@@ -87,8 +87,6 @@ export function ClientIntakeScreen({
    * naming which files failed was the easiest thing on the screen to lose. */
   const [fileFailures, setFileFailures] = useState<string[]>([])
   const [sweepNotice, setSweepNotice] = useState<string | null>(null)
-  const [sweepResult, setSweepResult] = useState<string | null>(null)
-  const [sweeping, setSweeping] = useState(false)
   const [results, setResults] = useState<
     Array<{ name: string; role: string; status: string }>
   >([])
@@ -170,47 +168,24 @@ export function ClientIntakeScreen({
   function describeProcessed(document: UploadedDocument) {
     if (document.manual_review) return "Needs review"
     if (document.kind === "engineer_assessment") {
-      return document.paired ? "Estimate linked" : "Estimate awaiting a safe match"
+      return document.paired
+        ? "Engineer assessment linked"
+        : "Engineer assessment awaiting a safe match"
     }
     return "Ingested"
   }
 
-  /** Re-run the case-wide link / gap-fill sweep on what is already in the
-   * claim. The sweep is idempotent -- `run_case_gap_fill` reverses its own
-   * earlier writes before re-evaluating -- so this is safe to press again,
-   * and it is the only way out of a failed sweep that does not involve
-   * re-uploading every file. It uploads nothing and touches no handler
-   * decision. */
-  async function rerunSweep() {
-    if (sweeping || busy || finalised) return
-    setSweeping(true)
-    setSweepNotice(null)
-    setSweepResult(null)
-    try {
-      const summary = await runCaseLinkSweep(caseReference)
-      setSweepResult(
-        `Pairing sweep finished: ${summary.paired} of ${summary.assessments} engineer estimates are linked to an invoice.`
-      )
-      await refresh()
-      await onProcessed()
-    } catch (e) {
-      setSweepNotice(getApiErrorMessage(e))
-    } finally {
-      setSweeping(false)
-    }
-  }
-
   /** A whole hand-over at once: a folder of repair invoices and a folder of
-   * engineer estimates. The sequencing, the shared intake group, the per-file
+   * engineer assessments. The sequencing, the shared intake group, the per-file
    * isolation and the exactly-once sweep all live in `runIntakeBatch`, where
    * they can be tested without a browser; this only supplies the ports and
    * paints the result. */
   async function upload(group: IntakeGroup) {
     const invoiceFiles = files[group] ?? []
     const estimateFiles = group === "live" ? estimates : []
-    // Estimates alone are refused: they would upload with nothing in the case
-    // to pair against, and the label above the picker says invoices are
-    // required.
+    // Engineer assessments alone are refused: they would upload with nothing
+    // in the case to pair against, and the label above the picker says
+    // invoices are required.
     if (busy || finalised || !invoiceFiles.length) return
     const batch: IntakeBatchEntry[] = [
       ...invoiceFiles.map((file) => ({ file, role: "invoice" as const })),
@@ -218,7 +193,7 @@ export function ClientIntakeScreen({
     ]
     const roleLabel = (role: IntakeBatchEntry["role"]) =>
       role === "estimate"
-        ? "Engineer estimate"
+        ? "Engineer assessment"
         : group === "live"
           ? "Repair invoice"
           : "Client document"
@@ -226,7 +201,6 @@ export function ClientIntakeScreen({
     setError(null)
     setFileFailures([])
     setSweepNotice(null)
-    setSweepResult(null)
     setResults(
       batch.map(({ file, role }) => ({
         name: file.name,
@@ -319,15 +293,10 @@ export function ClientIntakeScreen({
           <AlertDescription>
             Every file that was accepted is stored and extracted, but the
             case-wide link and gap-fill sweep failed: {sweepNotice} Nothing was
-            lost and nothing needs re-uploading — invoices and estimates may
-            simply stay unpaired until the sweep is re-run below.
+            lost and nothing needs re-uploading — invoices and engineer
+            assessments may simply stay unpaired until Mapping review is
+            approved, which runs the sweep again.
           </AlertDescription>
-        </Alert>
-      )}
-      {sweepResult && (
-        <Alert>
-          <AlertTitle>Pairing sweep complete</AlertTitle>
-          <AlertDescription>{sweepResult}</AlertDescription>
         </Alert>
       )}
       {finalised && (
@@ -345,8 +314,8 @@ export function ClientIntakeScreen({
               <CardTitle>{labels[group]}</CardTitle>
               <CardDescription>
                 {group === "live"
-                  ? "Hand over a whole set at once: every repair invoice, and every engineer estimate that goes with them. Pick files or a folder for each."
-                  : "Upload client invoices and their corresponding engineer estimates. PDF and Word documents are supported."}
+                  ? "Hand over a whole set at once: every repair invoice, and every engineer assessment that goes with them. Pick files or a folder for each."
+                  : "Upload client invoices and their corresponding engineer assessments. PDF and Word documents are supported."}
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -396,7 +365,7 @@ export function ClientIntakeScreen({
               </label>
               {group === "live" && (
                 <label className="block space-y-2 text-sm font-medium">
-                  <span>Engineer estimates (optional)</span>
+                  <span>Engineer assessments (optional)</span>
                   <Input
                     key={`estimates-${pickerKey}`}
                     type="file"
@@ -413,7 +382,7 @@ export function ClientIntakeScreen({
                   />
                   <Input
                     key={`estimates-folder-${pickerKey}`}
-                    aria-label="Engineer estimates folder"
+                    aria-label="Engineer assessments folder"
                     type="file"
                     accept={accept}
                     multiple
@@ -435,58 +404,47 @@ export function ClientIntakeScreen({
                 </label>
               )}
               {/* Invoices are required, and the gate says so. It used to pass
-                  on estimates alone, which uploaded a folder of engineer
-                  estimates into a case with nothing to pair them against. */}
+                  on engineer assessments alone, which uploaded a folder of
+                  them into a case with nothing to pair them against. */}
               <Button
                 disabled={busy || finalised || !files[group]?.length}
                 onClick={() => void upload(group)}
               >
                 {busy
                   ? "Processing documents…"
-                  : `Upload ${group === "live" ? "invoices and estimates" : "documents"}`}
+                  : `Upload ${group === "live" ? "invoices and engineer assessments" : "documents"}`}
               </Button>
               {group === "live" && !files[group]?.length && estimates.length ? (
                 <p className="text-sm text-amber-700 dark:text-amber-300">
-                  Add the repair invoices these estimates belong to. An
-                  estimate uploaded on its own has nothing to pair against.
+                  Add the repair invoices these engineer assessments belong to.
+                  An engineer assessment uploaded on its own has nothing to
+                  pair against.
                 </p>
               ) : null}
+              {/* "What do you mean, nine invoices extracted? … remove it."
+                  The counter used to read "16 documents processed · 9
+                  invoices extracted" and nobody could say why the second
+                  number was 9 -- it counted invoice *rows* in the group,
+                  which diverges from the file count for reasons (a Word file
+                  holding two invoices, a failed extraction, a document that
+                  is an assessment rather than an invoice) the screen never
+                  showed. The first half survives on its own because it is
+                  one row per file handed over in this group and reached
+                  `ready`: the Processing results table above names those
+                  files one by one, so the number is checkable on the same
+                  screen. */}
               <p className="text-sm text-muted-foreground">
                 {
                   documents.filter(
                     (d) => d.intake_group === group && d.status === "ready"
                   ).length
                 }{" "}
-                documents processed ·{" "}
-                {invoices.filter((i) => i.intake_group === group).length}{" "}
-                invoices extracted
+                documents processed
               </p>
             </CardContent>
           </Card>
         ))}
       </div>
-      {/* The sweep is the one step of the hand-over that can fail on its own
-          without losing a file, so it is the one step that needs its own
-          control. Standing, not only offered after a failure: a sweep that
-          ran before the last estimate finished extracting, or against a case
-          whose invoices arrived in an earlier batch, is re-run from here
-          rather than by uploading everything again. */}
-      {!setup && (
-        <div className="flex flex-wrap items-center gap-3">
-          <Button
-            variant="outline"
-            disabled={busy || sweeping || finalised}
-            onClick={() => void rerunSweep()}
-          >
-            {sweeping ? "Re-running pairing sweep…" : "Re-run pairing sweep"}
-          </Button>
-          <p className="text-sm text-muted-foreground">
-            Re-pairs every invoice and engineer estimate already in this claim.
-            Uploads nothing, changes no handler decision, and is safe to run
-            again at any time.
-          </p>
-        </div>
-      )}
       {results.length > 0 && (
         <Card>
           <CardHeader>
@@ -522,81 +480,88 @@ export function ClientIntakeScreen({
           </CardContent>
         </Card>
       )}
-      <Card>
-        <CardHeader>
-          <CardTitle>
-            {setup ? "Consolidated client data" : "Live invoices"}
-          </CardTitle>
-          <CardDescription>
-            {setup
-              ? "Stored extraction from the selected client dataset. Ingestion prepares benchmark data; it does not train a model."
-              : "Live invoices remain outside the reference dataset."}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Source</TableHead>
-                <TableHead>Invoice</TableHead>
-                <TableHead>Repairer</TableHead>
-                <TableHead>Vehicle</TableHead>
-                <TableHead>Extracted lines</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {visibleInvoices.map((row) => (
-                <TableRow key={row.id}>
-                  <TableCell>
-                    {labels[row.intake_group as IntakeGroup]}
-                  </TableCell>
-                  <TableCell>
-                    {row.invoice_number || row.document_filename}
-                  </TableCell>
-                  <TableCell>{row.supplier_name || "Not extracted"}</TableCell>
-                  <TableCell>
-                    {[row.vehicle?.make, row.vehicle?.model]
-                      .filter(Boolean)
-                      .join(" ") || "Not extracted"}
-                  </TableCell>
-                  <TableCell>{row.lines.length}</TableCell>
-                </TableRow>
-              ))}
-              {!visibleInvoices.length && (
+      {/* The reference-dataset receipt, and only on Benchmark data setup.
+          On Document Intelligence this card was headed "Live invoices" over
+          "Live invoices remain outside the reference dataset"; the client
+          asked what it was, and it does not earn its place there -- the
+          extracts tables below say the same thing about the same documents
+          in the form she asked for. The setup variant is a different table
+          about a different dataset and stays. */}
+      {setup && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Consolidated client data</CardTitle>
+            <CardDescription>
+              Stored extraction from the selected client dataset. Ingestion
+              prepares benchmark data; it does not train a model.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <TableHeader>
                 <TableRow>
-                  <TableCell
-                    colSpan={5}
-                    className="py-8 text-center text-muted-foreground"
-                  >
-                    {setup
-                      ? "No client reference invoices uploaded here yet."
-                      : "No live invoices uploaded yet. Upload a fresh repair invoice to begin."}
-                  </TableCell>
+                  <TableHead>Source</TableHead>
+                  <TableHead>Invoice</TableHead>
+                  <TableHead>Repairer</TableHead>
+                  <TableHead>Vehicle</TableHead>
+                  <TableHead>Extracted lines</TableHead>
                 </TableRow>
-              )}
-            </TableBody>
-          </Table>
-          {documents.some(
-            (d) =>
-              groups.includes(d.intake_group as IntakeGroup) && d.manual_review
-          ) && (
-            <p className="mt-4 text-sm">
-              <StatusBadge status="MANUAL REVIEW" /> Some documents need
-              extraction review before they can supply benchmark evidence.
-            </p>
-          )}
-        </CardContent>
-      </Card>
-      {/* The two standardised tables and the per-total split, on the screen
-          people actually land on. They used to render only on Review
-          findings, which now sits under Advanced tools, so nobody saw them.
-          Placed directly under the Live invoices table: the upload card is
-          the action, that table is the receipt, and this is what the reviewer
-          then reads. Deliberately not on the Benchmark data setup variant --
-          `/extracts` is case-scoped and unfiltered by intake group, so there
-          it would show the live claim's invoice/assessment pairing on a
-          screen whose every other table is filtered to the reference
-          dataset. */}
+              </TableHeader>
+              <TableBody>
+                {visibleInvoices.map((row) => (
+                  <TableRow key={row.id}>
+                    <TableCell>
+                      {labels[row.intake_group as IntakeGroup]}
+                    </TableCell>
+                    <TableCell>
+                      {row.invoice_number || row.document_filename}
+                    </TableCell>
+                    <TableCell>
+                      {row.supplier_name || "Not extracted"}
+                    </TableCell>
+                    <TableCell>
+                      {[row.vehicle?.make, row.vehicle?.model]
+                        .filter(Boolean)
+                        .join(" ") || "Not extracted"}
+                    </TableCell>
+                    <TableCell>{row.lines.length}</TableCell>
+                  </TableRow>
+                ))}
+                {!visibleInvoices.length && (
+                  <TableRow>
+                    <TableCell
+                      colSpan={5}
+                      className="py-8 text-center text-muted-foreground"
+                    >
+                      No client reference invoices uploaded here yet.
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
+      {/* Lifted out of that card so removing it on Document Intelligence
+          does not take with it the one line that explains the "Review
+          <file>" buttons below. */}
+      {documents.some(
+        (d) => groups.includes(d.intake_group as IntakeGroup) && d.manual_review
+      ) && (
+        <p className="text-sm">
+          <StatusBadge status="MANUAL REVIEW" /> Some documents need extraction
+          review before they can supply benchmark evidence.
+        </p>
+      )}
+      {/* The two standardised tables, on the screen people actually land on.
+          They used to render only on Review findings, which now sits under
+          Advanced tools, so nobody saw them. With the "Live invoices" card
+          gone these are the receipt: the upload card is the action, and this
+          is what the reviewer then reads. Deliberately not on the Benchmark
+          data setup variant -- `/extracts` is case-scoped and unfiltered by
+          intake group, so there it would show the live claim's
+          invoice/assessment pairing on a screen whose every other table is
+          filtered to the reference dataset. */}
       {!setup && (
         <ExtractsSection
           extracts={extracts}

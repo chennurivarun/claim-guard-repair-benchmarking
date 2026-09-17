@@ -10,6 +10,7 @@ import {
   BarChart3Icon,
   LayoutDashboardIcon,
   LibraryBigIcon,
+  LinkIcon,
   PlugZapIcon,
   SearchCheckIcon,
   Share2Icon,
@@ -62,6 +63,14 @@ const primaryNavigation = [
     id: "upload-processing",
     label: "Document Intelligence",
     icon: FileTextIcon,
+  },
+  // The mapping step, between upload and the extract tables: the handler
+  // confirms which repair invoice each engineer assessment belongs to before
+  // anything is read against those pairs.
+  {
+    id: "document-mapping",
+    label: "Mapping review",
+    icon: LinkIcon,
   },
   {
     id: "benchmark-dashboard",

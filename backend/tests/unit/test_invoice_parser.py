@@ -12,16 +12,19 @@ import app.services.document_processing as document_processing
 from app.extraction.calculation_validator import validate_invoice
 from app.extraction.invoice_parser import (
     InvoiceParser,
+    _claim_grand_total,
     _footer_company,
     _guess_item_kind,
     _has_uncertain_lines,
 )
 from app.extraction.schemas import (
+    BoundingBox,
     ExtractedInvoice,
     ExtractedLine,
     FieldSource,
     InvoiceHeader,
     InvoiceTotals,
+    OCRWord,
     PageAnalysis,
     PageType,
 )
@@ -61,12 +64,16 @@ def _page() -> PageAnalysis:
 
 
 @cache
-def _client_invoice(filename: str) -> ExtractedInvoice:
+def _client_invoice(filename: str, *, with_words: bool = False) -> ExtractedInvoice:
     """Parse a client `.docx` invoice through the real upload-normalisation path.
 
     `shutil.which` is forced to `None` so the deterministic pure-Python
     reportlab conversion is used rather than LibreOffice if it happens to be
     installed, exactly as `test_client_format_fixtures` does.
+
+    ``with_words`` positions every word on the page, which is what
+    `InvoiceParser` needs to give a total a bounding box. Off by default,
+    because only the provenance tests look at one.
     """
 
     source = CLIENT_FORMATS_DIR / filename
@@ -81,10 +88,10 @@ def _client_invoice(filename: str) -> ExtractedInvoice:
     pdf_path = Path(directory.name) / normalised.stored_filename
     pdf_path.write_bytes(normalised.content)
 
-    return _parse_pdf(pdf_path)
+    return _parse_pdf(pdf_path, with_words=with_words)
 
 
-def _parse_pdf(pdf_path: Path) -> ExtractedInvoice:
+def _parse_pdf(pdf_path: Path, *, with_words: bool = False) -> ExtractedInvoice:
     document = fitz.open(pdf_path)
     try:
         pages = [
@@ -99,6 +106,7 @@ def _parse_pdf(pdf_path: Path) -> ExtractedInvoice:
                 extraction_method="native",
                 extraction_confidence=0.98,
                 text=page.get_text("text"),
+                words=_positioned_words(page) if with_words else [],
                 page_type=PageType.INVOICE,
                 classification_confidence=0.98,
             )
@@ -107,6 +115,14 @@ def _parse_pdf(pdf_path: Path) -> ExtractedInvoice:
     finally:
         document.close()
     return InvoiceParser().parse_group(pdf_path, pages)
+
+
+def _positioned_words(page) -> list[OCRWord]:
+    return [
+        OCRWord(text=text, confidence=1.0, bbox=BoundingBox(x0=x0, y0=y0, x1=x1, y1=y1))
+        for x0, y0, x1, y1, text, *_ in page.get_text("words")
+        if text.strip()
+    ]
 
 
 @cache
@@ -781,3 +797,167 @@ def test_the_insurer_is_never_the_repairer_however_late_it_is_printed() -> None:
         )
         == "DL Assistance Accident repair Center Ltd"
     )
+
+
+# --------------------------------------------------------------------------
+# The EXL summary layout: a grand total labelled "Claim", four section labels
+# nothing else prints, and a row printed with no amount.
+# --------------------------------------------------------------------------
+
+#: The line above a "Claim   <amount>" row is what decides whether the row is
+#: a grand total.  Each case states the printed context and the verdict.
+CLAIM_GRAND_TOTAL_CASES: tuple[tuple[str, str, Decimal | None], ...] = (
+    # The EXL invoice: the last row of a summary block, under its VAT.
+    ("VAT   844.81", "Claim   5068.87", Decimal("5068.87")),
+    ("VAT 20%   747.60", "Claim   4485.60", Decimal("4485.60")),
+    # The bare "Claim" heading of every DL Auda Summary Information grid
+    # carries no amount, so it is not a row this rule can even see.
+    ("Summary Information", "Claim", None),
+    # The identity label on the same invoice, two tables above the total.
+    ("Invoice Date   25/02/2026", "Claim Reference   123456", None),
+    ("Invoice Number   ABC1234", "Claim No   123456/1", None),
+    # An amount alone is not enough: without the VAT row above it, "Claim"
+    # could be any figure a document prints beside the word.
+    ("Insured Name   John Smith", "Claim   5068.87", None),
+    # The supplier's VAT registration number is not a VAT row.
+    ("VAT Registration no. 106 9411 33", "Claim   5068.87", None),
+)
+
+
+@pytest.mark.parametrize(("previous", "line", "expected"), CLAIM_GRAND_TOTAL_CASES)
+def test_claim_is_a_grand_total_only_under_a_summary_blocks_vat_row(
+    previous: str, line: str, expected: Decimal | None
+) -> None:
+    """"Claim" is a grand total, an identity label and a heading in this corpus.
+
+    What separates the total from the other two is printed position: a whole
+    line of "Claim" and one amount, directly beneath the block's VAT row.
+    """
+
+    assert _claim_grand_total(line, previous) == expected
+
+
+def test_exl_summary_block_is_six_section_totals_and_a_grand_total() -> None:
+    """The demo invoice: every printed row read, and none of them billed."""
+
+    invoice = _client_invoice("EXL_demo_invoice.docx")
+
+    assert invoice.totals.total_gross == Decimal("5068.87")
+    assert [(line.raw_description, line.line_item_type) for line in invoice.line_items] == [
+        ("Labour", "labour"),
+        ("Parts", "parts"),
+        ("Paint", "paint_materials"),
+        ("Additional Extras", "extras"),
+        ("Collection & Delivery", "collection_and_delivery"),
+        ("Recovery", "recovery"),
+    ]
+    assert all(line.is_section_total for line in invoice.line_items)
+    # The grand total is the invoice's answer, not a thing it billed for.
+    assert "Claim" not in {line.raw_description for line in invoice.line_items}
+
+
+def test_exl_summary_totals_add_up_to_the_printed_claim() -> None:
+    """2019.98 + 872.38 + 389.81 + (785.75 + 156.14) = 4224.06, VAT 844.81."""
+
+    totals = _client_invoice("EXL_demo_invoice.docx").totals
+
+    assert totals.labour_net == Decimal("2019.98")
+    assert totals.parts_net == Decimal("872.38")
+    assert totals.paint_net == Decimal("389.81")
+    # Two printed rows, one bucket: "Collection & Delivery" keeps its own
+    # section code but its money is extras, which is where the paired report
+    # rolls it up.
+    assert totals.extras_net == Decimal("941.89")
+    assert totals.subtotal_net == Decimal("4224.06")
+    assert totals.vat_amount == Decimal("844.81")
+
+
+def test_a_summary_row_with_no_amount_stays_visible() -> None:
+    """"Recovery" is printed with an empty Amount cell.
+
+    Dropping it tells the reviewer the document did not print the row, which
+    is false; giving it a zero tells them the document priced it at nothing,
+    which is also false. It is kept with no amount at all.
+    """
+
+    recovery = next(
+        line
+        for line in _client_invoice("EXL_demo_invoice.docx").line_items
+        if line.raw_description == "Recovery"
+    )
+
+    assert recovery.is_section_total is True
+    assert recovery.line_total_net is None
+    assert recovery.vat_rate is None
+    assert recovery.vat_amount is None
+    assert recovery.gross_amount is None
+    assert recovery.vat_applicable is False
+
+
+def test_a_bare_section_label_between_schedule_rows_is_still_a_heading() -> None:
+    """The guard on `_blank_summary_row`: "Parts" heads a grid, it is not a row.
+
+    Both neighbours have to be priced summary rows. On the DLAS invoices a
+    bare section label is followed by its own column header, so none of them
+    can be mistaken for an amount-less summary row.
+    """
+
+    lines = _schedule_and_section_totals(
+        "Total Parts   1237.50\n"
+        "Specialist Operation\n"
+        "Specialist Operation Cost (£)\n"
+        "Corrosion protection   6.00\n"
+    )
+
+    assert "Specialist Operation" not in {line.raw_description for line in lines}
+
+
+# --------------------------------------------------------------------------
+# Provenance: what a totals figure's "show evidence" points at.
+# --------------------------------------------------------------------------
+
+#: Invoices 5, 6 and 7 embed a "Validation note" paragraph reciting every
+#: figure on the document, printed *below* the totals it recites. Each row is
+#: the text that must be offered as evidence for that field.
+VALIDATION_NOTE_PROVENANCE: tuple[tuple[str, str, str], ...] = (
+    ("DL_Repair_Invoice_format_5.docx", "labour_net", "Total Labour: 2653.01"),
+    ("DL_Repair_Invoice_format_5.docx", "parts_net", "Total Parts 1237.50"),
+    ("DL_Repair_Invoice_format_5.docx", "paint_net", "Total Paint & materials: 1088.59"),
+    (
+        "DL_Repair_Invoice_format_5.docx",
+        "vat_amount",
+        "An amount equivalent to VAT @20%: 1038.84",
+    ),
+    ("DL_Repair_Invoice_format_6.docx", "labour_net", "Total Labour: 2611.41"),
+    ("DL_Repair_Invoice_format_6.docx", "parts_net", "Total Parts 1287.94"),
+    (
+        "DL_Repair_Invoice_format_6.docx",
+        "vat_amount",
+        "An amount equivalent to VAT @20%: 1022.55",
+    ),
+    ("DL_Repair_Invoice_format_7.docx", "labour_net", "Total Labour: 1910.00"),
+    ("DL_Repair_Invoice_format_7.docx", "parts_net", "Total Parts 939.00"),
+    (
+        "DL_Repair_Invoice_format_7.docx",
+        "vat_amount",
+        "An amount equivalent to VAT @20%: 747.60",
+    ),
+)
+
+
+@pytest.mark.parametrize(("filename", "field", "printed"), VALIDATION_NOTE_PROVENANCE)
+def test_a_total_points_at_the_row_that_states_it_not_at_prose_about_it(
+    filename: str, field: str, printed: str
+) -> None:
+    """Evidence that points at the wrong thing is worse than no evidence.
+
+    Invoice 5's note asserts a reconciliation that is false by £78.77, and a
+    reviewer clicking "show evidence" on its labour total used to land on
+    that sentence rather than on the row the figure is printed in.
+    """
+
+    source = _client_invoice(filename, with_words=True).totals.sources[field]
+
+    assert source.raw_text == printed
+    assert "Validation note" not in (source.raw_text or "")
+    assert "aligned to report" not in (source.raw_text or "")

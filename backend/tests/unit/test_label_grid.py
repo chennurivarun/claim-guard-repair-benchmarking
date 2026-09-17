@@ -435,3 +435,18 @@ def test_the_model_options_heading_is_neither_a_model_nor_a_value() -> None:
 
     assert "vehicle_model" not in headings_only
     assert headings_only["registration"] == "PD73UUF"
+
+
+def test_a_longer_label_is_not_left_on_the_front_of_its_value() -> None:
+    """The EXL invoice prints ``Insured Name   John Smith``.
+
+    Its renderer collapses the column gap, so the reader is handed one
+    run-on cell and takes the longest label it knows off the front.  With
+    only the bare ``Insured`` in the table that is one word short and the
+    customer's name comes back as "Name John Smith".
+    """
+
+    assert read_label_values("Insured Name   John Smith\n")["customer_name"] == "John Smith"
+    assert read_label_values("Insured Name John Smith\n")["customer_name"] == "John Smith"
+    # The bare synonym still reads the shape the DLAS grids print.
+    assert read_label_values("Insured   John Smith\n")["customer_name"] == "John Smith"

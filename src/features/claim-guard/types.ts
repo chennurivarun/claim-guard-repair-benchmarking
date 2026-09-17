@@ -12,6 +12,10 @@ export type ScreenId =
   | "benchmark-setup"
   | "claim-liability"
   | "upload-processing"
+  // The mapping review step, between upload and the extract tables: which
+  // repair invoice each engineer assessment belongs to, and the handler's
+  // approval of that. See `screens-document-mapping.tsx`.
+  | "document-mapping"
   | "document-pages"
   | "extracted-invoice"
   | "calculation-checks"

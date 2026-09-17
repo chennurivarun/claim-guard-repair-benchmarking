@@ -32,27 +32,27 @@ describe("the extracts tables live on Document Intelligence", () => {
     const html = renderIntake(false)
 
     expect(html).toContain("Document Intelligence")
-    expect(html).toContain("Invoice and assessment extracts")
+    expect(html).toContain("Invoice and engineer assessment extracts")
     expect(html).toContain(
-      "The two standardised tables from the invoice and assessment documents"
+      "The two standardised tables from the invoice and engineer assessment documents"
     )
-    expect(html).toContain("Loading invoice and assessment extracts")
+    expect(html).toContain("Loading invoice and engineer assessment extracts")
   })
 
   it("keeps the extracts off Benchmark data setup, whose tables are reference data", () => {
     const html = renderIntake(true)
 
     expect(html).toContain("Benchmark data setup")
-    expect(html).not.toContain("Invoice and assessment extracts")
+    expect(html).not.toContain("Invoice and engineer assessment extracts")
   })
 })
 
-describe("a folder of invoices and a folder of estimates, handed over together", () => {
-  it("accepts many repair invoices and many engineer estimates", () => {
+describe("a folder of invoices and a folder of engineer assessments, handed over together", () => {
+  it("accepts many repair invoices and many engineer assessments", () => {
     const html = renderIntake(false)
 
     expect(html).toContain("Repair invoices (required)")
-    expect(html).toContain("Engineer estimates (optional)")
+    expect(html).toContain("Engineer assessments (optional)")
     // Four file inputs: files + folder, for each of the two kinds. Every one
     // of them is `multiple`, so the single-file form is gone on both sides.
     expect(html.match(/multiple=""/g) ?? []).toHaveLength(4)
@@ -63,33 +63,34 @@ describe("a folder of invoices and a folder of estimates, handed over together",
 
     expect(html.match(/webkitdirectory=""/g) ?? []).toHaveLength(2)
     expect(html).toContain('aria-label="New repair invoices folder"')
-    expect(html).toContain('aria-label="Engineer estimates folder"')
+    expect(html).toContain('aria-label="Engineer assessments folder"')
   })
 
   it("says the whole set goes over at once", () => {
     const html = renderIntake(false)
 
     expect(html).toContain("Hand over a whole set at once")
-    expect(html).toContain("Upload invoices and estimates")
+    expect(html).toContain("Upload invoices and engineer assessments")
   })
 })
 
-// The sweep is the one step of a hand-over that can fail on its own without
-// losing a file. Before this, a failed sweep left a notice and no way out of
-// it: there was no re-run control anywhere on the screen, so the only route
-// back to a paired case was uploading every file again.
-describe("a failed pairing sweep can be re-run without re-uploading", () => {
-  it("offers a standing re-run control on Document Intelligence", () => {
-    const html = renderIntake(false)
-
-    expect(html).toContain("Re-run pairing sweep")
-    expect(html).toContain(
-      "Re-pairs every invoice and engineer estimate already in this claim"
-    )
+// The standing "Re-run pairing sweep" control is gone from both variants of
+// this screen. Neha's objection was to re-running as a substitute for human
+// correction -- "you cannot keep on rerunning indefinitely; somewhere you
+// need to stop and manually correct the things" -- so the sweep now runs when
+// the handler approves the mapping on Mapping review, against the pairs they
+// confirmed. The way out of a failed sweep is still there; it is now a
+// decision rather than a retry.
+describe("the standing re-run control is retired", () => {
+  it("is offered on neither Document Intelligence nor Benchmark data setup", () => {
+    expect(renderIntake(false)).not.toContain("Re-run pairing sweep")
+    expect(renderIntake(true)).not.toContain("Re-run pairing sweep")
   })
 
-  it("keeps it off Benchmark data setup, whose case has no live pairing", () => {
-    expect(renderIntake(true)).not.toContain("Re-run pairing sweep")
+  it("points a failed sweep at the mapping approval instead of at itself", () => {
+    // The notice used to end "until the sweep is re-run below", which named
+    // a button that no longer exists.
+    expect(renderIntake(false)).not.toContain("until the sweep is re-run below")
   })
 })
 
@@ -100,6 +101,64 @@ describe("the screen no longer describes itself as a demonstration", () => {
     expect(html).not.toContain("live demonstration")
     expect(html).toContain(
       "Keep one fresh invoice aside to run through Document Intelligence."
+    )
+  })
+})
+
+// 17 Sep walkthrough, §1. "What do you mean, nine invoices extracted? …
+// remove it." The counter read "16 documents processed · 9 invoices
+// extracted" and nobody on the call could explain the 9.
+describe("Document Intelligence stops claiming things it cannot explain", () => {
+  it("no longer counts invoices extracted", () => {
+    expect(renderIntake(false)).not.toContain("invoices extracted")
+    expect(renderIntake(true)).not.toContain("invoices extracted")
+  })
+
+  it("keeps the documents-processed count, which is one row per file handed over", () => {
+    expect(renderIntake(false)).toContain("documents processed")
+  })
+
+  it("drops the Live invoices card", () => {
+    const html = renderIntake(false)
+
+    expect(html).not.toContain("Live invoices")
+    expect(html).not.toContain(
+      "Live invoices remain outside the reference dataset"
+    )
+  })
+
+  it("keeps the reference-dataset table on Benchmark data setup", () => {
+    const html = renderIntake(true)
+
+    expect(html).toContain("Consolidated client data")
+    expect(html).toContain("Stored extraction from the selected client dataset")
+  })
+
+})
+
+// §3.1: "she checked the documents and they say assessment, so the full
+// phrase is engineer assessment".
+describe("the screen calls it an engineer assessment", () => {
+  it("labels the second picker and its folder engineer assessments", () => {
+    const html = renderIntake(false)
+
+    expect(html).toContain("Engineer assessments (optional)")
+    expect(html).toContain('aria-label="Engineer assessments folder"')
+    expect(html).not.toContain("Engineer estimates")
+  })
+
+  it("names both kinds on the upload button", () => {
+    expect(renderIntake(false)).toContain(
+      "Upload invoices and engineer assessments"
+    )
+  })
+
+  it("asks for engineer assessments in the card copy", () => {
+    expect(renderIntake(false)).toContain(
+      "every engineer assessment that goes with them"
+    )
+    expect(renderIntake(true)).toContain(
+      "their corresponding engineer assessments"
     )
   })
 })

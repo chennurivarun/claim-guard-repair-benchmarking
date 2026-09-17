@@ -221,6 +221,147 @@ export function runCaseLinkSweep(caseReference: string) {
   )
 }
 
+/** One pairing key's verdict, as the backend serialises it. Re-declared here
+ * rather than imported from `@/lib/api` so the mapping screen and its API
+ * stay in one module; the two shapes are the same `_KeyVerdict.as_payload`. */
+export interface MappingKeyVerdict {
+  key: string
+  label: string
+  state: "matched" | "conflict" | "not_compared" | "placeholder"
+  compared: boolean
+  absent_on: "invoice" | "assessment" | "both" | null
+  placeholder_on: "invoice" | "assessment" | "both" | null
+  assessment_value: string | null
+  invoice_value: string | null
+  text: string
+}
+
+/** How the link on the row came about. `"manual"` means a handler chose it on
+ * the mapping screen; everything else came from the printed-identity rule. */
+export type PairSource = "automatic" | "manual"
+
+/** The handler's standing instruction about one assessment's invoice.
+ * `applied` is false when the instruction could not be carried out -- the
+ * chosen invoice has left the claim, or another handler link holds it. */
+export interface MappingOverride {
+  state: "linked" | "cleared"
+  invoice_id: string | null
+  invoice_number: string | null
+  actor: string | null
+  at: string | null
+  reason: string | null
+  applied: boolean
+}
+
+export interface MappingInvoiceOption {
+  invoice_id: string
+  document_id: string
+  document_filename: string | null
+  invoice_number: string | null
+  supplier_name: string | null
+  registration: string | null
+  claim_reference: string | null
+  policy_number: string | null
+  intake_group: IntakeGroup | null
+}
+
+export interface MappingAssessmentRow {
+  assessment_id: string
+  document_id: string
+  document_filename: string | null
+  assessment_number: string | null
+  registration: string | null
+  claim_reference: string | null
+  policy_number: string | null
+  vehicle_make: string | null
+  vehicle_model: string | null
+  intake_group: IntakeGroup | null
+  pair_status: string
+  pair_source: PairSource
+  pair_confidence: number | null
+  pair_reasons: string[]
+  pair_key_verdicts: MappingKeyVerdict[]
+  paired_invoice_id: string | null
+  paired_invoice_number: string | null
+  manual_override: MappingOverride | null
+}
+
+export interface MappingApproval {
+  approved: boolean
+  approved_by: string | null
+  approved_at: string | null
+  approved_pairs: Record<string, string | null>
+}
+
+/** `GET /claims/{ref}/document-mapping`. */
+export interface CaseMappingPayload {
+  case_reference: string
+  approval: MappingApproval
+  invoices: MappingInvoiceOption[]
+  assessments: MappingAssessmentRow[]
+  assessments_total: number
+  paired: number
+  unpaired: number
+  manual: number
+}
+
+/** What a handler may do to one assessment's pairing.
+ *
+ * `reset` is not `unlink`. `unlink` is an instruction -- "this assessment
+ * pairs with nothing" -- which the automatic rule must not overturn on the
+ * next upload. `reset` withdraws the instruction and hands the decision back
+ * to the rule. */
+export type MappingOverrideDecision = "link" | "unlink" | "reset"
+
+export function fetchCaseMapping(caseReference: string) {
+  return requestJson<CaseMappingPayload>(
+    `/api/v1/claims/${encodeURIComponent(caseReference)}/document-mapping`
+  )
+}
+
+export function overrideAssessmentMapping(
+  caseReference: string,
+  assessmentId: string,
+  input: {
+    actor: string
+    decision: MappingOverrideDecision
+    invoiceId?: string | null
+    reason?: string | null
+  }
+) {
+  return requestJson<CaseMappingPayload>(
+    `/api/v1/claims/${encodeURIComponent(caseReference)}/document-mapping/assessments/${encodeURIComponent(assessmentId)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        actor: input.actor,
+        decision: input.decision,
+        // The server refuses an invoice on anything but a link, so it is
+        // only ever sent with one.
+        ...(input.decision === "link" ? { invoice_id: input.invoiceId } : {}),
+        reason: input.reason ?? null,
+      }),
+    },
+    60_000
+  )
+}
+
+/** Approve the mapping. This is what runs the case-wide link / gap-fill sweep
+ * now: the handler has just said the pairs are right, so the fill runs
+ * against the pairs they confirmed rather than on a standing button. */
+export function approveCaseMapping(caseReference: string, actor: string) {
+  return requestJson<CaseMappingPayload>(
+    `/api/v1/claims/${encodeURIComponent(caseReference)}/document-mapping/approve`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ actor }),
+    },
+    180_000
+  )
+}
+
 export function correctDocumentPage(
   pageId: string,
   correction: {

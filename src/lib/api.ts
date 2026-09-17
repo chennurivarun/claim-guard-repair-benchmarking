@@ -387,6 +387,11 @@ export interface InvoiceExtractLine {
 export interface InvoiceExtractPayload {
   invoice_id: string
   invoice_number: string | null
+  /** The mirror of `AssessmentExtractPayload.paired_invoice_number`: the
+   * number of the engineer assessment paired to this invoice, or null when
+   * nothing is paired to it. Read-only projection built by
+   * `get_claim_extracts` from the assessments it already loads. */
+  paired_assessment_number: string | null
   vehicle_make: string | null
   vehicle_model: string | null
   vehicle_registration: string | null
