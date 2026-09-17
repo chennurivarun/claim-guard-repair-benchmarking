@@ -99,14 +99,56 @@ ROLLED_UP_TOTAL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
     (label, re.compile(rf"^{re.escape(label)}\s*:?\s+{MONEY_PATTERN}", re.IGNORECASE))
     for label in ROLLED_UP_TOTAL_LABELS
 )
+# The labels a rolled-up summary block prints down its first column. Longest
+# spelling first within each family, so "paint work" and "paint and materials"
+# are never read as a bare "paint" with a stray word after it.
+#
+# Four of these are the EXL demo invoice's and nothing else in the corpus
+# prints them: "additional extras", "collection & delivery", "recovery", and
+# bare "paint" (the DLAS invoices spell it "Paint Work" or "Paint &
+# Materials"). Each is anchored to a whole line ending in one amount below, so
+# a priced row that happens to open with one of these words cannot match.
+SUMMARY_SECTION_LABELS = (
+    r"paint\s*work",
+    r"paint\s*(?:and|&)\s*materials",
+    r"specialist operation",
+    r"additional items",
+    r"additional extras",
+    r"collection\s*(?:and|&)\s*delivery",
+    r"recovery",
+    r"parts",
+    r"extras",
+    r"labour",
+    r"paint",
+)
+_SUMMARY_SECTION_ALTERNATION = "|".join(SUMMARY_SECTION_LABELS)
 # The same roll-up without the "Total" prefix: "Parts   448.91", "Labour
 # 2008.00", "Paint & Materials   1034.02". Anchored on the section vocabulary
 # and a single trailing amount, so an itemised row ("Corrosion protection
 # 6.00") can never match it.
 BARE_SECTION_TOTAL_PATTERN = re.compile(
-    r"^(?P<label>parts|extras|labour|paint\s*work|paint\s*(?:and|&)\s*materials"
-    rf"|specialist operation|additional items)\s*[:£]?\s+(?:GBP\s*)?{MONEY_PATTERN}\s*$",
+    rf"^(?P<label>{_SUMMARY_SECTION_ALTERNATION})\s*[:£]?\s+(?:GBP\s*)?{MONEY_PATTERN}\s*$",
     re.IGNORECASE,
+)
+# The same label with its Amount cell left empty: "Recovery" on the EXL
+# invoice. On its own this matches a section *heading* too ("Parts" heads the
+# DLAS parts grid), so `_blank_summary_row` only accepts it between two priced
+# summary rows.
+BLANK_SUMMARY_ROW_PATTERN = re.compile(
+    rf"^(?P<label>{_SUMMARY_SECTION_ALTERNATION})\s*[:£]?\s*$", re.IGNORECASE
+)
+# A summary block's VAT row, with or without the rate: "VAT   844.81",
+# "VAT 20%   747.60". Anchored at both ends, so the supplier's registration
+# number ("VAT Registration no. 106 9411 33") and the run-on registration cell
+# ("VAT Reg No. 738 1978 88   Labour   266.00") are not summary rows.
+SUMMARY_VAT_ROW_PATTERN = re.compile(
+    rf"^VAT\s*(?:[@(]?\s*\d{{1,2}}(?:\.\d+)?\s*%\)?)?\s*[:£]?\s+(?:GBP\s*)?{MONEY_PATTERN}\s*$",
+    re.IGNORECASE,
+)
+# "Claim   5068.87": the EXL layout's grand total. See `_claim_grand_total`
+# for why the pattern alone is not enough to act on.
+CLAIM_GRAND_TOTAL_PATTERN = re.compile(
+    rf"^Claim\s*[:£]?\s+(?:GBP\s*)?{MONEY_PATTERN}\s*$", re.IGNORECASE
 )
 # "An amount equivalent to VAT @20%: 982.52", "VAT 20%   747.60", "VAT (20%)
 # 97.21": a VAT amount whose own label states the rate is unambiguous. The
@@ -362,6 +404,88 @@ def _rolled_up_total(line: str) -> tuple[str, Decimal] | None:
     return None
 
 
+# ponytail: WHY "Claim" IS SAFE AS A GRAND TOTAL, AND ONLY HERE.
+#
+# The EXL demo invoice labels its grand total "Claim   5068.87". No "Total",
+# "Grand Total", "Invoice Total" or "Total Due" appears anywhere on it, so
+# without this rule the one figure a reviewer looks at first is not read at
+# all -- and worse, the row is ingested as an ordinary priced line and billed.
+#
+# "Claim" cannot simply join the grand-total vocabulary, because the word
+# collides twice over:
+#
+#   * ``Claim Reference 123456`` sits two tables above it on this very
+#     invoice, and ``Claim No 123456/1`` heads the three Request for Payment
+#     invoices;
+#   * ``Claim`` alone heads the *Summary Information* grid on all seven DL
+#     Auda engineer reports.
+#
+# The rule below keys on the one thing that is true of the total and of
+# neither collision: it is a whole line of exactly "Claim" and one amount,
+# printed directly beneath that block's VAT row. An identity label never
+# carries a two-decimal amount (``Claim Reference 123456`` has none, and a
+# reference that did would still print more than one field on the line), and
+# a section heading carries no amount at all. Following VAT is what makes it a
+# *grand* total rather than another section: VAT is the last thing added
+# before the money owed, so the row beneath it is the money owed.
+#
+# Verified against every document in ``sample-data/client-formats``: the only
+# line in the whole corpus that satisfies both halves is the EXL invoice's.
+def _claim_grand_total(line: str, previous: str | None) -> Decimal | None:
+    """The grand total of an invoice that labels it "Claim", or ``None``.
+
+    ``previous`` is the printed line above this one -- the context that
+    separates a grand total from the identity label and the section heading
+    that share its word.
+    """
+
+    if previous is None or SUMMARY_VAT_ROW_PATTERN.match(previous) is None:
+        return None
+    match = CLAIM_GRAND_TOTAL_PATTERN.match(line)
+    return money(match.group(1)) if match else None
+
+
+def _claim_grand_total_in(text: str) -> Decimal | None:
+    """Scan whole document text for the "Claim" grand total."""
+
+    previous: str | None = None
+    for raw_line in text.splitlines():
+        line = strip_scan_artifacts(raw_line)
+        if not line:
+            continue
+        amount = _claim_grand_total(line, previous)
+        if amount is not None:
+            return amount
+        previous = line
+    return None
+
+
+def _blank_summary_row(rows: list[str], index: int) -> str | None:
+    """The label of a summary row the document printed with no amount.
+
+    The EXL invoice prints ``Recovery`` between ``Collection & Delivery
+    156.14`` and ``VAT 844.81`` with its Amount cell empty. Dropping it hides
+    from the reviewer that the document printed the row at all, which is a
+    different fact from the row not existing -- so it is kept as an
+    amount-less section total.
+
+    Both neighbours must be priced summary rows, because the pattern on its
+    own also matches a section *heading*: the DLAS invoices print bare
+    ``Parts`` and ``Specialist Operation`` lines, and each is followed by its
+    own column header rather than by another amount.
+    """
+
+    match = BLANK_SUMMARY_ROW_PATTERN.match(rows[index])
+    if match is None or index == 0 or index + 1 >= len(rows):
+        return None
+    previous, following = rows[index - 1], rows[index + 1]
+    if _rolled_up_total(previous) is None:
+        return None
+    if _rolled_up_total(following) is None and SUMMARY_VAT_ROW_PATTERN.match(following) is None:
+        return None
+    return match.group("label")
+
+
 def _explicit_vat_amount(text: str) -> Decimal | None:
     """The VAT amount whose own label states the rate."""
 
@@ -429,6 +553,45 @@ SECTION_TOTAL_FIELDS: dict[str, str] = {
     "extras": "extras_net",
     "specialist_operation": "extras_net",
 }
+#: Sections whose printed total is *added* to a bucket another section already
+#: feeds, rather than being that bucket's own figure.
+#:
+#: ``Collection & Delivery`` and ``Recovery`` are line-item types nothing else
+#: in the corpus prints, and ``line_item_type`` is deliberately an open
+#: vocabulary, so each keeps its own code ("collection_and_delivery",
+#: "recovery") on the row -- a reviewer sees what the document printed. Their
+#: *money* has to land somewhere, though, and extras is where it belongs: the
+#: EXL engineer report rolls both of them up under EXTRAS (£941.89 =
+#: £785.75 + £156.14), so anything else would compare the invoice's extras
+#: against the report's on two different definitions.
+#:
+#: They stay out of ``SECTION_TOTAL_FIELDS`` on purpose. That map is what
+#: ``_rolled_up_total_lines`` de-duplicates on -- one printed total per bucket
+#: -- and an entry here would make "Collection & Delivery" look like a repeat
+#: of "Additional Extras" and silently drop it.
+FOLDED_SECTION_TOTAL_FIELDS: dict[str, str] = {
+    "collection_and_delivery": "extras_net",
+    "recovery": "extras_net",
+}
+
+#: What a summary block's *bare* label means, where the bare spelling is less
+#: specific than the section vocabulary's own.
+#:
+#: "Paint" alone on the EXL invoice is the paint **and materials** figure: its
+#: 389.81 is exactly the paired report's "Total Paint & Materials", and the
+#: report keeps paintwork *labour* inside its labour total (which the invoice's
+#: 2019.98 also matches to the penny). ``ensure_line_item_type`` would read the
+#: bare word as "paint", the paint-labour code -- which no printed total in
+#: this corpus is, and which ``engineer_assessment.SECTION_TOTAL_FIELDS`` has
+#: no field for, so the section would show a billed figure with nothing to
+#: compare it against. The spelled-out headings ("Paint Work", "Paint &
+#: Materials") say which they are and are not remapped.
+SUMMARY_LABEL_TYPES: dict[str, str] = {"paint": "paint_materials"}
+
+#: Where a rolled-up section total's money belongs in ``InvoiceTotals``, folded
+#: codes included. Summed rather than first-wins, because a folded code shares
+#: its bucket with the section that owns it.
+ROLLED_UP_TOTAL_FIELDS: dict[str, str] = SECTION_TOTAL_FIELDS | FOLDED_SECTION_TOTAL_FIELDS
 SECTION_TOTAL_ROW_PATTERN = re.compile(rf"^Total\b\s*[:£]?\s*{MONEY_PATTERN}", re.IGNORECASE)
 
 
@@ -455,6 +618,30 @@ def _printed_section_totals(text: str) -> dict[str, Decimal]:
         if amount is not None:
             totals.setdefault(field, amount)
         field = None
+    return totals
+
+
+def _rolled_up_section_totals(lines: list[ExtractedLine]) -> dict[str, Decimal]:
+    """The ``InvoiceTotals`` figures a fully rolled-up invoice's summary states.
+
+    A summary-only invoice prints its section totals as bare "Labour 2019.98"
+    rows and carries no label a ``FIELD_SYNONYMS`` reader recognises, so the
+    rows `_rolled_up_total_lines` already emitted are the only evidence of
+    each section's value. Reading them back here keeps one parse of the
+    summary block rather than a second regex over the text.
+
+    Amount-less rows (``Recovery``) contribute nothing; they exist so the
+    reviewer can see the document printed them.
+    """
+
+    totals: dict[str, Decimal] = {}
+    for line in lines:
+        if not line.is_section_total or line.line_total_net is None:
+            continue
+        field = ROLLED_UP_TOTAL_FIELDS.get(line.line_item_type or "")
+        if field is None:
+            continue
+        totals[field] = totals.get(field, Decimal("0")) + line.line_total_net
     return totals
 
 
@@ -690,29 +877,71 @@ def _total_source(
     labels: tuple[str, ...],
     value: Decimal | None,
 ) -> FieldSource | None:
+    """Point at the printed text that states this total.
+
+    ponytail: THE TIGHTEST TEXT WINS, NOT THE LAST ONE.
+
+    A total's label and its amount can both appear in *prose* as well as on
+    the row that states them. Invoices 5, 6 and 7 embed a "Validation note"
+    paragraph that recites every figure on the document -- "Totals aligned to
+    report: Total Parts £1,237.50; Total Additional Costs £144.13; Total
+    Labour £2,653.01;" -- and it is printed below the totals it recites. A
+    scan that simply took the last match therefore sent labour, parts, paint
+    and VAT provenance into the note, so a reviewer clicking "show evidence"
+    on a number landed on a sentence *about* the number. On invoice 5 that
+    sentence asserts a reconciliation which is false by £78.77, which is the
+    worst possible thing to offer as proof.
+
+    So every match is collected and ranked, best first:
+
+    1. the text *ends* in the figure. A totals row states its label and then
+       its amount and stops; a recital runs on into the next figure, which is
+       what separates "An amount equivalent to VAT @20%: 1022.55" from the
+       note's shorter "...; VAT £1,022.55; Total Due £6,135.29.";
+    2. then the fewest words, because a printed row is the tightest text that
+       carries the label and the figure together;
+    3. then the old behaviour -- the last such text in the document, which is
+       what makes "Total Due: 6233.03" win over an identical "Invoice total:
+       6233.03" printed above it.
+
+    Both are preferences, not filters: invoice 6 prints its extras total as a
+    bare "Total 141.87" under a heading, so the note really is the only text
+    carrying that label and that figure together, and it stays the evidence
+    rather than the field losing its provenance altogether.
+
+    This selects among texts that already state the figure; it never changes
+    which figure is stated.
+    """
+
     if value is None:
         return None
     value_token = _token(f"{value:.2f}")
+    best: tuple[tuple[int, int], PageAnalysis, list] | None = None
     for page in reversed(pages):
         for words in reversed(_group_words_by_line(page)):
             keys = [_token(word.text) for word in words]
             joined = " ".join(keys)
             if not any(all(token in joined for token in _target_tokens(label)) for label in labels):
                 continue
-            value_words = [word for word in words if _token(word.text) == value_token]
-            if not value_words:
+            if not any(key == value_token for key in keys):
                 continue
-            value_bbox = _union_bbox([word.bbox for word in value_words[-1:]])
-            return FieldSource(
-                page_number=page.page_number,
-                bbox=value_bbox,
-                regions={"value": value_bbox} if value_bbox else {},
-                raw_text=" ".join(word.text for word in words),
-                extraction_method=page.extraction_method,
-                confidence=page.extraction_confidence,
-                precision="exact",
-            )
-    return None
+            rank = (0 if keys[-1] == value_token else 1, len(words))
+            if best is None or rank < best[0]:
+                best = (rank, page, words)
+    if best is None:
+        return None
+    _rank, page, words = best
+    value_words = [word for word in words if _token(word.text) == value_token]
+    value_bbox = _union_bbox([word.bbox for word in value_words[-1:]])
+    return FieldSource(
+        page_number=page.page_number,
+        bbox=value_bbox,
+        regions={"value": value_bbox} if value_bbox else {},
+        raw_text=" ".join(word.text for word in words),
+        extraction_method=page.extraction_method,
+        confidence=page.extraction_confidence,
+        precision="exact",
+    )
 
 
 def _vehicle_row(text: str) -> dict[str, str | int | None]:
@@ -923,9 +1152,13 @@ class InvoiceParser:
         sequence = start
         section: str | None = None
         heading_text: str | None = None
+        previous: str | None = None
         for raw_line in page.text.splitlines():
             line = strip_scan_artifacts(raw_line)
-            if not line or _is_prose_line(raw_line, line):
+            if not line:
+                continue
+            prior, previous = previous, line
+            if _is_prose_line(raw_line, line):
                 continue
             heading = SCHEDULE_SECTION_PATTERN.match(line)
             if heading and not re.search(r"\d[\d,]*\.\d{2}", line):
@@ -935,6 +1168,11 @@ class InvoiceParser:
             # A rolled-up section total is evidence of a section, not a row in
             # it; `_rolled_up_total_lines` emits it once, with provenance.
             if _rolled_up_total(line) is not None:
+                continue
+            # The grand total is the invoice's answer, not a thing it billed
+            # for. "Claim   5068.87" reads as an ordinary priced row on shape
+            # alone, so the whole document's total would be charged as a line.
+            if _claim_grand_total(line, prior) is not None:
                 continue
             lower = line.casefold()
             # A summary row is never a line item, whatever shape it arrives
@@ -1069,6 +1307,10 @@ class InvoiceParser:
         labour and paint as a single total each; Format 2 prints nothing but
         totals. A section that already has itemised rows is skipped, so a row
         set and its own total are never both recorded.
+
+        A summary row printed with an empty Amount cell is emitted too, with
+        no amount on it -- see `_blank_summary_row` for why a reviewer needs
+        to see it and how it is told apart from a section heading.
         """
 
         # paint + paint_materials and extras + specialist_operation are one
@@ -1082,20 +1324,37 @@ class InvoiceParser:
         }
         output: list[ExtractedLine] = []
         sequence = start
-        for raw_line in text.splitlines():
-            matched = _rolled_up_total(strip_scan_artifacts(raw_line))
+        # Blank lines carry no summary row and would break the neighbour test
+        # `_blank_summary_row` makes, so the block is read as printed rows.
+        rows = [
+            cleaned for cleaned in (strip_scan_artifacts(raw) for raw in text.splitlines()) if cleaned
+        ]
+        for index, row in enumerate(rows):
+            matched = _rolled_up_total(row)
             if matched is None:
-                continue
-            label, amount = matched
-            line_item_type = ensure_line_item_type(label)
+                blank_label = _blank_summary_row(rows, index)
+                if blank_label is None:
+                    continue
+                label, amount = blank_label, None
+            else:
+                label, amount = matched
+            line_item_type = SUMMARY_LABEL_TYPES.get(
+                _section_key(label), ensure_line_item_type(label)
+            )
             bucket = SECTION_TOTAL_FIELDS.get(line_item_type, line_item_type)
             if bucket in recorded:
                 continue
             recorded.add(bucket)
-            vat_amount, gross_amount = _line_tax(amount, Decimal("20"), True)
+            # An amount-less row states nothing about tax either: it carries
+            # no rate, no VAT and no gross, so no sum can quietly read a zero
+            # off it as if the document had printed one.
+            vat_rate = Decimal("20") if amount is not None else None
+            vat_amount, gross_amount = (
+                _line_tax(amount, Decimal("20"), True) if amount is not None else (None, None)
+            )
             source = _total_source(pages, (label,), amount) or FieldSource(
                 page_number=pages[-1].page_number,
-                raw_text=strip_scan_artifacts(raw_line),
+                raw_text=row,
                 extraction_method=pages[-1].extraction_method,
                 confidence=pages[-1].extraction_confidence,
                 precision="approximate",
@@ -1109,10 +1368,10 @@ class InvoiceParser:
                     quantity=None,
                     unit_price_net=None,
                     line_total_net=amount,
-                    vat_rate=Decimal("20"),
+                    vat_rate=vat_rate,
                     vat_amount=vat_amount,
                     gross_amount=gross_amount,
-                    vat_applicable=True,
+                    vat_applicable=amount is not None,
                     line_item_type=line_item_type,
                     raw_category=label,
                     is_section_total=True,
@@ -1252,10 +1511,17 @@ class InvoiceParser:
         current_section = "unknown"
         current_heading: str | None = None
         sequence = start
+        previous: str | None = None
         for raw_line in page.text.splitlines():
             line = strip_scan_artifacts(raw_line)
             lower = line.lower()
-            if not line or _is_prose_line(raw_line, line):
+            if not line:
+                continue
+            prior, previous = previous, line
+            if _is_prose_line(raw_line, line):
+                continue
+            # The grand total, however it is labelled, is never a billed row.
+            if _claim_grand_total(line, prior) is not None:
                 continue
             if section := _ocr_section(line):
                 current_section = section
@@ -1424,24 +1690,41 @@ class InvoiceParser:
         total_matches = re.findall(
             rf"(?<!Sub)\bTotal\b\s*[:£]?\s*{MONEY_PATTERN}", text, flags=re.IGNORECASE
         )
+        # A document that prints a grand total under a label this reader knows
+        # is read that way; "Claim" is the last resort, for the layout that
+        # prints no such label at all.
+        claim_total = _claim_grand_total_in(text)
         total = _first_not_none(
-            labelled("gross_total"), money(total_matches[-1]) if total_matches else None
+            labelled("gross_total"),
+            money(total_matches[-1]) if total_matches else None,
+            claim_total,
         )
         vat_rate_match = re.search(r"VAT\s*\((\d+(?:\.\d+)?)%\)", text, re.I)
         printed = _printed_section_totals(text)
+        rolled_up = _rolled_up_section_totals(lines or [])
         section_sums = _section_sums(lines or [])
 
         def section_net(field: str) -> Decimal | None:
-            """The printed section label, then the section's own total, then its rows.
+            """The printed section label, the section's own total, its summary row, its rows.
 
-            All three outrank `_search_money`, whose first match for "Parts"
+            All four outrank `_search_money`, whose first match for "Parts"
             on Format 1 is the "Sundry parts 3.50%" rate rather than a total.
             Each step tests for None rather than truth, so a printed
             "Total Additional Costs GBP 0.00" stays 0.00 instead of falling
             through to the next source.
+
+            The summary-row step is what a fully rolled-up invoice with no
+            "Total ..." labels at all (the EXL layout) has instead of the
+            first two; where a document prints both, they are the same number
+            read twice, and the printed label wins.
             """
 
-            return _first_not_none(labelled(field), printed.get(field), section_sums.get(field))
+            return _first_not_none(
+                labelled(field),
+                printed.get(field),
+                rolled_up.get(field),
+                section_sums.get(field),
+            )
 
         labour_net = _first_not_none(section_net("labour_net"), _search_money(text, r"Labour"))
         parts_net = _first_not_none(section_net("parts_net"), _search_money(text, r"Parts"))
@@ -1487,7 +1770,14 @@ class InvoiceParser:
             "subtotal_net": _total_source(pages, ("sub total", "subtotal"), subtotal),
             "vat_amount": _total_source(pages, ("vat",), vat_amount),
             "non_vatable": _total_source(pages, ("mot",), non_vatable),
-            "total_gross": _total_source(pages, ("total", "invoice total"), total),
+            # "claim" is offered as a grand-total label only on a document
+            # that actually printed one, so a "Claim Reference" row elsewhere
+            # in the corpus is never a candidate for this box.
+            "total_gross": _total_source(
+                pages,
+                ("total", "invoice total") + (("claim",) if claim_total is not None else ()),
+                total,
+            ),
         }
         totals.sources = {key: source for key, source in candidates.items() if source is not None}
         return totals
