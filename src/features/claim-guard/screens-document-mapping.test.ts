@@ -71,7 +71,7 @@ describe("the retired re-run control", () => {
     expect(html).not.toContain("Re-running pairing sweep")
     // The upload flow itself is untouched.
     expect(html).toContain("Document Intelligence")
-    expect(html).toContain("Upload invoices and estimates")
+    expect(html).toContain("Upload invoices and engineer assessments")
   })
 })
 
