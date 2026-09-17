@@ -250,6 +250,17 @@ function IdentityCell({
   )
 }
 
+/** The other document's number, in the association columns the client asked
+ * for (§3.4 / §3.5 of the 17 Sep walkthrough). A missing association is not
+ * a missing *value*: every other identity column prints an em dash for "the
+ * document did not print this", and reusing it here would say the pairing
+ * key failed to extract when what actually happened is that nothing is
+ * paired. So it gets words. */
+function AssociationCell({ number }: { number: string | null }) {
+  if (number) return <span className="font-medium">{number}</span>
+  return <span className="text-muted-foreground">Not paired</span>
+}
+
 function SectionTotalBadge() {
   return (
     <Tooltip>
@@ -270,9 +281,24 @@ function SectionTotalBadge() {
 }
 
 /** The split itself: which assessment line items add up to one rolled-up
- * invoice total. It opens by default -- this is the thing the client asked
- * to stop hunting for -- and keeps its own toggle so a long section can be
- * folded away again without collapsing the whole invoice. */
+ * invoice total. It opens by default and keeps its own toggle so a long
+ * section can be folded away again.
+ *
+ * NOT MOUNTED ANYWHERE TODAY, and that is deliberate. It used to render
+ * inside the invoice extracts table, under each rolled-up total. On the
+ * 17 Sep walkthrough the client ruled that out for *that* screen -- "if the
+ * invoice is not talking about parts, you won't show the part line items
+ * there. You would show those parts in the assessment section, which is
+ * below" -- because Document Intelligence exists to prove that both
+ * documents were read and mapped, and each table must therefore show only
+ * what its own document prints.
+ *
+ * The split is not cancelled: it moves to **benchmark analysis**, the screen
+ * that does not exist yet, which is where she said "now we are able to
+ * combine them when we do the analysis". This component, its four
+ * empty-state classifications (`breakdownGap`), `breakdownSummaryLine` and
+ * the difference-convention wording are all kept exported and under test so
+ * that lane can mount it without rebuilding any of it. Do not delete. */
 export function SectionBreakdownDetail({
   breakdown,
 }: {
@@ -365,13 +391,11 @@ export function SectionBreakdownDetail({
   )
 }
 
-export function InvoiceLinesTable({
-  lines,
-  breakdownsByType,
-}: {
-  lines: InvoiceExtractLine[]
-  breakdownsByType: Map<string, SectionBreakdownPayload>
-}) {
+/** The invoice's own lines and nothing else. For a rolled-up invoice that is
+ * the three or four section totals it prints; the assessment rows behind
+ * those totals belong to the assessment table below, and to benchmark
+ * analysis after that -- see the note on `SectionBreakdownDetail`. */
+export function InvoiceLinesTable({ lines }: { lines: InvoiceExtractLine[] }) {
   return (
     <Table>
       <TableHeader>
@@ -385,43 +409,29 @@ export function InvoiceLinesTable({
         </TableRow>
       </TableHeader>
       <TableBody>
-        {lines.map((line) => {
-          const breakdown = line.is_section_total
-            ? breakdownsByType.get(line.line_item_type ?? "")
-            : undefined
-          return (
-            <Fragment key={line.id}>
-              <TableRow>
-                <TableCell className="text-muted-foreground">
-                  {line.sequence_no}
-                </TableCell>
-                <TableCell>
-                  <span className="inline-flex items-center gap-2">
-                    {lineItemTypeLabel(line.line_item_type)}
-                    {line.is_section_total ? <SectionTotalBadge /> : null}
-                  </span>
-                </TableCell>
-                <TableCell>{line.description}</TableCell>
-                <TableCell className="text-right tabular-nums">
-                  {formatQuantity(line.quantity)}
-                </TableCell>
-                <TableCell className="text-right tabular-nums">
-                  {formatMaybeMoney(line.unit_price)}
-                </TableCell>
-                <TableCell className="text-right tabular-nums">
-                  {formatMaybeMoney(line.line_total)}
-                </TableCell>
-              </TableRow>
-              {breakdown ? (
-                <TableRow>
-                  <TableCell colSpan={6} className="bg-muted/20">
-                    <SectionBreakdownDetail breakdown={breakdown} />
-                  </TableCell>
-                </TableRow>
-              ) : null}
-            </Fragment>
-          )
-        })}
+        {lines.map((line) => (
+          <TableRow key={line.id}>
+            <TableCell className="text-muted-foreground">
+              {line.sequence_no}
+            </TableCell>
+            <TableCell>
+              <span className="inline-flex items-center gap-2">
+                {lineItemTypeLabel(line.line_item_type)}
+                {line.is_section_total ? <SectionTotalBadge /> : null}
+              </span>
+            </TableCell>
+            <TableCell>{line.description}</TableCell>
+            <TableCell className="text-right tabular-nums">
+              {formatQuantity(line.quantity)}
+            </TableCell>
+            <TableCell className="text-right tabular-nums">
+              {formatMaybeMoney(line.unit_price)}
+            </TableCell>
+            <TableCell className="text-right tabular-nums">
+              {formatMaybeMoney(line.line_total)}
+            </TableCell>
+          </TableRow>
+        ))}
       </TableBody>
     </Table>
   )
@@ -493,8 +503,9 @@ export function AssessmentLinesTable({ lines }: { lines: AssessmentExtractLine[]
  * reference rows across invoice and assessment lines, and expanding every
  * one by default would push the reviewer's price challenges below the
  * fold. Pass `defaultExpanded` as `true` to render every row pre-opened
- * (tests have no pointer to click the toggle), or as a predicate to open
- * only the rows worth opening -- see `AUTO_EXPAND_LINE_LIMIT`.
+ * (tests have no pointer to click the toggle). The predicate form is kept
+ * for a table that wants a per-row rule; no caller has one today -- see
+ * `ExtractsExpansion` for why the invoice side's rule was removed.
  *
  * State is held as each key's **absolute** choice, never as a "departure from
  * the default" -- see `row-expansion.ts` for why that distinction is the
@@ -551,45 +562,6 @@ function pairReasonsText(assessment: AssessmentExtractPayload) {
   return reasons.length > 0 ? reasons.join("; ") : "No pairing evidence recorded."
 }
 
-/** Above this many invoice lines an invoice is not opened automatically.
- * Auto-expansion exists to put the split in front of the reader; dumping a
- * 300-line itemised invoice into the page would bury the very breakdown it
- * was opened for, and the reader can still open it by hand. */
-const AUTO_EXPAND_LINE_LIMIT = 40
-
-/** An invoice that rolls its costs up into section totals is exactly the
- * case the client asked to see without hunting -- "total parts in invoice =
- * 110 means from the engineer estimate we shud show what all parts line
- * items r taken exactly to get tht total parts cost". Such a row opens
- * itself, and `SectionBreakdownDetail` inside it opens too, so the split is
- * on screen with no clicks. An invoice with no rolled-up total has no split
- * to show, so it stays collapsed.
- *
- * The breakdown must actually *resolve* -- carry rows -- not merely exist.
- * `get_claim_extracts` emits a breakdown for every `is_section_total` line
- * unconditionally, including when no assessment is paired to the invoice at
- * all, so "a breakdown exists" is true of every rolled-up invoice in the
- * case. Auto-expanding on that alone meant uploading invoices before any
- * estimate blew every invoice open onto four "No assessment is paired to this
- * invoice" boxes -- the opposite of putting the split in front of the
- * reader. */
-function hasVisibleSectionSplit(
-  invoice: InvoiceExtractPayload,
-  breakdowns: SectionBreakdownPayload[]
-) {
-  if (invoice.lines.length > AUTO_EXPAND_LINE_LIMIT) return false
-  return invoice.lines.some(
-    (line) =>
-      line.is_section_total &&
-      breakdowns.some(
-        (breakdown) =>
-          breakdown.invoice_id === invoice.invoice_id &&
-          breakdown.line_item_type === (line.line_item_type ?? "") &&
-          hasBreakdownRows(breakdown)
-      )
-  )
-}
-
 /** How a table decides which rows start open.
  *
  * Three named states rather than `defaultExpanded?: boolean`. Under the
@@ -597,31 +569,28 @@ function hasVisibleSectionSplit(
  * `undefined` meant "apply the auto-expand rule", `false` meant "open
  * nothing" -- and nothing on the type said which was which, or that they
  * differed at all. A caller that meant "leave them alone" had to know that
- * omitting the prop did the opposite of passing `false`. */
+ * omitting the prop did the opposite of passing `false`.
+ *
+ * `auto` no longer opens anything on either table. It existed on the invoice
+ * side solely to put the assessment split in front of the reader without a
+ * click; with the split gone from this screen (see `SectionBreakdownDetail`)
+ * the predicate had nothing left to reveal, so the rule, its line limit and
+ * the `breakdowns` prop that fed it were removed rather than left running
+ * against nothing. `auto` is kept as the default so callers keep reading as
+ * "whatever this table thinks is right", and so benchmark analysis can give
+ * it a rule again. */
 export type ExtractsExpansion = "auto" | "all" | "none"
 
 export function InvoiceExtractsTable({
   invoices,
-  breakdowns,
   expansion = "auto",
 }: {
   invoices: InvoiceExtractPayload[]
-  breakdowns: SectionBreakdownPayload[]
-  /** `auto` opens only the invoices with a split worth showing; `all` opens
-   * every invoice (tests have no pointer to click a toggle); `none` opens
-   * none. */
+  /** `all` opens every invoice (tests have no pointer to click a toggle);
+   * `auto` and `none` both open nothing. */
   expansion?: ExtractsExpansion
 }) {
-  const autoExpanded = new Set(
-    invoices
-      .filter((invoice) => hasVisibleSectionSplit(invoice, breakdowns))
-      .map((invoice) => invoice.invoice_id)
-  )
-  const { isExpanded, toggle } = useRowExpansion(
-    expansion === "auto"
-      ? (key: string) => autoExpanded.has(key)
-      : expansion === "all"
-  )
+  const { isExpanded, toggle } = useRowExpansion(expansion === "all")
   return (
     <Table>
       <TableHeader>
@@ -630,6 +599,7 @@ export function InvoiceExtractsTable({
             <span className="sr-only">Expand line items</span>
           </TableHead>
           <TableHead>Invoice number</TableHead>
+          <TableHead>Associated assessment number</TableHead>
           <TableHead>Vehicle make</TableHead>
           <TableHead>Vehicle model</TableHead>
           <TableHead>Registration</TableHead>
@@ -642,11 +612,6 @@ export function InvoiceExtractsTable({
           const key = invoice.invoice_id
           const expanded = isExpanded(key)
           const detailId = `invoice-extract-detail-${key}`
-          const breakdownsByType = new Map(
-            breakdowns
-              .filter((breakdown) => breakdown.invoice_id === invoice.invoice_id)
-              .map((breakdown) => [breakdown.line_item_type, breakdown] as const)
-          )
           return (
             <Fragment key={key}>
               <TableRow>
@@ -660,6 +625,9 @@ export function InvoiceExtractsTable({
                 </TableCell>
                 <TableCell className="font-medium">
                   {invoice.invoice_number ?? "—"}
+                </TableCell>
+                <TableCell>
+                  <AssociationCell number={invoice.paired_assessment_number} />
                 </TableCell>
                 <TableCell>
                   <IdentityCell
@@ -694,12 +662,9 @@ export function InvoiceExtractsTable({
               </TableRow>
               {expanded ? (
                 <TableRow id={detailId}>
-                  <TableCell colSpan={7} className="bg-muted/30 p-3">
+                  <TableCell colSpan={8} className="bg-muted/30 p-3">
                     {invoice.lines.length > 0 ? (
-                      <InvoiceLinesTable
-                        lines={invoice.lines}
-                        breakdownsByType={breakdownsByType}
-                      />
+                      <InvoiceLinesTable lines={invoice.lines} />
                     ) : (
                       <p className="text-sm text-muted-foreground">
                         No line items extracted for this invoice.
@@ -735,6 +700,7 @@ export function AssessmentExtractsTable({
             <span className="sr-only">Expand operations</span>
           </TableHead>
           <TableHead>Assessment number</TableHead>
+          <TableHead>Associated invoice number</TableHead>
           <TableHead>Vehicle make</TableHead>
           <TableHead>Vehicle model</TableHead>
           <TableHead>Registration</TableHead>
@@ -755,12 +721,17 @@ export function AssessmentExtractsTable({
                   <ExpandToggleButton
                     expanded={expanded}
                     onToggle={() => toggle(key)}
-                    label={`lines for assessment ${assessment.assessment_number ?? key}`}
+                    label={`lines for engineer assessment ${assessment.assessment_number ?? key}`}
                     controls={detailId}
                   />
                 </TableCell>
                 <TableCell className="font-medium">
                   {assessment.assessment_number ?? "—"}
+                </TableCell>
+                <TableCell>
+                  <AssociationCell
+                    number={assessment.paired_invoice_number}
+                  />
                 </TableCell>
                 <TableCell>{assessment.vehicle_make ?? "—"}</TableCell>
                 <TableCell>{assessment.vehicle_model ?? "—"}</TableCell>
@@ -794,7 +765,7 @@ export function AssessmentExtractsTable({
               </TableRow>
               {expanded ? (
                 <TableRow id={detailId}>
-                  <TableCell colSpan={8} className="bg-muted/30 p-3">
+                  <TableCell colSpan={9} className="bg-muted/30 p-3">
                     {assessment.lines.length > 0 ? (
                       <AssessmentLinesTable lines={assessment.lines} />
                     ) : (
@@ -834,11 +805,11 @@ export function ExtractsSection({
           <CardHeader>
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <CardTitle>Invoice and assessment extracts</CardTitle>
+                <CardTitle>Invoice and engineer assessment extracts</CardTitle>
                 <CardDescription>
-                  The two standardised tables from the invoice and assessment
-                  documents, kept separate. Line items are nested under each
-                  document.
+                  The two standardised tables from the invoice and engineer
+                  assessment documents, kept separate. Each table shows only
+                  what its own document contains.
                 </CardDescription>
               </div>
               <CollapsibleTrigger asChild>
@@ -865,12 +836,12 @@ export function ExtractsSection({
                 </Alert>
               ) : loading ? (
                 <p className="py-6 text-center text-sm text-muted-foreground">
-                  Loading invoice and assessment extracts…
+                  Loading invoice and engineer assessment extracts…
                 </p>
               ) : (
                 <p className="py-6 text-center text-sm text-muted-foreground">
-                  No invoice or assessment extracts are available for this
-                  claim yet.
+                  No invoice or engineer assessment extracts are available for
+                  this claim yet.
                 </p>
               )}
             </CardContent>
@@ -886,11 +857,11 @@ export function ExtractsSection({
         <CardHeader>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <CardTitle>Invoice and assessment extracts</CardTitle>
+              <CardTitle>Invoice and engineer assessment extracts</CardTitle>
               <CardDescription>
-                The two standardised tables from the invoice and assessment
-                documents, kept separate. Line items are nested under each
-                document.
+                The two standardised tables from the invoice and engineer
+                assessment documents, kept separate. Each table shows only what
+                its own document contains.
               </CardDescription>
             </div>
             <CollapsibleTrigger asChild>
@@ -909,17 +880,24 @@ export function ExtractsSection({
         </CardHeader>
         <CollapsibleContent>
           <CardContent className="space-y-6">
+            {/* The client dictated both headings on the 17 Sep walkthrough.
+                Each names the document the table is built from and the
+                association it carries to the other one -- the two facts the
+                screen exists to evidence. `section_breakdowns` is still on
+                the payload and still emitted by the backend; nothing on this
+                screen reads it, and benchmark analysis will. */}
             <div>
-              <h3 className="text-sm font-semibold">Invoice extracts</h3>
+              <h3 className="text-sm font-semibold">
+                Invoice extracts and associated engineer assessment
+              </h3>
               <div className="mt-2 overflow-x-auto rounded-lg border">
-                <InvoiceExtractsTable
-                  invoices={extracts.invoice_extracts}
-                  breakdowns={extracts.section_breakdowns}
-                />
+                <InvoiceExtractsTable invoices={extracts.invoice_extracts} />
               </div>
             </div>
             <div>
-              <h3 className="text-sm font-semibold">Assessment extracts</h3>
+              <h3 className="text-sm font-semibold">
+                Engineer assessment extracts and invoice association
+              </h3>
               <div className="mt-2 overflow-x-auto rounded-lg border">
                 <AssessmentExtractsTable
                   assessments={extracts.assessment_extracts}

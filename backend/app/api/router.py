@@ -1072,7 +1072,17 @@ def _invoice_extract_line_payload(line: InvoiceLineItem) -> dict[str, Any]:
     }
 
 
-def _invoice_extract_payload(invoice: Invoice) -> dict[str, Any]:
+def _invoice_extract_payload(
+    invoice: Invoice, paired_assessment_number: str | None = None
+) -> dict[str, Any]:
+    """``paired_assessment_number`` is the mirror of the assessment payload's
+    ``paired_invoice_number``.  The pairing edge is stored on the assessment
+    (``EngineerAssessment.paired_invoice_id``) and ``Invoice`` carries no
+    reverse relationship, so the caller resolves it from the assessments it
+    has already loaded rather than this function issuing a query per invoice.
+    Read-only projection: nothing here writes or infers a pairing.
+    """
+
     field_sources = (
         (invoice.document.metadata_json or {}).get("field_sources", {})
         if invoice.document
@@ -1081,6 +1091,7 @@ def _invoice_extract_payload(invoice: Invoice) -> dict[str, Any]:
     return {
         "invoice_id": invoice.id,
         "invoice_number": invoice.invoice_number,
+        "paired_assessment_number": paired_assessment_number,
         "vehicle_make": invoice.vehicle.make if invoice.vehicle else None,
         "vehicle_model": invoice.vehicle.model if invoice.vehicle else None,
         "vehicle_registration": invoice.vehicle.registration if invoice.vehicle else None,
@@ -1187,8 +1198,25 @@ def get_claim_extracts(case_reference: str, db: DatabaseSession) -> dict[str, An
             section_breakdowns.append(
                 {"invoice_id": invoice.id, "invoice_number": invoice.invoice_number, **breakdown}
             )
+    # The invoice side of the association column.  Built from the assessments
+    # already loaded above, so no extra query and no chance of the two tables
+    # disagreeing about who is paired to whom.  If two assessments somehow
+    # point at one invoice the first in load order wins, matching the
+    # arbitrary-row behaviour of ``section_breakdown_for_invoice``.
+    assessment_number_by_invoice_id: dict[str, str | None] = {}
+    for assessment in assessments:
+        if assessment.paired_invoice_id is None:
+            continue
+        assessment_number_by_invoice_id.setdefault(
+            assessment.paired_invoice_id, assessment.assessment_number
+        )
     return {
-        "invoice_extracts": [_invoice_extract_payload(invoice) for invoice in invoices],
+        "invoice_extracts": [
+            _invoice_extract_payload(
+                invoice, assessment_number_by_invoice_id.get(invoice.id)
+            )
+            for invoice in invoices
+        ],
         "assessment_extracts": [
             _assessment_extract_payload(assessment) for assessment in assessments
         ],
