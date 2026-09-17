@@ -27,6 +27,26 @@ from decimal import Decimal
 from app.domain.money import as_decimal
 
 FIELD_SYNONYMS: dict[str, tuple[str, ...]] = {
+    # ponytail: the bare label ``Claim`` is deliberately absent, twice over.
+    #
+    # It is a *heading* on all seven DL Auda reports -- ``Claim`` alone above
+    # the Summary Information grid -- and ``_read_cell`` matches a whole cell
+    # strictly.  A strict match outranks the loose one the real ``Claim
+    # Reference 245338996/1`` row yields, so ``_next_line_value`` would hand
+    # back the grid row under the heading and every one of those reports would
+    # report a claim reference of "Assessment Number D7576879 Reference Name
+    # John Doe".  Requiring a printed colon rules the heading out cleanly.
+    #
+    # That is not what stops it being read.  The EXL demo report prints
+    # ``Claim: ABC 123456`` where its paired invoice prints ``123456``.  Read
+    # as printed, the two normalise to different identifiers,
+    # ``engineer_assessment._compare_pair_keys`` scores a claim-reference
+    # *conflict*, and a conflict is fatal -- so reading this label correctly
+    # unpairs the client's own demo pair, which is worse than leaving the
+    # field empty.  Cutting the "ABC " here instead would be exactly the
+    # "value normalised into agreement" ``VALUE_SHAPES`` refuses.  Whether a
+    # printed prefix token may be tolerated on an identifier is the pairing
+    # rule's decision; this table waits on it.
     "claim_reference": (
         "Claim Number",
         "Claim Reference",
@@ -55,7 +75,12 @@ FIELD_SYNONYMS: dict[str, tuple[str, ...]] = {
     "invoice_date": ("Invoice Date",),
     "incident_date": ("Date of accident", "Date of Incident", "Accident Date"),
     "authorisation_status": ("Authorisation Status", "Authorization Status"),
-    "customer_name": ("DL policyholder", "Reference Name", "Insured"),
+    # "Insured Name" is listed beside the bare "Insured" because the loose
+    # prefix match in ``_read_cell`` takes the longest label it knows: without
+    # it the EXL invoice's run-on cell "Insured Name John Smith" matches
+    # "Insured" and leaves the label's own second word on the value
+    # ("Name John Smith").
+    "customer_name": ("DL policyholder", "Reference Name", "Insured Name", "Insured"),
     "mileage": ("Odometer", "Mileage"),
     "labour_rate": ("Labour Rate",),
     "paint_rate": ("Paint Rate",),

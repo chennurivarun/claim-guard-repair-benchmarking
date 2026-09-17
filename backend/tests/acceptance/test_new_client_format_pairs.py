@@ -18,11 +18,11 @@ invoice 6, and must be persuaded by neither note -- both assert the same
 thing and only one of them is true.
 
 **The demo pair.** The EXL invoice is a third invoice layout unlike anything
-the parser has seen, and several of the assertions below record what it
-*cannot* do with it rather than what it can:
-``test_exl_invoice_is_the_layout_the_parser_does_not_yet_read`` is deliberately
-a specification of today's gaps, not of correct behaviour. Each one is
-labelled GAP with what the document prints and what the parser makes of it.
+else in the corpus: a bordered label/value table, a rolled-up summary with no
+priced rows, a grand total labelled ``Claim`` and four section labels nothing
+else prints. ``test_exl_invoice_reconciles_against_its_own_summary`` is the
+specification of how it reads. One assertion is still labelled GAP -- the
+report's claim reference -- and says why it stays open.
 
 Deterministic and LLM-free: no extractor tier is configured, so the native
 ``.docx`` parsers do all of the work and every number here is exact, taken
@@ -275,10 +275,15 @@ def test_exl_demo_pair_identity(api) -> None:
         assert assessment.registration == "ABC02QQQ"
         assert assessment.vehicle_make == "VOLVO"
         assert assessment.vehicle_model == "XC40(XZ)(18-)"
-        # GAP: the report prints "Claim: ABC 123456". "Claim" on its own is
-        # not a claim-reference label the reader knows (it knows "Claim
-        # Reference", "Claim Number", "Claim No", "Claim Ref"), so the
-        # report's claim reference is lost entirely.
+        # GAP, deliberately still open: the report prints "Claim: ABC 123456"
+        # and its invoice prints "123456". Reading the label -- which is a
+        # three-line change, and the only thing needed is to accept "Claim"
+        # when a colon follows it -- makes the two documents disagree on the
+        # claim reference, and ``_compare_pair_keys`` scores that a conflict,
+        # which is fatal: the demo pair stops pairing at all. Leaving the
+        # field empty is the lesser harm until the pairing rule decides
+        # whether a printed prefix token may be tolerated. See the comment on
+        # ``label_grid.FIELD_SYNONYMS["claim_reference"]``.
         assert assessment.claim_reference is None
 
         assert invoice.invoice_number == "ABC1234"
@@ -296,11 +301,11 @@ def test_exl_demo_pair_identity(api) -> None:
         assert invoice.supplier_name == "EXL Repairer Services Ltd"
         # The only VAT registration number in the corpus.
         assert invoice.supplier_vat_number == "106 9411 33"
-        # GAP: "Insured Name | John Smith" is read by the loose "Insured"
-        # synonym, so the label's own second word is left on the value.
-        assert invoice.customer_name == "Name John Smith"
+        # "Insured Name | John Smith": the longer label is in the synonym
+        # table, so none of it is left on the front of the value.
+        assert invoice.customer_name == "John Smith"
 
-        # The report prints no claim reference the reader can see and the
+        # The report prints no claim reference the reader takes and the
         # invoice prints no policy number, so registration is the only
         # comparable key and the pair is flagged weak rather than strong.
         assert assessment.pair_status == "paired"
@@ -534,20 +539,23 @@ def test_format_5_and_6_reports_keep_both_sides_of_every_disagreement(api) -> No
 
 
 # --------------------------------------------------------------------------
-# 3. What the EXL layout breaks -- a specification of today's gaps
+# 3. The EXL layout, read
 # --------------------------------------------------------------------------
 
 
-def test_exl_invoice_is_the_layout_the_parser_does_not_yet_read(api) -> None:
-    """The EXL invoice reconciles perfectly on paper and not at all in the
-    pipeline. Every assertion below is a GAP: it records what the parser does
-    today so the next lane has a target, and each one should be *changed*
-    when that lane fixes it -- none of it is desired behaviour.
+def test_exl_invoice_reconciles_against_its_own_summary(api) -> None:
+    """The demo invoice is arithmetically perfect and now reads that way.
 
     On paper: labour 2019.98 + parts 872.38 + paint 389.81 + additional
     extras 785.75 + collection & delivery 156.14 = 4224.06, VAT 844.81,
-    ``Claim`` 5068.87. The engineer report prints the same 5068.87 and the
-    pipeline reads every one of those figures off the *report* correctly.
+    ``Claim`` 5068.87. The engineer report prints the same 5068.87.
+
+    Four things had to change for that to come out of the pipeline, and each
+    is asserted below: the grand total is labelled ``Claim``; the bare labels
+    ``Paint`` and ``Additional Extras`` are section totals, not priced rows;
+    ``Collection & Delivery`` is a section code nothing else in the corpus
+    prints and its money is extras; and ``Recovery``, printed with an empty
+    Amount cell, stays visible as a row the document printed.
     """
 
     reference, documents = _process_pair(api, 8)
@@ -559,8 +567,7 @@ def test_exl_invoice_is_the_layout_the_parser_does_not_yet_read(api) -> None:
             select(EngineerAssessment).where(EngineerAssessment.case_id == case.id)
         ).one()
 
-        # The report is read correctly and is the pair's only good source of
-        # money today.
+        # The report reads the same figures it always did.
         assert _money(assessment.labour_net) == Decimal("2019.98")
         assert _money(assessment.parts_net) == Decimal("872.38")
         assert _money(assessment.paint_net) == Decimal("389.81")
@@ -569,10 +576,13 @@ def test_exl_invoice_is_the_layout_the_parser_does_not_yet_read(api) -> None:
         assert _money(assessment.vat_total) == Decimal("844.81")
         assert _money(assessment.gross_total) == Decimal("5068.87")
 
-        # GAP 1 -- the grand total is labelled "Claim". No "Total", "Grand
-        # Total", "Invoice Total" or "Total Due" appears anywhere on the
-        # document, so the invoice has no gross total at all.
-        assert invoice.gross_total is None
+        # The grand total is labelled "Claim" -- no "Total", "Grand Total",
+        # "Invoice Total" or "Total Due" appears anywhere on the document. It
+        # is read because the row is a whole line of "Claim" and one amount
+        # printed directly beneath the block's VAT row; the "Claim Reference"
+        # row two tables above and the bare "Claim" heading on every DL Auda
+        # report satisfy neither half.
+        assert _money(invoice.gross_total) == Decimal("5068.87")
 
         lines = list(
             session.scalars(
@@ -583,57 +593,77 @@ def test_exl_invoice_is_the_layout_the_parser_does_not_yet_read(api) -> None:
         )
         by_description = {line.raw_description: line for line in lines}
 
-        # GAP 2 -- worse than losing it: "Claim 5068.87" is ingested as an
-        # ordinary priced row, so the grand total is counted as a line item.
-        claim_row = by_description["Claim"]
-        assert claim_row.is_section_total is False
-        assert claim_row.line_item_type == "unknown"
-        assert _money(claim_row.line_total_net) == Decimal("5068.87")
+        # The grand total is the invoice's answer, never a thing it billed
+        # for, so it is not a line item at all.
+        assert "Claim" not in by_description
 
-        # GAP 3 -- only the two bare labels the section vocabulary already
-        # knows ("Labour", "Parts") are recognised as section totals. Bare
-        # "Paint" and "Additional Extras" are not, so they become unknown
-        # priced rows and the invoice reports no paint or extras total.
-        assert {
-            line.raw_description for line in lines if line.is_section_total
-        } == {"Labour", "Parts"}
-        assert invoice.paint_net is None
-        assert invoice.other_net is None
-        for description in ("Paint", "Additional Extras"):
-            assert by_description[description].is_section_total is False
-            assert by_description[description].line_item_type == "unknown"
+        # Every printed summary row is a section total, including the bare
+        # labels the vocabulary did not know.
+        assert [line.raw_description for line in lines] == [
+            "Labour",
+            "Parts",
+            "Paint",
+            "Additional Extras",
+            "Collection & Delivery",
+            "Recovery",
+        ]
+        assert all(line.is_section_total for line in lines)
 
-        # GAP 4 -- "Collection & Delivery" is a line-item type nothing else
-        # in the corpus prints; it lands as "unknown". "Recovery" is printed
-        # with a blank amount and is dropped entirely.
-        assert by_description["Collection & Delivery"].line_item_type == "unknown"
+        assert _money(by_description["Labour"].line_total_net) == Decimal("2019.98")
+        assert by_description["Labour"].line_item_type == "labour"
+        assert _money(by_description["Parts"].line_total_net) == Decimal("872.38")
+        assert by_description["Parts"].line_item_type == "parts"
+        # Bare "Paint" on a summary block is the paint *and materials*
+        # figure: 389.81 is the report's "Total Paint & Materials", and the
+        # report's paintwork labour is inside its labour total.
+        assert _money(by_description["Paint"].line_total_net) == Decimal("389.81")
+        assert by_description["Paint"].line_item_type == "paint_materials"
+        assert _money(by_description["Additional Extras"].line_total_net) == Decimal("785.75")
+        assert by_description["Additional Extras"].line_item_type == "extras"
+        # A line-item type nothing else in the corpus prints. The vocabulary
+        # is open, so it keeps its own code rather than being flattened into
+        # an existing one -- its money is extras, which is where the paired
+        # report rolls it up.
         assert _money(by_description["Collection & Delivery"].line_total_net) == Decimal(
             "156.14"
         )
-        assert "Recovery" not in by_description
+        assert by_description["Collection & Delivery"].line_item_type == "collection_and_delivery"
+        # Printed with an empty Amount cell. It stays visible as a row the
+        # document printed, and carries no amount, rate, VAT or gross -- a
+        # zero here would be the tool inventing a figure the document does
+        # not state.
+        recovery = by_description["Recovery"]
+        assert recovery.line_item_type == "recovery"
+        assert recovery.line_total_net is None
+        assert recovery.vat_rate is None
+        assert recovery.vat_amount is None
+        assert recovery.vat_applicable is False
 
-        # GAP 5 -- the consequence. The subtotal is labour + parts only, and
-        # the maths checks fail loudly on a document that is arithmetically
-        # perfect: the "parts" sum has swallowed paint, extras, collection
-        # and the grand total itself.
-        assert _money(invoice.subtotal_net) == Decimal("2892.36")
+        # The section totals the summary states, and the arithmetic they
+        # close. Extras is the two extras rows together, exactly as the
+        # report rolls them up.
+        assert _money(invoice.labour_net) == Decimal("2019.98")
+        assert _money(invoice.parts_net) == Decimal("872.38")
+        assert _money(invoice.paint_net) == Decimal("389.81")
+        assert _money(invoice.other_net) == Decimal("941.89")
+        assert _money(invoice.subtotal_net) == Decimal("4224.06")
+        assert _money(invoice.vat_total) == Decimal("844.81")
+
+        # The point of the lane: a document that is correct to the penny
+        # produces no arithmetic finding.
         findings = _findings(session, invoice)
-        parts = _one(findings, "PARTS_TOTAL_MISMATCH")
-        assert parts.status.value == "fail"
-        assert _money(parts.expected_value) == Decimal("6400.57")
-        assert _money(parts.observed_value) == Decimal("872.38")
-        assert _one(findings, "SUBTOTAL_MISMATCH").status.value == "fail"
-        vat = _one(findings, "VAT_MISCALC")
-        assert vat.status.value == "fail"
-        assert _money(vat.observed_value) == Decimal("844.81")
-        # With no gross total to compare against there is no gross check at
-        # all -- the one figure a reviewer would look at first.
-        assert "TOTAL_MISMATCH" not in findings
+        for code in ("PARTS_TOTAL_MISMATCH", "LABOUR_TOTAL_MISMATCH"):
+            assert _one(findings, code).status.value == "not_applicable"
+        for code in ("SUBTOTAL_MISMATCH", "VAT_MISCALC", "TOTAL_MISMATCH"):
+            finding = _one(findings, code)
+            assert finding.status.value == "pass", (code, finding.observed_value)
 
-        # GAP 6 -- because no itemised rows survive, the invoice is routed
-        # to manual review as rolled up. That part is correct and intended.
+        # Still routed to manual review as rolled up: the invoice prints no
+        # priced rows at all, which is correct and intended.
         invoice_document = documents["EXL_demo_invoice.docx"]
         assert invoice_document["manual_review"] is True
         assert invoice_document["manual_review_reason"].startswith(
             "Line-item information is not available"
         )
+
+

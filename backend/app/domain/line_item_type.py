@@ -48,6 +48,10 @@ SECTION_SYNONYMS: dict[str, tuple[str, ...]] = {
         "Additional Costs",
         "Total Additional Costs",
         "Additional Total Items",
+        # The EXL demo invoice's summary row. The engineer report it pairs
+        # with rolls the same money up under EXTRAS, so the two sides have to
+        # carry the same code or the section totals cannot be compared.
+        "Additional Extras",
     ),
     "labour": (
         "Labour",
