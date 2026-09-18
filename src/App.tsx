@@ -38,6 +38,13 @@ import {
 } from "@/features/claim-guard/invoice-selection"
 import { ClientIntakeScreen } from "@/features/claim-guard/screens-client-intake"
 import { DocumentMappingScreen } from "@/features/claim-guard/screens-document-mapping"
+import { SourceIntelligenceScreen } from "@/features/claim-guard/screens-source-intelligence"
+import { SourceBenchmarksScreen } from "@/features/claim-guard/screens-source-benchmarks"
+import { BenchmarkAnalysisScreen } from "@/features/claim-guard/screens-benchmark-analysis"
+import {
+  screenScope,
+  sourceScreen,
+} from "@/features/claim-guard/source-scope"
 import { BenchmarkDashboardScreen } from "@/features/claim-guard/screens-benchmark-dashboard"
 import { KnowledgeGraphScreen } from "@/features/claim-guard/screens-knowledge-graph"
 import {
@@ -159,7 +166,8 @@ export function App() {
   // failed fetch can never leave invented rows on screen.
   const [workspace, setWorkspace] = useState<ClaimWorkspace | null>(null)
   const [bootstrap, setBootstrap] = useState<WorkspaceBootstrap | null>(null)
-  const [activeScreen, setActiveScreen] = useState<ScreenId>("benchmark-setup")
+  // The first step of the flow Neha described: third-party documents in.
+  const [activeScreen, setActiveScreen] = useState<ScreenId>("tp-upload")
   const [liabilityStatus, setLiabilityStatus] =
     useState<LiabilityStatus>("PENDING")
   const [liabilityConfirmed, setLiabilityConfirmed] = useState(false)
@@ -359,6 +367,24 @@ export function App() {
   function inspectLine(line: InvoiceLine) {
     setSelectedLine(line)
     setCorrectionOpen(true)
+  }
+
+  /** After an upload batch lands: re-read the invoice list and open the
+   * first invoice of the batch, so every screen reflects what was just
+   * handed over. */
+  async function refreshAfterUpload(preferredDocumentId?: string) {
+    if (!workspace) return
+    const latestInvoices = await fetchClaimInvoices(
+      workspace.claim.id,
+      p90ThresholdPct
+    )
+    const preferredInvoice = preferredDocumentId
+      ? latestInvoices.find(
+          (invoice) => invoice.document_id === preferredDocumentId
+        )
+      : undefined
+    setInvoices(latestInvoices)
+    await refreshWorkspace(preferredInvoice?.id)
   }
 
   async function handleInvoiceSelection(invoiceId: string) {
@@ -794,8 +820,80 @@ export function App() {
   }
 
   let screen
+  // Which source the active screen serves, for Neha's nine screens; null
+  // for everything under Advanced tools.
+  const scope = screenScope(activeScreen)
   if (workspace)
     switch (activeScreen) {
+    case "tp-upload":
+    case "dlg-upload":
+    case "new-invoice-upload":
+      if (!scope) break
+      screen = (
+        <ClientIntakeScreen
+          key={activeScreen}
+          setup={false}
+          scope={scope.intakeGroup}
+          onOpenManualReview={openManualReview}
+          caseReference={workspace.claim.id}
+          finalised={caseFinalised}
+          onProcessed={async (preferredDocumentId) => {
+            await refreshAfterUpload(preferredDocumentId)
+            // Upload, then that source's mapping and extracts.
+            setActiveScreen(sourceScreen(scope.intakeGroup, "intelligence"))
+          }}
+          onContinue={() =>
+            navigate(sourceScreen(scope.intakeGroup, "intelligence"))
+          }
+        />
+      )
+      break
+    case "tp-intelligence":
+    case "dlg-intelligence":
+    case "new-invoice-intelligence":
+      if (!scope) break
+      screen = (
+        <SourceIntelligenceScreen
+          key={activeScreen}
+          caseReference={workspace.claim.id}
+          intakeGroup={scope.intakeGroup}
+          finalised={caseFinalised}
+          // Approving runs the gap-fill sweep, which can change every
+          // invoice's filled fields, so the workspace is re-read too.
+          onApproved={async () => {
+            await refreshWorkspace()
+          }}
+          onOpenBenchmarks={() =>
+            navigate(
+              sourceScreen(
+                scope.intakeGroup,
+                scope.intakeGroup === "live" ? "analysis" : "benchmarks"
+              )
+            )
+          }
+        />
+      )
+      break
+    case "tp-benchmarks":
+    case "dlg-benchmarks":
+      if (!scope) break
+      screen = (
+        <SourceBenchmarksScreen
+          key={activeScreen}
+          caseReference={workspace.claim.id}
+          source={scope.intakeGroup === "in_house" ? "aviva_dlg" : "third_party"}
+          onUpload={() => navigate(sourceScreen(scope.intakeGroup, "upload"))}
+        />
+      )
+      break
+    case "benchmark-analysis":
+      screen = (
+        <BenchmarkAnalysisScreen
+          caseReference={workspace.claim.id}
+          onUploadNewInvoice={() => navigate("new-invoice-upload")}
+        />
+      )
+      break
     case "claim-liability":
       screen = (
         <ClaimLiabilityScreen
@@ -867,17 +965,7 @@ export function App() {
               caseReference={workspace.claim.id}
               finalised={caseFinalised}
               onProcessed={async (preferredDocumentId) => {
-                const latestInvoices = await fetchClaimInvoices(
-                  workspace.claim.id,
-                  p90ThresholdPct
-                )
-                const preferredInvoice = preferredDocumentId
-                  ? latestInvoices.find(
-                      (invoice) => invoice.document_id === preferredDocumentId
-                    )
-                  : undefined
-                setInvoices(latestInvoices)
-                await refreshWorkspace(preferredInvoice?.id)
+                await refreshAfterUpload(preferredDocumentId)
                 // The mapping step comes between upload and extracts: the
                 // handler confirms which invoice each engineer assessment
                 // belongs to before anything is read against those pairs.

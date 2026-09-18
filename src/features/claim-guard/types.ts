@@ -9,6 +9,20 @@ export const LIABILITY_STATUSES = [
 export type LiabilityStatus = (typeof LIABILITY_STATUSES)[number]
 
 export type ScreenId =
+  // The structure Neha dictated on the 17 Sep walkthrough: two benchmark
+  // sources, each with upload / document intelligence / benchmark
+  // computation, then the new invoice and its analysis. Which source each
+  // one serves is in `source-scope.ts`.
+  | "tp-upload"
+  | "tp-intelligence"
+  | "tp-benchmarks"
+  | "dlg-upload"
+  | "dlg-intelligence"
+  | "dlg-benchmarks"
+  | "new-invoice-upload"
+  | "new-invoice-intelligence"
+  | "benchmark-analysis"
+  // Everything below predates that structure and lives under Advanced tools.
   | "benchmark-setup"
   | "claim-liability"
   | "upload-processing"

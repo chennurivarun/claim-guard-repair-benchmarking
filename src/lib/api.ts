@@ -660,10 +660,18 @@ export function fetchEngineerAssessments(
   )
 }
 
+/** With `intakeGroup`, only that source's documents; without it, every
+ * extract on the claim (the backwards-compatible default). */
 export function fetchClaimExtracts(
-  caseReference: string
+  caseReference: string,
+  intakeGroup?: "historical_claim" | "in_house" | "live"
 ): Promise<ClaimExtractsPayload> {
-  return requestJson(`/api/v1/claims/${encodeURIComponent(caseReference)}/extracts`)
+  const query = intakeGroup
+    ? `?${new URLSearchParams({ intake_group: intakeGroup }).toString()}`
+    : ""
+  return requestJson(
+    `/api/v1/claims/${encodeURIComponent(caseReference)}/extracts${query}`
+  )
 }
 
 export function fetchDataReadiness(): Promise<DataReadinessPayload> {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import type {
+  CaseMappingPayload,
   MappingAssessmentRow,
   MappingInvoiceOption,
 } from "./document-api"
@@ -8,6 +9,7 @@ import {
   assessmentIdentity,
   invoiceLabel,
   pairEvidence,
+  scopeMapping,
   sortMappingRows,
 } from "./mapping-review-rows"
 
@@ -210,5 +212,72 @@ describe("how the documents are named", () => {
       "Claim 245338996/1",
       "Policy Not printed",
     ])
+  })
+})
+
+// Per-source mapping review. The server is asked for one intake group, but
+// the override endpoint answers with the mapping it has, and approving
+// third party must never show -- or count -- an Aviva DLG row. So the screen
+// keeps only its own group's rows and recounts from what is left.
+describe("a mapping scoped to one source", () => {
+  const payload: CaseMappingPayload = {
+    case_reference: "CG-2026-0048",
+    approval: {
+      approved: false,
+      approved_by: null,
+      approved_at: null,
+      approved_pairs: {},
+    },
+    invoices: [
+      invoice({ invoice_id: "tp-inv", intake_group: "historical_claim" }),
+      invoice({ invoice_id: "dlg-inv", intake_group: "in_house" }),
+      invoice({ invoice_id: "old-inv", intake_group: null }),
+    ],
+    assessments: [
+      row({ assessment_id: "tp-1", intake_group: "historical_claim" }),
+      row({
+        assessment_id: "tp-2",
+        intake_group: "historical_claim",
+        pair_status: "unpaired",
+        paired_invoice_id: null,
+      }),
+      row({
+        assessment_id: "dlg-1",
+        intake_group: "in_house",
+        pair_source: "manual",
+      }),
+    ],
+    assessments_total: 3,
+    paired: 2,
+    unpaired: 1,
+    manual: 1,
+  }
+
+  it("keeps only that source's assessments and invoices", () => {
+    const scoped = scopeMapping(payload, "historical_claim")
+
+    expect(scoped.assessments.map((r) => r.assessment_id)).toEqual([
+      "tp-1",
+      "tp-2",
+    ])
+    // A row the server did not tag is kept: the server was asked for this
+    // group, so an untagged row is its answer, not another source's.
+    expect(scoped.invoices.map((i) => i.invoice_id)).toEqual([
+      "tp-inv",
+      "old-inv",
+    ])
+  })
+
+  it("recounts from the rows it kept", () => {
+    const scoped = scopeMapping(payload, "historical_claim")
+
+    expect(scoped.assessments_total).toBe(2)
+    expect(scoped.paired).toBe(1)
+    expect(scoped.unpaired).toBe(1)
+    expect(scoped.manual).toBe(0)
+  })
+
+  it("leaves an unscoped mapping alone", () => {
+    expect(scopeMapping(payload, undefined)).toBe(payload)
   })
 })
