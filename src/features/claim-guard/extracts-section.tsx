@@ -1,4 +1,4 @@
-import { Fragment, useState } from "react"
+import { Fragment, useEffect, useState } from "react"
 import {
   AlertCircleIcon,
   ChevronDownIcon,
@@ -29,6 +29,27 @@ import {
 } from "@/components/ui/table"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 
+import {
+  assessmentPartner,
+  backToInvoice,
+  breakdownGap,
+  dismissNotice,
+  filterSectionOperations,
+  findSectionBreakdown,
+  followAssessmentNumber,
+  followInvoiceNumber,
+  followSectionTotal,
+  invoicePartner,
+  linkRowIds,
+  NO_LINK,
+  releaseLink,
+  showAllOperations,
+  type AssessmentLink,
+  type BreakdownGap,
+  type ExtractsLinkState,
+  type LinkGap,
+  type Partner,
+} from "./extracts-link"
 import { formatMoney } from "./format"
 import {
   isRowExpanded,
@@ -117,61 +138,9 @@ function breakdownSummaryLine(breakdown: SectionBreakdownPayload) {
   return `Total ${label} ${billed} billed · ${assessed} assessed${rowsTotalSuffix} · ${magnitude} ${direction}`
 }
 
-/** The invoice sections the backend can resolve to a column the assessment
- * prints: the keys of `SECTION_TOTAL_FIELDS`
- * (`backend/app/services/engineer_assessment.py`). An invoice section outside
- * this set has no assessment counterpart at all; one inside it has a
- * counterpart column that may still be NULL on the document. Those are two
- * different answers and must not share a message. */
-const RESOLVABLE_SECTION_TYPES = new Set([
-  "parts",
-  "paint_materials",
-  "extras",
-  "labour",
-])
-
-function hasBreakdownRows(breakdown: SectionBreakdownPayload) {
-  return breakdown.breakdown_available !== false && breakdown.rows.length > 0
-}
-
-/** The four genuinely different reasons a rolled-up total shows no
- * breakdown rows. A reader has to be able to tell "the tool failed to line
- * these up" from "the document does not say", and the payload already
- * carries enough to separate them (backend `section_breakdown_for_invoice`):
- *
- * - `assessment_id` is null — nothing is paired to this invoice, so there is
- *   no document to split the total against;
- * - paired, but `line_item_type` is not one `SECTION_TOTAL_FIELDS` maps —
- *   the invoice section resolves to no assessment section at all (e.g. an
- *   unclassified "Total …" heading). This one really is the tool failing to
- *   line the two documents up;
- * - paired, the section *is* resolvable, but the assessment's own column is
- *   NULL — all four of `parts_net` / `paint_net` / `extras_net` /
- *   `labour_net` are nullable, so an invoice that prints "Total Extras" and
- *   an assessment with no extras section land here. Nothing failed: the
- *   document simply carries no such figure;
- * - paired, section total present, no rows — the assessment prints the
- *   section as a total with no line detail behind it. This is the real and
- *   correct outcome for "Total Paint / Materials Costs" on client formats 1
- *   and 7: `paint_net` is printed, but no operation carries the
- *   `paint_materials` code.
- *
- * Classification is on `line_item_type`, never on `assessment_total == null`:
- * the backend emits a null total for the second *and* the third case, so the
- * null alone cannot tell them apart.
- *
- * `breakdown_available` is `bool(rows)` on the backend, so it says *that*
- * there are no rows, never *why* — hence this second read of the payload. */
-type BreakdownGap = "unpaired" | "unresolved" | "no-section-total" | "total-only"
-
-function breakdownGap(breakdown: SectionBreakdownPayload): BreakdownGap | null {
-  if (hasBreakdownRows(breakdown)) return null
-  if (breakdown.assessment_id == null) return "unpaired"
-  if (!RESOLVABLE_SECTION_TYPES.has(breakdown.line_item_type)) return "unresolved"
-  if (toNumber(breakdown.assessment_total) == null) return "no-section-total"
-  return "total-only"
-}
-
+/** The four gap states and their wording are the ones agreed with the
+ * client; the classification lives in `extracts-link.ts` (`breakdownGap`) so
+ * the link between the two tables reads the same payload the same way. */
 const BREAKDOWN_GAP_MESSAGES: Record<
   BreakdownGap,
   { title: string; body: string }
@@ -194,6 +163,18 @@ const BREAKDOWN_GAP_MESSAGES: Record<
   "total-only": {
     title: "The engineer assessment prints this section as a total only",
     body: "The paired engineer assessment carries the section total but no line detail behind it. The document does not itemise it — the extraction did not fail.",
+  },
+}
+
+/** What a click on a rolled-up total says instead of jumping. The four
+ * breakdown gaps keep their agreed wording; the fifth exists only on a screen
+ * scoped to one source, where the paired engineer assessment was uploaded
+ * under another source and has no row here to jump to. */
+const LINK_GAP_MESSAGES: Record<LinkGap, { title: string; body: string }> = {
+  ...BREAKDOWN_GAP_MESSAGES,
+  "off-screen": {
+    title: "The paired engineer assessment is not on this screen",
+    body: "This screen shows one source's documents only, and the engineer assessment paired to this invoice was uploaded under a different source. Open that source to see its operations.",
   },
 }
 
@@ -258,10 +239,155 @@ function IdentityCell({
  * a missing *value*: every other identity column prints an em dash for "the
  * document did not print this", and reusing it here would say the pairing
  * key failed to extract when what actually happened is that nothing is
- * paired. So it gets words. */
-function AssociationCell({ number }: { number: string | null }) {
-  if (number) return <span className="font-medium">{number}</span>
-  return <span className="text-muted-foreground">Not paired</span>
+ * paired. So it gets words.
+ *
+ * "Paired" and "has a number" are two different facts. Format 1's invoice
+ * prints no invoice number, and its engineer assessment is paired to it all
+ * the same; reading the missing number as a missing pair put "Not paired"
+ * beside a Pairing badge that said "Paired". A paired row never reads "Not
+ * paired": it says the partner's number was not extracted, and stays a link
+ * to the partner's row whenever that row is on this screen. */
+function AssociationCell({
+  partner,
+  documentLabel,
+  onFollow,
+}: {
+  partner: Partner
+  documentLabel: "invoice" | "engineer assessment"
+  onFollow?: () => void
+}) {
+  if (!partner.paired) {
+    return <span className="text-muted-foreground">Not paired</span>
+  }
+  const text = partner.number ?? `Paired · ${documentLabel} number not extracted`
+  const tone = partner.number ? "font-medium" : "text-muted-foreground"
+  if (onFollow && partner.onScreen) {
+    return (
+      <button
+        type="button"
+        onClick={onFollow}
+        aria-label={`Go to the paired ${documentLabel} ${partner.number ?? "(number not extracted)"}`}
+        className={`${tone} text-left underline decoration-dotted underline-offset-4 hover:text-foreground hover:decoration-solid`}
+      >
+        {text}
+      </button>
+    )
+  }
+  return (
+    <span className={tone}>
+      {text}
+      {partner.id != null && !partner.onScreen ? (
+        <span className="block text-xs font-normal text-muted-foreground">
+          Not on this screen
+        </span>
+      ) : null}
+    </span>
+  )
+}
+
+/** Everything the two tables need to link to each other. Optional on both
+ * tables: without it they render exactly as they did before the link, which
+ * is how benchmark analysis and the older tests mount them. */
+export interface ExtractsLinking {
+  extracts: ClaimExtractsPayload
+  state: ExtractsLinkState
+  onSectionTotal: (invoiceId: string, invoiceLineId: string) => void
+  onAssessmentNumber: (invoiceId: string) => void
+  onInvoiceNumber: (assessmentId: string) => void
+  onShowAll: () => void
+  onBack: () => void
+  onRelease: () => void
+  onDismissNotice: () => void
+}
+
+function invoiceLabel(number: string | null | undefined) {
+  return number ? `invoice ${number}` : "the invoice (number not extracted)"
+}
+
+/** "3 parts", "3 labour and paintwork operations". An invoice's Total Labour
+ * pays for both labour and paintwork (backend `SECTION_OPERATION_CATEGORIES`)
+ * and the noun says so, rather than calling paintwork rows "labour". */
+function sectionOperationsNoun(lineItemType: string, count: number) {
+  const plural = count === 1 ? "" : "s"
+  if (lineItemType === "parts") return count === 1 ? "part" : "parts"
+  if (lineItemType === "labour") return `labour and paintwork operation${plural}`
+  return `${lineItemTypeLabel(lineItemType).toLowerCase()} operation${plural}`
+}
+
+/** Sits at the top of the linked engineer assessment's operations -- where
+ * the jump lands -- and says what the rows below are filtered to and why,
+ * with the way out (every operation) and the way back (the invoice line the
+ * reader came from). */
+function LinkBanner({
+  link,
+  invoiceNumber,
+  shown,
+  total,
+  onShowAll,
+  onBack,
+}: {
+  link: AssessmentLink
+  invoiceNumber: string | null
+  shown: number
+  total: number
+  onShowAll: () => void
+  onBack: () => void
+}) {
+  const invoice = invoiceLabel(invoiceNumber)
+  const { breakdown } = link
+  return (
+    <div
+      role="status"
+      // Capped and stacked, not spread across the row: the cell spans a
+      // table wider than the screen, and controls pushed to its far end
+      // would sit off-screen where the jump lands.
+      className="mb-3 max-w-2xl space-y-3 rounded-md border border-sky-300 bg-sky-50 p-3 text-sm whitespace-normal dark:border-sky-900 dark:bg-sky-950/40"
+    >
+      <div className="space-y-1">
+        {breakdown ? (
+          <>
+            <p className="font-medium">
+              Showing the {shown}{" "}
+              {sectionOperationsNoun(breakdown.line_item_type, shown)} behind{" "}
+              {breakdown.description} {formatMaybeMoney(breakdown.invoice_total)}{" "}
+              on {invoice}.
+            </p>
+            <p className="text-muted-foreground">
+              {breakdown.line_item_type === "labour"
+                ? "An invoice's Total Labour pays for both labour and paintwork, so both are shown. "
+                : null}
+              The other {total - shown} operation{total - shown === 1 ? "" : "s"}{" "}
+              on this engineer assessment are hidden.
+            </p>
+          </>
+        ) : (
+          <p className="font-medium">
+            Showing all {total} operation{total === 1 ? "" : "s"} of the
+            engineer assessment paired to {invoice}.
+          </p>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {breakdown ? (
+          <button
+            type="button"
+            onClick={onShowAll}
+            className="rounded-md border bg-background px-2.5 py-1 font-medium hover:bg-muted"
+          >
+            Show all {total} operations
+          </button>
+        ) : null}
+        <button
+          type="button"
+          onClick={onBack}
+          className="rounded-md border bg-background px-2.5 py-1 font-medium hover:bg-muted"
+        >
+          Back to {breakdown ? `${breakdown.description} on ` : ""}
+          {invoice}
+        </button>
+      </div>
+    </div>
+  )
 }
 
 function SectionTotalBadge() {
@@ -394,8 +520,22 @@ export function SectionBreakdownDetail({
 /** The invoice's own lines and nothing else. For a rolled-up invoice that is
  * the three or four section totals it prints; the assessment rows behind
  * those totals belong to the assessment table below, and to benchmark
- * analysis after that -- see the note on `SectionBreakdownDetail`. */
-export function InvoiceLinesTable({ lines }: { lines: InvoiceExtractLine[] }) {
+ * analysis after that -- see the note on `SectionBreakdownDetail`.
+ *
+ * With `linking`, a rolled-up total's description is the way down to those
+ * rows: clicking it jumps to the paired engineer assessment in the table
+ * below, filtered to that section. When there is nothing to jump to, the
+ * reason is said here, under the line that was clicked. */
+export function InvoiceLinesTable({
+  lines,
+  invoiceId,
+  linking,
+}: {
+  lines: InvoiceExtractLine[]
+  invoiceId?: string
+  linking?: ExtractsLinking
+}) {
+  const notice = linking?.state.notice ?? null
   return (
     <Table>
       <TableHeader>
@@ -409,29 +549,83 @@ export function InvoiceLinesTable({ lines }: { lines: InvoiceExtractLine[] }) {
         </TableRow>
       </TableHeader>
       <TableBody>
-        {lines.map((line) => (
-          <TableRow key={line.id}>
-            <TableCell className="text-muted-foreground">
-              {line.sequence_no}
-            </TableCell>
-            <TableCell>
-              <span className="inline-flex items-center gap-2">
-                {lineItemTypeLabel(line.line_item_type)}
-                {line.is_section_total ? <SectionTotalBadge /> : null}
-              </span>
-            </TableCell>
-            <TableCell>{line.description}</TableCell>
-            <TableCell className="text-right tabular-nums">
-              {formatQuantity(line.quantity)}
-            </TableCell>
-            <TableCell className="text-right tabular-nums">
-              {formatMaybeMoney(line.unit_price)}
-            </TableCell>
-            <TableCell className="text-right tabular-nums">
-              {formatMaybeMoney(line.line_total)}
-            </TableCell>
-          </TableRow>
-        ))}
+        {lines.map((line) => {
+          const followable =
+            linking != null &&
+            invoiceId != null &&
+            line.is_section_total &&
+            findSectionBreakdown(linking.extracts, invoiceId, line.id) != null
+          const gap =
+            notice != null && notice.invoiceLineId === line.id ? notice.gap : null
+          return (
+            <Fragment key={line.id}>
+              <TableRow
+                id={linkRowIds.invoiceLine(line.id)}
+                tabIndex={-1}
+                className="scroll-mt-24 focus:outline-none"
+              >
+                <TableCell className="text-muted-foreground">
+                  {line.sequence_no}
+                </TableCell>
+                <TableCell>
+                  <span className="inline-flex items-center gap-2">
+                    {lineItemTypeLabel(line.line_item_type)}
+                    {line.is_section_total ? <SectionTotalBadge /> : null}
+                  </span>
+                </TableCell>
+                <TableCell>
+                  {followable ? (
+                    <button
+                      type="button"
+                      onClick={() => linking.onSectionTotal(invoiceId, line.id)}
+                      aria-label={`Show the engineer assessment operations behind ${line.description}`}
+                      className="text-left font-medium underline decoration-dotted underline-offset-4 hover:decoration-solid"
+                    >
+                      {line.description}
+                    </button>
+                  ) : (
+                    line.description
+                  )}
+                </TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {formatQuantity(line.quantity)}
+                </TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {formatMaybeMoney(line.unit_price)}
+                </TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {formatMaybeMoney(line.line_total)}
+                </TableCell>
+              </TableRow>
+              {gap != null && linking ? (
+                <TableRow>
+                  <TableCell colSpan={6} className="whitespace-normal">
+                    <div
+                      role="status"
+                      className="max-w-2xl space-y-3 rounded-md border border-dashed bg-background p-3"
+                    >
+                      <div>
+                        <p className="text-sm font-medium">
+                          {LINK_GAP_MESSAGES[gap].title}
+                        </p>
+                        <p className="mt-1 text-sm text-muted-foreground">
+                          {LINK_GAP_MESSAGES[gap].body}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={linking.onDismissNotice}
+                        className="rounded-md border px-2.5 py-1 text-sm font-medium text-muted-foreground hover:text-foreground"
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ) : null}
+            </Fragment>
+          )
+        })}
       </TableBody>
     </Table>
   )
@@ -519,7 +713,9 @@ function useRowExpansion(
   const isExpanded = (key: string) => isRowExpanded(choices, key, defaultFor(key))
   const toggle = (key: string) =>
     setChoices((previous) => toggleRowExpansion(previous, key, defaultFor(key)))
-  return { isExpanded, toggle }
+  const collapse = (key: string) =>
+    setChoices((previous) => new Map(previous).set(key, false))
+  return { isExpanded, toggle, collapse }
 }
 
 function ExpandToggleButton({
@@ -584,11 +780,13 @@ export type ExtractsExpansion = "auto" | "all" | "none"
 export function InvoiceExtractsTable({
   invoices,
   expansion = "auto",
+  linking,
 }: {
   invoices: InvoiceExtractPayload[]
   /** `all` opens every invoice (tests have no pointer to click a toggle);
    * `auto` and `none` both open nothing. */
   expansion?: ExtractsExpansion
+  linking?: ExtractsLinking
 }) {
   const { isExpanded, toggle } = useRowExpansion(expansion === "all")
   return (
@@ -612,9 +810,23 @@ export function InvoiceExtractsTable({
           const key = invoice.invoice_id
           const expanded = isExpanded(key)
           const detailId = `invoice-extract-detail-${key}`
+          const partner: Partner = linking
+            ? invoicePartner(linking.extracts, invoice)
+            : {
+                paired: invoice.paired_assessment_number != null,
+                number: invoice.paired_assessment_number,
+                id: null,
+                onScreen: false,
+              }
+          const focused = linking?.state.focusedInvoiceId === key
           return (
             <Fragment key={key}>
-              <TableRow>
+              <TableRow
+                id={linkRowIds.invoice(key)}
+                tabIndex={-1}
+                data-state={focused ? "selected" : undefined}
+                className="scroll-mt-24 focus:outline-none"
+              >
                 <TableCell>
                   <ExpandToggleButton
                     expanded={expanded}
@@ -627,7 +839,13 @@ export function InvoiceExtractsTable({
                   {invoice.invoice_number ?? "—"}
                 </TableCell>
                 <TableCell>
-                  <AssociationCell number={invoice.paired_assessment_number} />
+                  <AssociationCell
+                    partner={partner}
+                    documentLabel="engineer assessment"
+                    onFollow={
+                      linking ? () => linking.onAssessmentNumber(key) : undefined
+                    }
+                  />
                 </TableCell>
                 <TableCell>
                   <IdentityCell
@@ -664,7 +882,11 @@ export function InvoiceExtractsTable({
                 <TableRow id={detailId}>
                   <TableCell colSpan={8} className="bg-muted/30 p-3">
                     {invoice.lines.length > 0 ? (
-                      <InvoiceLinesTable lines={invoice.lines} />
+                      <InvoiceLinesTable
+                        lines={invoice.lines}
+                        invoiceId={key}
+                        linking={linking}
+                      />
                     ) : (
                       <p className="text-sm text-muted-foreground">
                         No line items extracted for this invoice.
@@ -684,14 +906,20 @@ export function InvoiceExtractsTable({
 export function AssessmentExtractsTable({
   assessments,
   expansion = "auto",
+  linking,
 }: {
   assessments: AssessmentExtractPayload[]
-  /** There is no auto-expand rule on this side -- the split already lives on
-   * the invoice, and a 120-operation report would push everything else off
+  /** There is no auto-expand rule on this side -- a row opens when a link
+   * from the invoice table lands on it, and a 120-operation report would push everything else off
    * the page -- so `auto` and `none` are the same thing here. */
   expansion?: ExtractsExpansion
+  /** With `linking`, the row a jump from the invoice table lands on is held
+   * open -- filtered to the clicked section when there is one -- until the
+   * reader collapses it or follows another link. */
+  linking?: ExtractsLinking
 }) {
-  const { isExpanded, toggle } = useRowExpansion(expansion === "all")
+  const { isExpanded, toggle, collapse } = useRowExpansion(expansion === "all")
+  const link = linking?.state.link ?? null
   return (
     <Table>
       <TableHeader>
@@ -712,15 +940,39 @@ export function AssessmentExtractsTable({
       <TableBody>
         {assessments.map((assessment) => {
           const key = assessment.assessment_id
-          const expanded = isExpanded(key)
+          const linked = link != null && link.assessmentId === key ? link : null
+          const expanded = linked != null || isExpanded(key)
           const detailId = `assessment-extract-detail-${key}`
+          const partner: Partner = linking
+            ? assessmentPartner(linking.extracts, assessment)
+            : {
+                paired: assessment.pair_status === "paired",
+                number: assessment.paired_invoice_number,
+                id: null,
+                onScreen: false,
+              }
+          const shownLines = linked?.breakdown
+            ? filterSectionOperations(assessment.lines, linked.breakdown)
+            : assessment.lines
           return (
             <Fragment key={key}>
-              <TableRow>
+              <TableRow
+                id={linkRowIds.assessment(key)}
+                tabIndex={-1}
+                data-state={linked ? "selected" : undefined}
+                className="scroll-mt-24 focus:outline-none"
+              >
                 <TableCell>
                   <ExpandToggleButton
                     expanded={expanded}
-                    onToggle={() => toggle(key)}
+                    onToggle={() => {
+                      if (linked && linking) {
+                        collapse(key)
+                        linking.onRelease()
+                      } else {
+                        toggle(key)
+                      }
+                    }}
                     label={`lines for engineer assessment ${assessment.assessment_number ?? key}`}
                     controls={detailId}
                   />
@@ -730,7 +982,11 @@ export function AssessmentExtractsTable({
                 </TableCell>
                 <TableCell>
                   <AssociationCell
-                    number={assessment.paired_invoice_number}
+                    partner={partner}
+                    documentLabel="invoice"
+                    onFollow={
+                      linking ? () => linking.onInvoiceNumber(key) : undefined
+                    }
                   />
                 </TableCell>
                 <TableCell>{assessment.vehicle_make ?? "—"}</TableCell>
@@ -766,8 +1022,22 @@ export function AssessmentExtractsTable({
               {expanded ? (
                 <TableRow id={detailId}>
                   <TableCell colSpan={9} className="bg-muted/30 p-3">
-                    {assessment.lines.length > 0 ? (
-                      <AssessmentLinesTable lines={assessment.lines} />
+                    {linked && linking ? (
+                      <LinkBanner
+                        link={linked}
+                        invoiceNumber={
+                          linking.extracts.invoice_extracts.find(
+                            (invoice) => invoice.invoice_id === linked.invoiceId
+                          )?.invoice_number ?? null
+                        }
+                        shown={shownLines.length}
+                        total={assessment.lines.length}
+                        onShowAll={linking.onShowAll}
+                        onBack={linking.onBack}
+                      />
+                    ) : null}
+                    {shownLines.length > 0 ? (
+                      <AssessmentLinesTable lines={shownLines} />
                     ) : (
                       <p className="text-sm text-muted-foreground">
                         No operations extracted for this assessment.
@@ -799,7 +1069,24 @@ export function ExtractsSection({
   scopeLabel?: string
 }) {
   const [open, setOpen] = useState(true)
+  const [linkState, setLinkState] = useState<ExtractsLinkState>(NO_LINK)
   const scopeSentence = scopeLabel ? ` Showing ${scopeLabel} only.` : null
+
+  // Bring the jump's target into view once it has rendered. `inline: "start"`
+  // matters as much as the vertical scroll: both tables are wider than the
+  // screen, and a reader scrolled right in one table would otherwise land on
+  // the far end of the target row. `scrollIntoView` scrolls every scrolling
+  // ancestor, the tables' own overflow containers included.
+  const scroll = linkState.scroll
+  useEffect(() => {
+    if (scroll == null) return
+    const target = scroll.elementIds
+      .map((id) => document.getElementById(id))
+      .find((element) => element != null)
+    if (!target) return
+    target.scrollIntoView({ behavior: "smooth", block: "start", inline: "start" })
+    target.focus({ preventScroll: true })
+  }, [scroll])
   if (
     extracts == null ||
     (extracts.invoice_extracts.length === 0 &&
@@ -857,6 +1144,23 @@ export function ExtractsSection({
     )
   }
 
+  const linking: ExtractsLinking = {
+    extracts,
+    state: linkState,
+    onSectionTotal: (invoiceId, invoiceLineId) =>
+      setLinkState((state) =>
+        followSectionTotal(state, extracts, invoiceId, invoiceLineId)
+      ),
+    onAssessmentNumber: (invoiceId) =>
+      setLinkState((state) => followAssessmentNumber(state, extracts, invoiceId)),
+    onInvoiceNumber: (assessmentId) =>
+      setLinkState((state) => followInvoiceNumber(state, extracts, assessmentId)),
+    onShowAll: () => setLinkState(showAllOperations),
+    onBack: () => setLinkState(backToInvoice),
+    onRelease: () => setLinkState(releaseLink),
+    onDismissNotice: () => setLinkState(dismissNotice),
+  }
+
   return (
     <Card>
       <Collapsible open={open} onOpenChange={setOpen}>
@@ -889,15 +1193,18 @@ export function ExtractsSection({
             {/* The client dictated both headings on the 17 Sep walkthrough.
                 Each names the document the table is built from and the
                 association it carries to the other one -- the two facts the
-                screen exists to evidence. `section_breakdowns` is still on
-                the payload and still emitted by the backend; nothing on this
-                screen reads it, and benchmark analysis will. */}
+                screen exists to evidence. `section_breakdowns` is not
+                rendered here as a split; it is read only to link the two
+                tables (see `extracts-link.ts`). */}
             <div>
               <h3 className="text-sm font-semibold">
                 Invoice extracts and associated engineer assessment
               </h3>
               <div className="mt-2 overflow-x-auto rounded-lg border">
-                <InvoiceExtractsTable invoices={extracts.invoice_extracts} />
+                <InvoiceExtractsTable
+                  invoices={extracts.invoice_extracts}
+                  linking={linking}
+                />
               </div>
             </div>
             <div>
@@ -907,6 +1214,7 @@ export function ExtractsSection({
               <div className="mt-2 overflow-x-auto rounded-lg border">
                 <AssessmentExtractsTable
                   assessments={extracts.assessment_extracts}
+                  linking={linking}
                 />
               </div>
             </div>
