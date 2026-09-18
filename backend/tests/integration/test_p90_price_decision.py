@@ -505,7 +505,10 @@ def test_client_duplicate_cannot_move_from_benchmark_to_live(p90_session, monkey
                                   intake_group="historical_claim")
     assert processing.store_pdf(p90_session, case=case, filename="renamed.pdf", content=content,
                                 intake_group="historical_claim").id == stored.id
-    with pytest.raises(ValueError, match="another intake group"):
+    with pytest.raises(
+        ValueError,
+        match="already in Third party insured invoices, so it cannot also be the new invoice",
+    ):
         processing.store_pdf(p90_session, case=case, filename="live.pdf", content=content,
                              intake_group="live")
 

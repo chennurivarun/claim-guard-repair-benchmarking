@@ -305,6 +305,64 @@ def _check_status(value: str) -> CheckStatus:
     }.get(value, CheckStatus.WARNING)
 
 
+LIVE_INTAKE_GROUP = "live"
+#: How each upload source is named to the user (matches ``source_benchmarks``).
+_INTAKE_GROUP_LABELS = {
+    "historical_claim": "Third party insured invoices",
+    "in_house": "Aviva DLG invoices",
+    LIVE_INTAKE_GROUP: "the new invoice being checked",
+}
+
+
+def _reuse_existing_upload(existing: list[Document], intake_group: str | None) -> Document | None:
+    """Decide what an upload of bytes already on this claim means.
+
+    Returns the document to reuse, ``None`` when a new copy should be stored,
+    or raises when the copy would let an invoice be benchmarked against itself.
+    """
+
+    if not intake_group:
+        # No source chosen: the file is already here, whichever source holds it.
+        return existing[0]
+    groups = {document.intake_group for document in existing}
+    same_source = [document for document in existing if document.intake_group == intake_group]
+    if same_source:
+        return same_source[0]
+
+    if intake_group == LIVE_INTAKE_GROUP:
+        holders = sorted(
+            _INTAKE_GROUP_LABELS.get(group, group) for group in groups if group is not None
+        )
+        if holders:
+            raise ValueError(
+                f"This file is already in {' and '.join(holders)}, "
+                "so it cannot also be the new invoice being checked: it would be "
+                "benchmarked against its own copy, match itself and hide every "
+                "discrepancy. Upload the new invoice itself."
+            )
+        raise ValueError(
+            "This file is already on this claim without an upload source, so it "
+            "cannot also be the new invoice being checked. Upload the new invoice itself."
+        )
+    if LIVE_INTAKE_GROUP in groups:
+        raise ValueError(
+            "This file is already the new invoice being checked, so it cannot also go "
+            f"into {_INTAKE_GROUP_LABELS.get(intake_group, intake_group)}: "
+            "the new invoice would be benchmarked against its own copy, match itself "
+            "and hide every discrepancy."
+        )
+
+    ungrouped = next((document for document in existing if document.intake_group is None), None)
+    if ungrouped is not None:
+        # Re-upload is an explicit selection of an existing client file.
+        ungrouped.metadata_json = {**(ungrouped.metadata_json or {}), "intake_group": intake_group}
+        ungrouped.intake_group = intake_group
+        ungrouped.document_role = DocumentRole.HISTORICAL
+        return ungrouped
+    # Held only by the other reference source: this source gets its own copy.
+    return None
+
+
 def store_pdf(
     session: Session,
     *,
@@ -319,21 +377,24 @@ def store_pdf(
 
     normalised = normalise_document_upload(filename, content)
     digest = hashlib.sha256(content).hexdigest()
-    existing = session.scalar(
-        select(Document).where(Document.case_id == case.id, Document.sha256 == digest)
-    )
-    if existing is not None:
-        previous_group = (existing.metadata_json or {}).get("intake_group")
-        if intake_group and previous_group != intake_group:
-            if previous_group is None and intake_group != "live":
-                # Re-upload is an explicit selection of an existing client file.
-                existing.metadata_json = {**(existing.metadata_json or {}), "intake_group": intake_group}
-                existing.document_role = DocumentRole.HISTORICAL
-            else:
-                raise ValueError("This file already belongs to another intake group. Use a fresh invoice for the live demo.")
-        return existing
+    # The column, not the metadata key: it is what the unique constraint
+    # enforces, so the lookup and the database agree on what "already here" is.
+    existing = session.scalars(
+        select(Document)
+        .where(Document.case_id == case.id, Document.sha256 == digest)
+        .order_by(Document.created_at, Document.id)
+    ).all()
+    if existing:
+        reused = _reuse_existing_upload(existing, intake_group)
+        if reused is not None:
+            return reused
 
+    # A byte-identical file may now be stored once per source, so each copy
+    # gets its own directory: its stored file and rendered pages are its own,
+    # and reprocessing one copy never rewrites the files the other is serving.
     storage_dir = Path(settings.storage_dir) / "cases" / case.id / digest[:12]
+    if intake_group:
+        storage_dir = storage_dir / intake_group
     storage_dir.mkdir(parents=True, exist_ok=True)
     stored_path = storage_dir / normalised.stored_filename
     stored_path.write_bytes(normalised.content)
@@ -352,6 +413,7 @@ def store_pdf(
             "intake_group": intake_group,
             "paired_document_id": paired_document_id,
         },
+        intake_group=intake_group,
     )
     session.add(document)
     case.status = CaseStatus.UPLOADED
@@ -605,7 +667,10 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
     session.flush()
     document_metadata = dict(document.metadata_json or {})
     manual_page_corrections = dict(document_metadata.get("page_corrections") or {})
-    output_dir = Path(settings.storage_dir) / "cases" / case.id / document.sha256[:12] / "pages"
+    # Beside the stored file, not rebuilt from the hash: two copies of one file
+    # (one per upload source) share a hash but never a directory.  For every
+    # document stored before per-source directories this is the same path.
+    output_dir = Path(document.storage_path).parent / "pages"
     cloud_ocr = _build_cloud_ocr(settings)
     vision_extractor = build_invoice_vision_extractor(settings)
     text_extractor = build_invoice_text_extractor(settings)
