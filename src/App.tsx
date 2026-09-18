@@ -194,6 +194,12 @@ export function App() {
     string | null
   >(null)
 
+  function applyWorkspace(nextWorkspace: ClaimWorkspace) {
+    setWorkspace(nextWorkspace)
+    setLiabilityStatus(nextWorkspace.liability.status)
+    setLiabilityConfirmed(nextWorkspace.liability.humanConfirmed)
+  }
+
   async function applyBootstrap(result: WorkspaceBootstrap) {
     setBootstrap(result)
     if (result.status !== "ready") {
@@ -283,6 +289,12 @@ export function App() {
     (liabilityStatus === "ADMITTED" || liabilityStatus === "SPLIT LIABILITY")
   const caseStatus = workspace?.claim.status.toLowerCase() ?? ""
   const caseFinalised = caseStatus === "finalised"
+  // The claim a screen can act on. Neha's nine screens need only this, never a
+  // workspace: a freshly set-up or reset claim has a reference but no
+  // extracted invoice yet, and her flow starts by uploading into it.
+  const claimReference =
+    workspace?.claim.id ??
+    (bootstrap?.status === "awaiting-documents" ? bootstrap.caseReference : null)
   const comparisonReady = caseStatus === "comparison_review"
   const caseUnresolvedChallenges = invoices.reduce(
     (total, invoice) => total + (invoice.challenge_review?.unresolved ?? 0),
@@ -304,12 +316,6 @@ export function App() {
     !challengedInvoiceDetailOpen ||
     challengedInvoices.some((invoice) => invoice.id === workspace?.invoice.id)
 
-  function applyWorkspace(nextWorkspace: ClaimWorkspace) {
-    setWorkspace(nextWorkspace)
-    setLiabilityStatus(nextWorkspace.liability.status)
-    setLiabilityConfirmed(nextWorkspace.liability.humanConfirmed)
-  }
-
   async function refreshWorkspace(invoiceId?: string) {
     if (!workspace) throw new Error("No claim is open.")
     const next = await fetchClaimWorkspace(
@@ -324,6 +330,13 @@ export function App() {
 
   function navigate(screen: ScreenId) {
     if (!workspace) {
+      if (claimReference && screenScope(screen)) {
+        // One of Neha's nine: it renders from the claim reference alone, so
+        // the change is visible now rather than deferred until a workspace
+        // arrives.
+        setActiveScreen(screen)
+        return
+      }
       // The screen arms below are chosen on the bootstrap status, not on
       // activeScreen, so changing activeScreen here would move nothing on
       // screen now and would silently land the user somewhere they never
@@ -823,22 +836,30 @@ export function App() {
   // Which source the active screen serves, for Neha's nine screens; null
   // for everything under Advanced tools.
   const scope = screenScope(activeScreen)
-  if (workspace)
-    switch (activeScreen) {
-    case "tp-upload":
-    case "dlg-upload":
-    case "new-invoice-upload":
-      if (!scope) break
+  // Neha's nine screens act on the claim reference alone, so they render
+  // whether or not a workspace exists. Without this, a freshly set-up or reset
+  // claim would open on a screen that refused every upload into it.
+  const reviewNotAvailable = () => {
+    const notice = manualReviewUnavailableNotice()
+    toast.info(notice.title, { description: notice.description })
+  }
+  const refreshAfterSourceChange = async (preferredDocumentId?: string) => {
+    if (workspace) await refreshAfterUpload(preferredDocumentId)
+    else await connectToApi()
+  }
+  if (scope && claimReference) {
+    if (scope.step === "upload") {
       screen = (
         <ClientIntakeScreen
           key={activeScreen}
           setup={false}
           scope={scope.intakeGroup}
-          onOpenManualReview={openManualReview}
-          caseReference={workspace.claim.id}
+          // With no workspace, `openManualReview` could not navigate; say why.
+          onOpenManualReview={workspace ? openManualReview : reviewNotAvailable}
+          caseReference={claimReference}
           finalised={caseFinalised}
           onProcessed={async (preferredDocumentId) => {
-            await refreshAfterUpload(preferredDocumentId)
+            await refreshAfterSourceChange(preferredDocumentId)
             // Upload, then that source's mapping and extracts.
             setActiveScreen(sourceScreen(scope.intakeGroup, "intelligence"))
           }}
@@ -847,21 +868,17 @@ export function App() {
           }
         />
       )
-      break
-    case "tp-intelligence":
-    case "dlg-intelligence":
-    case "new-invoice-intelligence":
-      if (!scope) break
+    } else if (scope.step === "intelligence") {
       screen = (
         <SourceIntelligenceScreen
           key={activeScreen}
-          caseReference={workspace.claim.id}
+          caseReference={claimReference}
           intakeGroup={scope.intakeGroup}
           finalised={caseFinalised}
           // Approving runs the gap-fill sweep, which can change every
-          // invoice's filled fields, so the workspace is re-read too.
+          // invoice's filled fields, so the claim is re-read too.
           onApproved={async () => {
-            await refreshWorkspace()
+            await refreshAfterSourceChange()
           }}
           onOpenBenchmarks={() =>
             navigate(
@@ -873,27 +890,25 @@ export function App() {
           }
         />
       )
-      break
-    case "tp-benchmarks":
-    case "dlg-benchmarks":
-      if (!scope) break
+    } else if (scope.step === "benchmarks") {
       screen = (
         <SourceBenchmarksScreen
           key={activeScreen}
-          caseReference={workspace.claim.id}
+          caseReference={claimReference}
           source={scope.intakeGroup === "in_house" ? "aviva_dlg" : "third_party"}
           onUpload={() => navigate(sourceScreen(scope.intakeGroup, "upload"))}
         />
       )
-      break
-    case "benchmark-analysis":
+    } else {
       screen = (
         <BenchmarkAnalysisScreen
-          caseReference={workspace.claim.id}
+          caseReference={claimReference}
           onUploadNewInvoice={() => navigate("new-invoice-upload")}
         />
       )
-      break
+    }
+  } else if (workspace)
+    switch (activeScreen) {
     case "claim-liability":
       screen = (
         <ClaimLiabilityScreen
@@ -1228,12 +1243,15 @@ export function App() {
                 Claim {bootstrap.caseReference} has no documents yet
               </AlertTitle>
               <AlertDescription>
-                Nothing has been extracted for this claim, so there is nothing
-                to review. Upload a repair invoice and its engineer estimate
-                below; the review screens open as soon as the first invoice has
-                been read.
+                Nothing has been extracted for this claim yet. Start under
+                Third party insured invoices or Aviva DLG invoices to build the
+                benchmarks, or under Upload new invoice to analyse one. The
+                other screens open once the first invoice has been read.
               </AlertDescription>
             </Alert>
+            {scope ? (
+              screen
+            ) : (
             <ClientIntakeScreen
               caseReference={bootstrap.caseReference}
               setup={false}
@@ -1251,6 +1269,7 @@ export function App() {
               }}
               onContinue={() => void connectToApi()}
             />
+            )}
           </div>
         ) : (
           <>
