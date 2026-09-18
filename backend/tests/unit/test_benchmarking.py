@@ -1430,3 +1430,87 @@ def test_past_assessments_block_is_informational_and_leaves_the_decision_alone()
             ]
     finally:
         engine.dispose()
+
+
+def _category_graph(
+    prior: list[tuple[str, str, str, bool]],
+    current: tuple[str, str, str, bool],
+    categories: dict[str, str],
+) -> tuple[dict, SimpleNamespace]:
+    """``(model, description, price, is_section_total)`` per invoice."""
+
+    rows = [*prior, current]
+    invoices, lines = [], []
+    for index, (model, description, price, is_total) in enumerate(rows, 1):
+        invoice = SimpleNamespace(
+            id=f"invoice-{index}",
+            invoice_number=f"INV-{index:03}",
+            invoice_date=date(2026, 3, index),
+            vehicle=SimpleNamespace(make="HYUNDAI", model=model),
+        )
+        invoices.append(invoice)
+        lines.append(
+            SimpleNamespace(
+                id=f"line-{index}",
+                invoice_id=invoice.id,
+                status=ReviewStatus.PENDING,
+                line_total_net=price,
+                raw_description=description,
+                normalised_description=normalise_description(description),
+                is_section_total=is_total,
+            )
+        )
+    graph = {
+        "invoices": invoices,
+        "lines": lines,
+        "mappings": [],
+        "ontology": {},
+        "vehicle_categories": {
+            invoice.id: categories[row[0]] for invoice, row in zip(invoices, rows, strict=True)
+        },
+    }
+    return graph, invoices[-1]
+
+
+def test_uploaded_line_p90_scopes_by_vehicle_category_not_exact_model() -> None:
+    """The client benchmarks by vehicle category, so "140 SE Nav" and "i30 SE
+    Nav" -- one car printed two ways -- share a population, and an SUV does
+    not join it."""
+
+    categories = {"140 SE Nav": "Hatchback", "i30 SE Nav": "Hatchback", "Karoq": "SUV"}
+    graph, current = _category_graph(
+        [
+            ("140 SE Nav", "L/R DOOR", "800.00", False),
+            ("i30 SE Nav", "L/R DOOR", "820.00", False),
+            ("140 SE Nav", "L/R DOOR", "840.00", False),
+            ("Karoq", "L/R DOOR", "2000.00", False),
+        ],
+        ("i30 SE Nav", "L/R DOOR", "900.00", False),
+        categories,
+    )
+
+    result = _uploaded_line_p90_benchmarks(graph, current_invoice=current)["line-5"]
+
+    assert result["vehicleScope"] == "same vehicle category"
+    assert result["historicalCount"] == 3
+    assert {row["invoiceNumber"] for row in result["observations"]} == {
+        "INV-001",
+        "INV-002",
+        "INV-003",
+    }
+    assert result["p90"] == 836.0
+
+
+def test_uploaded_line_p90_never_benchmarks_a_rolled_up_section_total() -> None:
+    categories = {"140 SE Nav": "Hatchback"}
+    graph, current = _category_graph(
+        [
+            ("140 SE Nav", "Total Labour", "2509.20", True),
+            ("140 SE Nav", "Total Labour", "2611.41", True),
+            ("140 SE Nav", "Total Labour", "2653.01", True),
+        ],
+        ("140 SE Nav", "Total Labour", "4000.00", True),
+        categories,
+    )
+
+    assert _uploaded_line_p90_benchmarks(graph, current_invoice=current) == {}

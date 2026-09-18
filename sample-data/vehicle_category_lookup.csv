@@ -48,3 +48,8 @@ Ford,Transit,LCV,Light Commercial Vehicle,Van,,Transit 350,
 MINI,Countryman,16-25,Average to Above Average,Compact SUV,Petrol,MINI 1.6 (Countryman)|Cooper Countryman,
 Skoda,Octavia,11-30,Model-dependent,Family car,Diesel,Octavia vRS TDI DSG|Octavia 2.0 Diesel,
 Land Rover,Range Rover,31-50,Premium to Luxury,Large SUV,Diesel,Range Rover Vogue SDV8|Range Rover Diesel Estate 4.4,
+Hyundai,i30,8-17,Model-dependent,Hatchback,,140 SE Nav|i30 SE Nav,"ClaimGuard reference entry for a vehicle in the client's Sep 2026 documents (formats 1/5/6/7 print i30 as ""140 SE Nav""). Body type = manufacturer body style; group range indicative only, not a regulatory or ABI table."
+Skoda,Karoq,13-21,Model-dependent,SUV,,Karoq SE TSI 115,"ClaimGuard reference entry for a vehicle in the client's Sep 2026 documents (format 2). Body type = manufacturer body style; group range indicative only, not a regulatory or ABI table."
+SEAT,Ibiza,2-15,Model-dependent,Supermini,,,"ClaimGuard reference entry for a vehicle in the client's Sep 2026 documents (format 3). Body type = manufacturer body style, matching the existing Ibiza 1.0 row; group range indicative only, not a regulatory or ABI table."
+Ford,Puma,11-20,Model-dependent,SUV,,,"ClaimGuard reference entry for a vehicle in the client's Sep 2026 documents (format 4). Body type = manufacturer body style; group range indicative only, not a regulatory or ABI table."
+Volvo,XC40,19-30,Model-dependent,SUV,,XC40(XZ)(18-),"ClaimGuard reference entry for a vehicle in the client's Sep 2026 documents (EXL pair). Body type = manufacturer body style; group range indicative only, not a regulatory or ABI table."

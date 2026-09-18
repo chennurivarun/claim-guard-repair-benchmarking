@@ -67,6 +67,7 @@ from app.services.engineer_assessment import (
     SECTION_TOTAL_FIELDS,
     SECTION_TOTAL_TOLERANCE,
 )
+from app.services.vehicle_category import UNKNOWN_CATEGORY, VehicleCategoryResolver
 
 settings = get_settings()
 
@@ -787,8 +788,22 @@ def _load_case_graph(session: Session, case_reference: str) -> dict[str, Any]:
             .options(selectinload(EngineerAssessment.operations))
         ).all()
     )
+    # One resolution of each invoice's vehicle category, by the same resolver
+    # the source benchmarks use, so every P90 in the product scopes vehicles
+    # the same way.  Read-only here: this graph backs reads that never commit,
+    # so an AI answer is used once the benchmark screens have cached it but
+    # is never asked for from here.
+    resolve_category = VehicleCategoryResolver(session, allow_ai=False)
+    vehicle_categories = {
+        invoice.id: resolve_category(
+            getattr(vehicles.get(invoice.vehicle_id or ""), "make", None),
+            getattr(vehicles.get(invoice.vehicle_id or ""), "model", None),
+        ).category
+        for invoice in invoices
+    }
     return {
         "case": case,
+        "vehicle_categories": vehicle_categories,
         "context": context,
         "liability": liability,
         "invoices": invoices,
@@ -1686,15 +1701,20 @@ def _uploaded_line_p90_benchmarks(
             and _enum_value(row.document_role) == "invoice"
             and _enum_value(row.document.document_kind) != "engineer_assessment"
         ]
-    current_vehicle = getattr(current_invoice, "vehicle", None)
-    current_make = _normalised_vehicle_value(getattr(current_vehicle, "make", None))
-    current_model = _normalised_vehicle_value(getattr(current_vehicle, "model", None))
-    exact_vehicle_invoices = [
+    # The vehicle scope is the vehicle *category* -- the client's benchmark
+    # dimension -- resolved once per case by ``app.services.vehicle_category``
+    # (lookup -> cached AI -> Unknown), exactly as the source benchmarks of
+    # ``app.services.source_benchmarks`` resolve it.  It replaced an exact
+    # make+model gate that split one car printed two ways ("140 SE Nav" /
+    # "i30 SE Nav") and could never group a Karoq with a Puma.  A graph built
+    # without categories (no session) simply has no narrower scope.
+    vehicle_categories: dict[str, str] = graph.get("vehicle_categories") or {}
+    current_category = vehicle_categories.get(current_invoice.id)
+    same_category_invoices = [
         invoice
         for invoice in prior_invoices
-        if getattr(invoice, "vehicle", None)
-        and _normalised_vehicle_value(invoice.vehicle.make) == current_make
-        and _normalised_vehicle_value(invoice.vehicle.model) == current_model
+        if current_category is not None
+        and vehicle_categories.get(invoice.id) == current_category
     ]
     if not prior_invoices:
         return {}
@@ -1709,6 +1729,10 @@ def _uploaded_line_p90_benchmarks(
         if line.invoice_id not in prior_invoice_ids:
             continue
         if line.status == ReviewStatus.REJECTED:
+            continue
+        if getattr(line, "is_section_total", False):
+            # A rolled-up section total is the value of a whole section, not
+            # the price of a repair item: never an observation.
             continue
         price = _decimal(line.line_total_net)
         if price <= 0:
@@ -1735,7 +1759,9 @@ def _uploaded_line_p90_benchmarks(
                 "variant": getattr(source_vehicle, "variant", None),
                 "year": getattr(source_vehicle, "year", None),
             },
-            "exactVehicleMatch": invoice in exact_vehicle_invoices,
+            "vehicleCategory": vehicle_categories.get(invoice.id),
+            # Name kept for existing readers; it now means "same category".
+            "exactVehicleMatch": invoice in same_category_invoices,
         }
         for key in keys:
             observations_by_key.setdefault(key, []).append(observation)
@@ -1743,6 +1769,9 @@ def _uploaded_line_p90_benchmarks(
     results: dict[str, dict[str, Any]] = {}
     for line in graph["lines"]:
         if line.invoice_id != current_invoice.id or line.status == ReviewStatus.REJECTED:
+            continue
+        if getattr(line, "is_section_total", False):
+            # "You cannot compare invoices on totals anywhere."
             continue
         current_price = _decimal(line.line_total_net)
         if current_price <= 0:
@@ -1762,7 +1791,7 @@ def _uploaded_line_p90_benchmarks(
         exact_observations = [row for row in broad_observations if row["exactVehicleMatch"]]
         if len(exact_observations) >= minimum_count:
             ordered_observations = exact_observations
-            vehicle_scope = "exact make and model"
+            vehicle_scope = "same vehicle category"
         else:
             ordered_observations = broad_observations
             vehicle_scope = "all vehicle categories fallback"
@@ -2112,12 +2141,18 @@ def _uploaded_batch_benchmark_dashboard(
     latest_mappings = _latest_by(graph["mappings"], "invoice_line_item_id")
     ontology: dict[str, OntologyItem] = graph["ontology"]
     vehicles: dict[str, Vehicle] = graph["vehicles"]
+    # The client's vehicle category where the graph carries it (every graph
+    # loaded from the database does); the older label otherwise.
+    graph_categories: dict[str, str] = graph.get("vehicle_categories") or {}
 
     records: list[dict[str, Any]] = []
     records_by_line: dict[str, dict[str, Any]] = {}
     for line in graph["lines"]:
         invoice = invoice_by_id.get(line.invoice_id)
         if invoice is None or line.status == ReviewStatus.REJECTED:
+            continue
+        if getattr(line, "is_section_total", False):
+            # Never benchmark a rolled-up section total.
             continue
         cost = _decimal(line.line_total_net)
         if cost <= 0:
@@ -2128,18 +2163,21 @@ def _uploaded_batch_benchmark_dashboard(
             ontology=ontology,
         )
         vehicle = vehicles.get(invoice.vehicle_id) if invoice.vehicle_id else None
+        vehicle_class = graph_categories.get(invoice.id) or _uploaded_vehicle_category(
+            invoice, vehicles
+        )
         record = {
             "line": line,
             "invoice": invoice,
             "itemId": item_id,
             "item": category,
-            "vehicleClass": _uploaded_vehicle_category(invoice, vehicles),
+            "vehicleClass": vehicle_class,
             "cost": cost,
             "source": {
                 "id": line.id,
                 "invoiceDate": invoice.invoice_date,
                 "amount": _money_float(cost),
-                "vehicleClass": _uploaded_vehicle_category(invoice, vehicles),
+                "vehicleClass": vehicle_class,
                 "vehicleMake": vehicle.make if vehicle else None,
                 "vehicleModel": vehicle.model if vehicle else None,
                 "rawDescription": line.raw_description,
@@ -2314,7 +2352,9 @@ def _uploaded_batch_benchmark_dashboard(
         key=lambda row: row["statistics"]["mean"] or 0,
         default=None,
     )
-    classified_records = [row for row in records if row["vehicleClass"] != "Unclassified"]
+    classified_records = [
+        row for row in records if row["vehicleClass"] not in {"Unclassified", UNKNOWN_CATEGORY}
+    ]
     latest_observation = max(
         (row["invoice"].invoice_date for row in records if row["invoice"].invoice_date),
         default=None,

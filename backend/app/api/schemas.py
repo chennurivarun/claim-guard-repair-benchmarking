@@ -217,8 +217,21 @@ class AssessmentMappingOverrideRequest(BaseModel):
         return self
 
 
+IntakeGroup = Literal["historical_claim", "in_house", "live"]
+
+
 class MappingApprovalRequest(BaseModel):
     actor: str = Field(min_length=1, max_length=160)
+    #: Omitted: the case-level approval, exactly as before.  Given: that
+    #: upload source's own approval, which approves no other source.
+    intake_group: IntakeGroup | None = None
+
+
+class ChallengeEmailRequest(BaseModel):
+    invoice_id: str = Field(min_length=1, max_length=36)
+    line_ids: list[str] = Field(min_length=1, max_length=500)
+    recipient: str | None = Field(default=None, max_length=200)
+    actor: str = Field(default="claims.handler", min_length=1, max_length=160)
 
 
 class ResearchTriggerRequest(BaseModel):

@@ -36,6 +36,7 @@ from app.services.engineer_assessment import (
     PAIR_SOURCE_MANUAL,
     _compare_pair_keys,
     _printed_identity,
+    group_pair_map,
     manual_override_payload,
     run_case_gap_fill,
 )
@@ -165,15 +166,41 @@ def _approval_payload(case: Case) -> dict[str, Any]:
     }
 
 
-def case_mapping_payload(session: Session, case: Case) -> dict[str, Any]:
-    """Everything the mapping review screen needs, in one read."""
+def _group_approval_payload(case: Case, intake_group: str) -> dict[str, Any]:
+    """The same shape as ``_approval_payload``, for one upload source."""
+
+    approval = (case.mapping_group_approvals_json or {}).get(intake_group) or {}
+    return {
+        "approved": bool(approval),
+        "approved_by": approval.get("approved_by"),
+        "approved_at": approval.get("approved_at"),
+        "approved_pairs": approval.get("pairs") or {},
+    }
+
+
+def case_mapping_payload(
+    session: Session, case: Case, intake_group: str | None = None
+) -> dict[str, Any]:
+    """Everything the mapping review screen needs, in one read.
+
+    With ``intake_group`` the screen is one upload source: only its invoices
+    and assessments, and that source's own approval.  Without it the payload
+    is exactly what it has always been, case-level approval included.
+    """
 
     assessments = _load_assessments(session, case)
     invoices = _load_invoices(session, case)
+    if intake_group is not None:
+        assessments = [row for row in assessments if _intake_group(row.document) == intake_group]
+        invoices = [row for row in invoices if _intake_group(row.document) == intake_group]
     rows = [_assessment_row(assessment) for assessment in assessments]
-    return {
+    payload = {
         "case_reference": case.case_reference,
-        "approval": _approval_payload(case),
+        "approval": (
+            _approval_payload(case)
+            if intake_group is None
+            else _group_approval_payload(case, intake_group)
+        ),
         "invoices": [_invoice_row(invoice) for invoice in invoices],
         "assessments": rows,
         "assessments_total": len(rows),
@@ -181,6 +208,9 @@ def case_mapping_payload(session: Session, case: Case) -> dict[str, Any]:
         "unpaired": sum(1 for row in rows if row["pair_status"] != "paired"),
         "manual": sum(1 for row in rows if row["pair_source"] == PAIR_SOURCE_MANUAL),
     }
+    if intake_group is not None:
+        payload["intake_group"] = intake_group
+    return payload
 
 
 def override_assessment_pairing(
@@ -316,7 +346,9 @@ def override_assessment_pairing(
     return case_mapping_payload(session, case)
 
 
-def approve_case_mapping(session: Session, *, case: Case, actor: str) -> dict[str, Any]:
+def approve_case_mapping(
+    session: Session, *, case: Case, actor: str, intake_group: str | None = None
+) -> dict[str, Any]:
     """Approve the mapping, and run the case-wide sweep over what was approved.
 
     The sweep runs *first* and the approval is recorded against its result.
@@ -335,6 +367,9 @@ def approve_case_mapping(session: Session, *, case: Case, actor: str) -> dict[st
     _finalised_guard(case)
     run_case_gap_fill(session, case.id)
     session.flush()
+
+    if intake_group is not None:
+        return _approve_group_mapping(session, case=case, actor=actor, intake_group=intake_group)
 
     assessments = _load_assessments(session, case)
     pairs: dict[str, str | None] = {
@@ -370,3 +405,50 @@ def approve_case_mapping(session: Session, *, case: Case, actor: str) -> dict[st
         )
     )
     return case_mapping_payload(session, case)
+
+
+def _approve_group_mapping(
+    session: Session, *, case: Case, actor: str, intake_group: str
+) -> dict[str, Any]:
+    """Approve one upload source's mapping; every other source is untouched.
+
+    Recorded against that source's pairs only, so
+    ``engineer_assessment._expire_group_mapping_approvals`` can reopen it
+    alone when those pairs change.  The sweep has already run in
+    ``approve_case_mapping``, exactly as for a case-level approval.
+    """
+
+    assessments = _load_assessments(session, case)
+    pairs = group_pair_map(assessments, intake_group)
+    approved_at = utc_now().isoformat()
+    approvals = dict(case.mapping_group_approvals_json or {})
+    approvals[intake_group] = {
+        "approved_at": approved_at,
+        "approved_by": actor,
+        "pairs": pairs,
+    }
+    # A new dict, so the JSON column registers the change.
+    case.mapping_group_approvals_json = approvals
+    session.add(
+        AuditEvent(
+            case_id=case.id,
+            processing_run_id=case.current_processing_run_id,
+            actor_type=AuditActorType.USER,
+            actor_id=actor,
+            event_type="CASE_MAPPING_APPROVED",
+            entity_type="case",
+            entity_id=case.id,
+            before_json=None,
+            after_json={"intake_group": intake_group, "approved_at": approved_at, "pairs": pairs},
+            event_payload_json={
+                "intake_group": intake_group,
+                "unpaired_assessments": [
+                    assessment_id
+                    for assessment_id, invoice_id in pairs.items()
+                    if invoice_id is None
+                ],
+                "gap_fill_ran": True,
+            },
+        )
+    )
+    return case_mapping_payload(session, case, intake_group)
