@@ -999,6 +999,49 @@ export async function bootstrapClaimWorkspace(
   }
 }
 
+/**
+ * Open the first claim on a database that holds none, and return its reference.
+ *
+ * The backend runs the same reference import and empty-case creation as
+ * `claimguard-setup`, and refuses (409 CLAIMS_EXIST) if any claim already
+ * exists. That refusal is success here: the claim the user wanted is there —
+ * another tab or `claimguard-setup` got there first — so its reference is
+ * returned and nothing else is created. Importing the reference library can
+ * take a while, hence the longer timeout.
+ */
+export async function startClaimOnEmptyDatabase(): Promise<string> {
+  const response = await fetchWithTimeout(
+    apiPath("/api/v1/claims/start"),
+    { method: "POST" },
+    120_000
+  )
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as {
+      detail?:
+        | string
+        | { code?: string; message?: string; case_reference?: string | null }
+    } | null
+    const detail = payload?.detail
+    if (typeof detail === "object" && detail) {
+      if (detail.code === "CLAIMS_EXIST" && detail.case_reference) {
+        return detail.case_reference
+      }
+      throw new ApiRequestError(
+        detail.message ?? `API returned ${response.status}`,
+        response.status,
+        detail.code ?? null
+      )
+    }
+    throw new ApiRequestError(
+      detail ?? `API returned ${response.status}`,
+      response.status,
+      null
+    )
+  }
+  const created = (await response.json()) as { case_reference: string }
+  return created.case_reference
+}
+
 export function confirmLiability(
   caseReference: string,
   input: {

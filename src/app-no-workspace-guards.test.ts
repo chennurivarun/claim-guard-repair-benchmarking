@@ -86,3 +86,34 @@ describe("the manual-review button while a claim is awaiting documents", () => {
     expect(awaiting).toContain("manualReviewUnavailableNotice()")
   })
 })
+
+// An empty database (no `claimguard-setup` in this folder, or a reset with
+// `--no-new-case`) used to be a dead end: every upload screen needs a claim to
+// upload into, and the panel offered only "Check again".
+describe("an empty database", () => {
+  const start = functionBody(app, "async function startFirstClaim()")
+
+  it("offers a working way to start, wired from the no-claims panel", () => {
+    const arm = app.slice(
+      app.indexOf('bootstrap.status === "no-claims"'),
+      app.indexOf('bootstrap.status === "workspace-error"')
+    )
+    expect(arm).toContain("onStart={() => void startFirstClaim()}")
+  })
+
+  it("starts the claim, reopens it, then lands on the Third party upload screen", () => {
+    const create = start.indexOf("startClaimOnEmptyDatabase()")
+    const reopen = start.indexOf("connectToApi()")
+    const land = start.indexOf('setActiveScreen("tp-upload")')
+
+    expect(create).toBeGreaterThan(-1)
+    expect(reopen).toBeGreaterThan(create)
+    expect(land).toBeGreaterThan(reopen)
+  })
+
+  it("never starts twice from a double click", () => {
+    const guard = start.indexOf("if (claimStarting) return")
+    expect(guard).toBeGreaterThan(-1)
+    expect(guard).toBeLessThan(start.indexOf("startClaimOnEmptyDatabase()"))
+  })
+})

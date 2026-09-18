@@ -46,16 +46,39 @@ describe("loading state", () => {
 })
 
 describe("no-claims state", () => {
-  it("tells the user to upload documents and offers a re-check", () => {
-    const html = renderToStaticMarkup(
-      createElement(NoClaimsPanel, { onRetry: () => {} })
+  function render(starting = false) {
+    return renderToStaticMarkup(
+      createElement(NoClaimsPanel, {
+        onStart: () => {},
+        onRetry: () => {},
+        starting,
+      })
     )
+  }
+
+  // An empty database used to tell the user to upload documents on a page
+  // that offered no upload control and no way to reach one.
+  it("offers a button that starts a claim, instead of an instruction it cannot act on", () => {
+    const html = render()
 
     expect(html).toContain("No claims yet")
-    expect(html).toContain("The database holds no claims")
-    expect(html).toContain("Upload a repair invoice")
+    expect(html).toContain("Start a new claim")
     expect(html).toContain("Check again")
+    expect(html).not.toContain("Upload a repair invoice")
     expectNoFabricatedData(html)
+  })
+
+  it("uses the client's term for the engineer's document", () => {
+    const html = render()
+
+    expect(html).not.toContain("engineer estimate")
+  })
+
+  it("cannot be clicked twice while a claim is being started", () => {
+    const html = render(true)
+
+    expect(html).toContain("Starting")
+    expect(html).toMatch(/<button[^>]*disabled/)
   })
 })
 

@@ -81,25 +81,50 @@ export function WorkspaceErrorPanel({
   )
 }
 
-export function NoClaimsPanel({ onRetry }: { onRetry: () => void }) {
+/**
+ * The database holds no claim, so no upload screen has anything to upload
+ * into. The panel must offer the way forward itself — an instruction to
+ * upload with no upload control on the page is a dead end — so it starts the
+ * claim (the same empty claim `claimguard-setup` opens) on one click.
+ */
+export function NoClaimsPanel({
+  onStart,
+  onRetry,
+  starting,
+}: {
+  onStart: () => void
+  onRetry: () => void
+  starting: boolean
+}) {
   return (
     <Alert data-testid="state-no-claims">
       <AlertTitle>No claims yet</AlertTitle>
       <AlertDescription className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <span>
-          The database holds no claims. Upload a repair invoice and its engineer
-          estimate to create one — every screen fills in from the uploaded
+          The database holds no claims. Start a new claim to open the Third
+          party invoice upload screen, then upload a repair invoice and its
+          engineer assessment — every screen fills in from the uploaded
           documents and nothing else.
         </span>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="shrink-0"
-          onClick={onRetry}
-        >
-          Check again
-        </Button>
+        <span className="flex shrink-0 gap-2">
+          <Button
+            type="button"
+            size="sm"
+            onClick={onStart}
+            disabled={starting}
+          >
+            {starting ? "Starting a new claim…" : "Start a new claim"}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={onRetry}
+            disabled={starting}
+          >
+            Check again
+          </Button>
+        </span>
       </AlertDescription>
     </Alert>
   )

@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { bootstrapClaimWorkspace, claimToOpen } from "./api"
+import {
+  bootstrapClaimWorkspace,
+  claimToOpen,
+  startClaimOnEmptyDatabase,
+} from "./api"
 
 // api.ts reaches for window.setTimeout inside its fetch timeout helper; the
 // test environment is node, so provide the two timer functions it uses.
@@ -337,5 +341,56 @@ describe("a malformed claim list", () => {
     const result = await bootstrapClaimWorkspace(10)
 
     expect(result.status).toBe("unavailable")
+  })
+})
+
+describe("startClaimOnEmptyDatabase", () => {
+  it("asks the API to start the first claim and returns its reference", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ case_reference: "CG-CLIENT-001" }, 201)
+    )
+    vi.stubGlobal("fetch", fetchMock)
+
+    const reference = await startClaimOnEmptyDatabase()
+
+    expect(reference).toBe("CG-CLIENT-001")
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ]
+    expect(url).toMatch(/\/api\/v1\/claims\/start$/)
+    expect(init.method).toBe("POST")
+  })
+
+  // Another tab, or `claimguard-setup`, got there first. That is not an
+  // error for the user: the claim they wanted exists, so open it.
+  it("treats a claim that already exists as success, never creating another", async () => {
+    const calls = mockFetch([
+      [
+        /\/api\/v1\/claims\/start$/,
+        () =>
+          jsonResponse(
+            {
+              detail: {
+                code: "CLAIMS_EXIST",
+                message: "A claim already exists.",
+                case_reference: "CG-HANDMADE-7",
+              },
+            },
+            409
+          ),
+      ],
+    ])
+
+    await expect(startClaimOnEmptyDatabase()).resolves.toBe("CG-HANDMADE-7")
+    expect(calls).toHaveLength(1)
+  })
+
+  it("surfaces any other failure", async () => {
+    mockFetch([
+      [/\/api\/v1\/claims\/start$/, () => errorResponse("BOOM", "Broken.", 500)],
+    ])
+
+    await expect(startClaimOnEmptyDatabase()).rejects.toThrow("Broken.")
   })
 })

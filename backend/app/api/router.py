@@ -22,6 +22,7 @@ from fastapi import (
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.schemas import (
@@ -355,6 +356,56 @@ def _case_payload(case: Case) -> dict[str, Any]:
         "documents": [serialise_document(document) for document in case.documents],
         "invoice_count": len(case.invoices),
     }
+
+
+@router.post("/claims/start", status_code=status.HTTP_201_CREATED, tags=["claims"])
+def start_first_claim(db: DatabaseSession) -> dict[str, Any]:
+    """Open the first claim on an empty database, exactly as setup would.
+
+    A folder served without ``claimguard-setup`` -- or reset with
+    ``--no-new-case`` -- holds no claim, and every upload screen needs one to
+    upload into. This is the browser's way out: the same reference-library
+    import and the same ``create_empty_case`` that ``claimguard-setup`` runs, so
+    the claim behaves identically to an installed one.
+
+    It only ever *starts*: if any claim exists it refuses with 409 and names
+    it, so it can never add a claim beside real work. Two racing calls cannot
+    both succeed either -- the reference is fixed and ``case_reference`` is
+    unique, so the loser's insert fails and is reported the same way.
+    """
+
+    from app.bootstrap import (
+        SETUP_ACTOR,
+        import_reference_library,
+        reference_library_available,
+    )
+    from app.reset import DEFAULT_NEW_CASE_REFERENCE, create_empty_case
+
+    def _claims_exist() -> HTTPException:
+        existing = db.scalar(select(Case.case_reference).order_by(Case.created_at.desc()))
+        return HTTPException(
+            status_code=409,
+            detail={
+                "code": "CLAIMS_EXIST",
+                "message": "A claim already exists; open it instead of starting another.",
+                "case_reference": existing,
+            },
+        )
+
+    if db.scalar(select(func.count(Case.id))):
+        raise _claims_exist()
+    try:
+        library_imported = reference_library_available()
+        if library_imported:
+            import_reference_library(db)
+        payload = create_empty_case(db, DEFAULT_NEW_CASE_REFERENCE, SETUP_ACTOR)
+        db.commit()
+    except (IntegrityError, ValueError) as exc:
+        db.rollback()
+        if db.scalar(select(func.count(Case.id))):
+            raise _claims_exist() from exc
+        raise
+    return {**payload, "reference_library_imported": library_imported}
 
 
 @router.post("/claims", status_code=status.HTTP_201_CREATED, tags=["claims"])

@@ -33,6 +33,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.enums import (
@@ -64,8 +65,11 @@ from app.reset import DEFAULT_NEW_CASE_REFERENCE, create_empty_case
 from app.services.case_result import build_claim_workspace
 from app.services.comparison_workflow import run_case_comparison
 from app.services.document_processing import process_document, store_pdf
-from app.services.external_benchmark_import_service import import_external_uk_benchmarks
-from app.services.seed_import_service import import_seed_workbooks
+from app.services.external_benchmark_import_service import (
+    ExternalBenchmarkImportResult,
+    import_external_uk_benchmarks,
+)
+from app.services.seed_import_service import SeedImportResult, import_seed_workbooks
 
 SAMPLE_DATA = Path(__file__).resolve().parents[2] / "sample-data"
 DEFAULT_CASE_REFERENCE = "CG-2026-0048"
@@ -211,8 +215,7 @@ def bootstrap_pilot(
             raise FileNotFoundError(path)
     initialize_database()
     with SessionLocal() as session:
-        seed_result = import_seed_workbooks(session, ONTOLOGY_PATH, HISTORY_PATH)
-        external_result = import_external_uk_benchmarks(session, EXTERNAL_BENCHMARK_PATH)
+        seed_result, external_result = import_reference_library(session)
         session.commit()
 
         case = session.scalar(select(Case).where(Case.case_reference == case_reference))
@@ -338,6 +341,30 @@ def _reference_bank_totals(session) -> dict[str, int]:
     }
 
 
+def reference_library_available() -> bool:
+    """Whether the supplied seed workbooks are on disk to be imported."""
+
+    return all(
+        path.is_file() for path in (ONTOLOGY_PATH, HISTORY_PATH, EXTERNAL_BENCHMARK_PATH)
+    )
+
+
+def import_reference_library(
+    session: Session,
+) -> tuple[SeedImportResult, ExternalBenchmarkImportResult]:
+    """Import the ontology, seed history and external UK benchmarks.
+
+    The one reference import ``claimguard-setup`` performs, shared with
+    ``POST /claims/start`` so a claim started from the browser sits on the same
+    library. Content-addressed, so re-running it changes nothing. The caller
+    owns the commit.
+    """
+
+    seed_result = import_seed_workbooks(session, ONTOLOGY_PATH, HISTORY_PATH)
+    external_result = import_external_uk_benchmarks(session, EXTERNAL_BENCHMARK_PATH)
+    return seed_result, external_result
+
+
 def setup_reference_library(
     case_reference: str | None = DEFAULT_EMPTY_CASE_REFERENCE,
 ) -> dict[str, object]:
@@ -367,8 +394,7 @@ def setup_reference_library(
             raise FileNotFoundError(path)
     initialize_database()
     with SessionLocal() as session:
-        seed_result = import_seed_workbooks(session, ONTOLOGY_PATH, HISTORY_PATH)
-        external_result = import_external_uk_benchmarks(session, EXTERNAL_BENCHMARK_PATH)
+        seed_result, external_result = import_reference_library(session)
         session.commit()
 
         case_payload: dict[str, object] | None = None

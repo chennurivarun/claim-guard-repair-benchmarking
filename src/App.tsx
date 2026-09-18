@@ -78,6 +78,7 @@ import {
   decideLineMapping,
   downloadBlob,
   fetchClaimInvoices,
+  startClaimOnEmptyDatabase,
   fetchClaimWorkspace,
   finaliseClaim,
   getApiErrorMessage,
@@ -166,6 +167,7 @@ export function App() {
   // failed fetch can never leave invented rows on screen.
   const [workspace, setWorkspace] = useState<ClaimWorkspace | null>(null)
   const [bootstrap, setBootstrap] = useState<WorkspaceBootstrap | null>(null)
+  const [claimStarting, setClaimStarting] = useState(false)
   // The first step of the flow Neha described: third-party documents in.
   const [activeScreen, setActiveScreen] = useState<ScreenId>("tp-upload")
   const [liabilityStatus, setLiabilityStatus] =
@@ -230,6 +232,27 @@ export function App() {
   async function connectToApi() {
     setBootstrap(null)
     await applyBootstrap(await bootstrapClaimWorkspace(p90ThresholdPct))
+  }
+
+  // An empty database has no claim to upload into, so the no-claims panel
+  // starts one on request — the same empty claim `claimguard-setup` opens —
+  // and lands on the Third party upload screen a set-up install opens on.
+  // Started only on a click, never automatically: a database emptied on
+  // purpose (`claimguard-reset --no-new-case`) must stay empty until asked.
+  async function startFirstClaim() {
+    if (claimStarting) return
+    setClaimStarting(true)
+    try {
+      await startClaimOnEmptyDatabase()
+      await connectToApi()
+      setActiveScreen("tp-upload")
+    } catch (error) {
+      toast.error("A new claim could not be started", {
+        description: getApiErrorMessage(error),
+      })
+    } finally {
+      setClaimStarting(false)
+    }
   }
 
   useEffect(() => {
@@ -1229,7 +1252,11 @@ export function App() {
             onRetry={() => void connectToApi()}
           />
         ) : bootstrap.status === "no-claims" ? (
-          <NoClaimsPanel onRetry={() => void connectToApi()} />
+          <NoClaimsPanel
+            onStart={() => void startFirstClaim()}
+            onRetry={() => void connectToApi()}
+            starting={claimStarting}
+          />
         ) : bootstrap.status === "workspace-error" ? (
           <WorkspaceErrorPanel
             caseReference={bootstrap.caseReference}
