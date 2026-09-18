@@ -958,6 +958,78 @@ def pair_case_assessments(session: Session, case_id: str) -> None:
         _record_variances(session, assessment, decision.invoice)
 
     _expire_mapping_approval(session, case_id, _pair_map(decisions))
+    _expire_group_mapping_approvals(session, case_id, decisions)
+
+
+def _assessment_intake_group(assessment: EngineerAssessment) -> str | None:
+    document = assessment.document
+    return (getattr(document, "metadata_json", None) or {}).get("intake_group")
+
+
+def group_pair_map(
+    assessments: list[EngineerAssessment], intake_group: str
+) -> dict[str, str | None]:
+    """``{assessment id: invoice id or None}`` for one upload source only."""
+
+    return {
+        assessment.id: assessment.paired_invoice_id
+        for assessment in assessments
+        if _assessment_intake_group(assessment) == intake_group
+    }
+
+
+def _expire_group_mapping_approvals(
+    session: Session, case_id: str, decisions: list[_Decision]
+) -> None:
+    """``_expire_mapping_approval``, per upload source.
+
+    Each source's approval is a statement about that source's pairs only, so
+    a new Aviva DLG document reopens the Aviva DLG approval and leaves the
+    third-party one standing.  Same comparison, same audit trail.
+    """
+
+    case = session.get(Case, case_id)
+    if case is None or not case.mapping_group_approvals_json:
+        return
+    pairs = _pair_map(decisions)
+    groups = {
+        decision.assessment.id: _assessment_intake_group(decision.assessment)
+        for decision in decisions
+    }
+    approvals = dict(case.mapping_group_approvals_json)
+    changed = False
+    for intake_group, approval in list(approvals.items()):
+        current = {
+            assessment_id: invoice_id
+            for assessment_id, invoice_id in pairs.items()
+            if groups.get(assessment_id) == intake_group
+        }
+        if (approval.get("pairs") or {}) == current:
+            continue
+        session.add(
+            AuditEvent(
+                case_id=case.id,
+                processing_run_id=case.current_processing_run_id,
+                actor_type=AuditActorType.SYSTEM,
+                actor_id="claimguard.pairing",
+                event_type="CASE_MAPPING_APPROVAL_REOPENED",
+                entity_type="case",
+                entity_id=case.id,
+                before_json={"intake_group": intake_group, **approval},
+                after_json={"intake_group": intake_group, "approved": False, "pairs": current},
+                event_payload_json={
+                    "intake_group": intake_group,
+                    "reason": (
+                        "The invoice/assessment mapping of this source changed "
+                        "after it was approved, so the approval no longer describes it."
+                    ),
+                },
+            )
+        )
+        del approvals[intake_group]
+        changed = True
+    if changed:
+        case.mapping_group_approvals_json = approvals or None
 
 
 def _pair_map(decisions: list[_Decision]) -> dict[str, str | None]:

@@ -138,3 +138,46 @@ def test_mapping_review_columns_round_trip_through_20260917_0011(
         assert case_columns <= cases
     finally:
         get_settings.cache_clear()
+
+
+def test_benchmark_source_schema_round_trips_through_20260918_0012(
+    alembic_config: Config,
+) -> None:
+    """Per-source mapping approval and the AI vehicle-category cache.
+
+    Pinned to the named revision before it, like the tests above, so adding a
+    later migration does not silently change what this one exercises.
+    """
+
+    database_url = alembic_config.get_main_option("sqlalchemy.url")
+
+    def schema() -> tuple[set[str], set[str]]:
+        engine = sa.create_engine(database_url)
+        try:
+            inspector = sa.inspect(engine)
+            return (
+                {column["name"] for column in inspector.get_columns("cases")},
+                set(inspector.get_table_names()),
+            )
+        finally:
+            engine.dispose()
+
+    try:
+        command.upgrade(alembic_config, "head")
+        cases, tables = schema()
+        assert "mapping_group_approvals_json" in cases
+        assert "vehicle_category_inferences" in tables
+
+        command.downgrade(alembic_config, "20260917_0011")
+        cases, tables = schema()
+        assert "mapping_group_approvals_json" not in cases
+        assert "vehicle_category_inferences" not in tables
+        # The previous revision's columns are left exactly as they were.
+        assert "mapping_approved_pairs_json" in cases
+
+        command.upgrade(alembic_config, "head")
+        cases, tables = schema()
+        assert "mapping_group_approvals_json" in cases
+        assert "vehicle_category_inferences" in tables
+    finally:
+        get_settings.cache_clear()

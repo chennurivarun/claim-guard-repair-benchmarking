@@ -149,6 +149,14 @@ class Case(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     mapping_approved_pairs_json: Mapped[dict[str, str | None] | None] = mapped_column(
         JSON, nullable=True
     )
+    #: The same statement, made per upload source: ``{intake_group:
+    #: {"approved_at", "approved_by", "pairs"}}``.  Approving the third-party
+    #: documents must not approve the Aviva DLG ones, so each source carries
+    #: its own approval and its own pairs, and each is reopened on its own
+    #: when its pairs change.  The case-level columns above are untouched.
+    mapping_group_approvals_json: Mapped[dict[str, dict[str, Any]] | None] = mapped_column(
+        JSON, nullable=True
+    )
 
     documents: Mapped[list[Document]] = relationship(
         back_populates="case", cascade="all, delete-orphan", passive_deletes=True
@@ -785,6 +793,36 @@ class VehicleCategoryLookup(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     fuel_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
     aliases_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     source: Mapped[str] = mapped_column(String(240), nullable=False)
+
+
+class VehicleCategoryInference(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """An AI answer to "what body type is this make+model?", asked once.
+
+    Kept apart from ``vehicle_category_lookup`` on purpose: that table is the
+    reference catalogue and a match there is reported as ``lookup``; a row
+    here is a model's opinion and is reported as ``ai``.  ``category`` is
+    ``None`` when the model could not place the vehicle in the catalogue's
+    vocabulary -- that refusal is cached too, so an unhelpful answer is not
+    re-asked on every invoice.
+    """
+
+    __tablename__ = "vehicle_category_inferences"
+    __table_args__ = (
+        UniqueConstraint(
+            "normalised_make",
+            "normalised_model",
+            name="uq_vehicle_category_inference_make_model",
+        ),
+    )
+
+    make: Mapped[str] = mapped_column(String(120), nullable=False)
+    model: Mapped[str] = mapped_column(String(160), nullable=False)
+    normalised_make: Mapped[str] = mapped_column(String(120), nullable=False)
+    normalised_model: Mapped[str] = mapped_column(String(160), nullable=False)
+    category: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    provider: Mapped[str] = mapped_column(String(80), nullable=False)
+    model_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(80), nullable=False)
 
 
 invoice_page_links = Table(
