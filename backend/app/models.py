@@ -149,6 +149,14 @@ class Case(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     mapping_approved_pairs_json: Mapped[dict[str, str | None] | None] = mapped_column(
         JSON, nullable=True
     )
+    #: The same statement, made per upload source: ``{intake_group:
+    #: {"approved_at", "approved_by", "pairs"}}``.  Approving the third-party
+    #: documents must not approve the Aviva DLG ones, so each source carries
+    #: its own approval and its own pairs, and each is reopened on its own
+    #: when its pairs change.  The case-level columns above are untouched.
+    mapping_group_approvals_json: Mapped[dict[str, dict[str, Any]] | None] = mapped_column(
+        JSON, nullable=True
+    )
 
     documents: Mapped[list[Document]] = relationship(
         back_populates="case", cascade="all, delete-orphan", passive_deletes=True
@@ -446,7 +454,21 @@ class SourceProvider(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 class Document(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __tablename__ = "documents"
     __table_args__ = (
-        UniqueConstraint("case_id", "sha256", name="uq_documents_case_sha256"),
+        # A byte-identical file may exist once per upload source: the client
+        # loads copies of the same invoices under third party *and* Aviva DLG.
+        # NULLs are distinct in a unique constraint, so the partial index below
+        # is what keeps a second ungrouped copy out.
+        UniqueConstraint(
+            "case_id", "sha256", "intake_group", name="uq_documents_case_sha256_group"
+        ),
+        Index(
+            "uq_documents_case_sha256_ungrouped",
+            "case_id",
+            "sha256",
+            unique=True,
+            sqlite_where=text("intake_group IS NULL"),
+            postgresql_where=text("intake_group IS NULL"),
+        ),
         CheckConstraint("file_size >= 0", name="file_size_non_negative"),
         CheckConstraint("page_count IS NULL OR page_count >= 0", name="page_count_non_negative"),
         Index("ix_documents_case_role", "case_id", "document_role"),
@@ -483,6 +505,11 @@ class Document(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     )
     metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     review_briefing_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    #: Upload source (``historical_claim``, ``in_house``, ``live``) or NULL.
+    #: A copy of ``metadata_json["intake_group"]``, which every reader already
+    #: uses; this column exists so the uniqueness rule above is enforceable.
+    #: ``_sync_document_intake_group`` keeps the two equal on every flush.
+    intake_group: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
     case: Mapped[Case] = relationship(back_populates="documents")
     pages: Mapped[list[DocumentPage]] = relationship(
@@ -785,6 +812,36 @@ class VehicleCategoryLookup(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     fuel_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
     aliases_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     source: Mapped[str] = mapped_column(String(240), nullable=False)
+
+
+class VehicleCategoryInference(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """An AI answer to "what body type is this make+model?", asked once.
+
+    Kept apart from ``vehicle_category_lookup`` on purpose: that table is the
+    reference catalogue and a match there is reported as ``lookup``; a row
+    here is a model's opinion and is reported as ``ai``.  ``category`` is
+    ``None`` when the model could not place the vehicle in the catalogue's
+    vocabulary -- that refusal is cached too, so an unhelpful answer is not
+    re-asked on every invoice.
+    """
+
+    __tablename__ = "vehicle_category_inferences"
+    __table_args__ = (
+        UniqueConstraint(
+            "normalised_make",
+            "normalised_model",
+            name="uq_vehicle_category_inference_make_model",
+        ),
+    )
+
+    make: Mapped[str] = mapped_column(String(120), nullable=False)
+    model: Mapped[str] = mapped_column(String(160), nullable=False)
+    normalised_make: Mapped[str] = mapped_column(String(120), nullable=False)
+    normalised_model: Mapped[str] = mapped_column(String(160), nullable=False)
+    category: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    provider: Mapped[str] = mapped_column(String(80), nullable=False)
+    model_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(80), nullable=False)
 
 
 invoice_page_links = Table(
@@ -2023,6 +2080,20 @@ def _hash_audit_event(mapper: object, connection: object, target: AuditEvent) ->
     target.event_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _sync_document_intake_group(mapper: Any, connection: Any, target: Document) -> None:
+    """The metadata key is authoritative; the column follows it on every write.
+
+    Readers throughout the pairing, mapping and benchmark code read the
+    metadata key, so it stays the one place a group is decided.  Deriving the
+    column here, rather than trusting each writer to set both, means a
+    document can never be de-duplicated under one group and read under another.
+    """
+
+    target.intake_group = (target.metadata_json or {}).get("intake_group")
+
+
+event.listen(Document, "before_insert", _sync_document_intake_group)
+event.listen(Document, "before_update", _sync_document_intake_group)
 event.listen(AuditEvent, "before_insert", _hash_audit_event)
 event.listen(AuditEvent, "before_update", _prevent_audit_mutation)
 event.listen(AuditEvent, "before_delete", _prevent_audit_mutation)

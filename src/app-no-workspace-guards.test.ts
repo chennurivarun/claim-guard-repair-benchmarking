@@ -34,6 +34,43 @@ describe("navigating with no workspace loaded", () => {
     expect(navigate).toContain("noWorkspaceNotice()")
     expect(navigate).toContain("toast.info")
   })
+
+  // Neha's nine screens act on the claim reference alone. A freshly set-up or
+  // reset claim has a reference but no workspace, and her flow starts by
+  // uploading into it, so those screens -- and only those -- may be opened
+  // before a workspace exists.
+  it("lets only the claim-scoped screens through, and only with a claim", () => {
+    const guard = navigate.indexOf("if (!workspace)")
+    const exemption = navigate.indexOf("claimReference && screenScope(screen)")
+    const firstSet = navigate.indexOf("setActiveScreen(screen)")
+
+    expect(exemption).toBeGreaterThan(guard)
+    expect(exemption).toBeLessThan(firstSet)
+    // Everything else still falls through to the spoken refusal.
+    expect(navigate.indexOf("noWorkspaceNotice()")).toBeGreaterThan(exemption)
+  })
+})
+
+describe("a claim awaiting its first documents", () => {
+  const awaiting = app.slice(
+    app.indexOf('bootstrap.status === "awaiting-documents"'),
+    app.indexOf("onContinue={() => void connectToApi()}")
+  )
+
+  it("renders Neha's screens, so upload into either source is possible", () => {
+    expect(awaiting).toContain("{scope ? (")
+    expect(awaiting).toContain("screen")
+  })
+
+  it("builds those screens from the claim reference, not the workspace", () => {
+    const block = app.slice(
+      app.indexOf("if (scope && claimReference)"),
+      app.indexOf("} else if (workspace)")
+    )
+    expect(block.length).toBeGreaterThan(0)
+    expect(block).toContain("caseReference={claimReference}")
+    expect(block).not.toContain("workspace.claim.id")
+  })
 })
 
 describe("the manual-review button while a claim is awaiting documents", () => {

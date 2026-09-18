@@ -27,9 +27,11 @@ from sqlalchemy.orm import Session, selectinload
 from app.api.schemas import (
     AssessmentMappingOverrideRequest,
     CaseDataResetRequest,
+    ChallengeEmailRequest,
     ClaimCreateRequest,
     ExtractionDecisionRequest,
     FinaliseCaseRequest,
+    IntakeGroup,
     InvoiceLineCorrectionRequest,
     InvoiceLineManualCreateRequest,
     LiabilityDecisionRequest,
@@ -49,6 +51,7 @@ from app.database import get_db
 from app.domain.liability import LiabilityState, liability_gate
 from app.domain.normalisation import normalise_description, normalise_unit
 from app.domain.price_decision import DEFAULT_POLICY as DEFAULT_P90_POLICY
+from app.domain.price_decision import resolve_threshold_pct
 from app.enums import (
     ApprovalStatus,
     AuditActorType,
@@ -149,6 +152,12 @@ from app.services.research_workflow import (
     trigger_manual_research,
 )
 from app.services.seed_import_service import import_seed_workbooks
+from app.services.source_benchmarks import (
+    BenchmarkAnalysisError,
+    build_benchmark_analysis,
+    build_source_benchmarks,
+    draft_challenge_email,
+)
 from app.services.vehicle_category_lookup import lookup_vehicle_category
 from app.services.vehicle_classification import (
     apply_vehicle_classification,
@@ -961,18 +970,25 @@ def _mapping_error_status(code: str) -> int:
 
 
 @router.get("/claims/{case_reference}/document-mapping", tags=["documents"])
-def get_document_mapping(case_reference: str, db: DatabaseSession) -> dict[str, Any]:
+def get_document_mapping(
+    case_reference: str,
+    db: DatabaseSession,
+    intake_group: IntakeGroup | None = None,
+) -> dict[str, Any]:
     """The mapping review step: which invoice each engineer assessment belongs to.
 
     Deliberately separate from ``/invoice-lines/{id}/mapping-decision``, which
     reviews the *ontology* mapping of one invoice line to a priced repair
     item. This one is about which two documents describe the same repair.
+
+    ``intake_group`` scopes it to one upload source and reports that source's
+    own approval; omitted, it is the whole case, as before.
     """
 
     case = db.scalar(select(Case).where(Case.case_reference == case_reference))
     if case is None:
         raise _not_found("Claim not found")
-    return case_mapping_payload(db, case)
+    return case_mapping_payload(db, case, intake_group)
 
 
 @router.post(
@@ -1032,7 +1048,9 @@ def approve_document_mapping(
     if case is None:
         raise _not_found("Claim not found")
     try:
-        payload = approve_case_mapping(db, case=case, actor=request.actor)
+        payload = approve_case_mapping(
+            db, case=case, actor=request.actor, intake_group=request.intake_group
+        )
         db.commit()
         return payload
     except DocumentMappingError as exc:
@@ -1264,12 +1282,23 @@ def _assessment_extract_payload(assessment: EngineerAssessment) -> dict[str, Any
     }
 
 
+def _document_intake_group(document: Document | None) -> str | None:
+    return ((document.metadata_json if document is not None else None) or {}).get("intake_group")
+
+
 @router.get("/claims/{case_reference}/extracts", tags=["documents"])
-def get_claim_extracts(case_reference: str, db: DatabaseSession) -> dict[str, Any]:
+def get_claim_extracts(
+    case_reference: str,
+    db: DatabaseSession,
+    intake_group: IntakeGroup | None = None,
+) -> dict[str, Any]:
     """The two standardised, read-only tables the client asked for: one row
     per invoice/assessment identity, one line row per invoice/assessment line,
     and the section breakdowns that link a rolled-up invoice total to the
     assessment rows behind it. The two arrays are never merged.
+
+    ``intake_group`` keeps only one upload source's documents; omitted, the
+    whole case, exactly as before.
     """
 
     case = db.scalar(select(Case).where(Case.case_reference == case_reference))
@@ -1295,9 +1324,15 @@ def get_claim_extracts(case_reference: str, db: DatabaseSession) -> dict[str, An
         .options(
             selectinload(EngineerAssessment.operations),
             selectinload(EngineerAssessment.paired_invoice),
+            selectinload(EngineerAssessment.document),
         )
         .order_by(EngineerAssessment.created_at, EngineerAssessment.id)
     ).all()
+    if intake_group is not None:
+        invoices = [row for row in invoices if _document_intake_group(row.document) == intake_group]
+        assessments = [
+            row for row in assessments if _document_intake_group(row.document) == intake_group
+        ]
     section_breakdowns: list[dict[str, Any]] = []
     for invoice in invoices:
         for breakdown in section_breakdown_for_invoice(db, invoice):
@@ -2001,6 +2036,94 @@ def reset_case_data_endpoint(
         ) from exc
     clear_reset_paths(report)
     return report.as_dict()
+
+
+def _benchmark_threshold(value: int | None) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        return resolve_threshold_pct(value)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422, detail={"code": "INVALID_THRESHOLD", "message": str(exc)}
+        ) from exc
+
+
+def _benchmark_error(db: Session, exc: BenchmarkAnalysisError) -> HTTPException:
+    db.rollback()
+    return HTTPException(
+        status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}
+    )
+
+
+@router.get("/claims/{case_reference}/benchmarks", tags=["benchmarks"])
+def get_source_benchmarks(
+    case_reference: str,
+    db: DatabaseSession,
+    source: Annotated[str, Query(pattern="^(third_party|aviva_dlg)$")],
+    p90_threshold_pct: int | None = None,
+) -> dict[str, Any]:
+    """Benchmark computation for one source: P90 per repair item per vehicle
+    category, from that source's uploaded documents only, with evidence."""
+
+    threshold = _benchmark_threshold(p90_threshold_pct)
+    try:
+        payload = build_source_benchmarks(db, case_reference, source, threshold_pct=threshold)
+    except BenchmarkAnalysisError as exc:
+        raise _benchmark_error(db, exc) from exc
+    # Persists an AI vehicle-category answer, if one was asked for.
+    db.commit()
+    return jsonable_encoder(payload)
+
+
+@router.get("/claims/{case_reference}/benchmark-analysis", tags=["benchmarks"])
+def get_benchmark_analysis(
+    case_reference: str,
+    db: DatabaseSession,
+    invoice_id: str | None = None,
+    p90_threshold_pct: int | None = None,
+) -> dict[str, Any]:
+    """Every line of the new invoice against both source benchmarks.
+
+    ``invoice_id`` defaults to the most recent ``live`` invoice.
+    """
+
+    threshold = _benchmark_threshold(p90_threshold_pct)
+    try:
+        payload = build_benchmark_analysis(
+            db, case_reference, invoice_id=invoice_id, threshold_pct=threshold
+        )
+    except BenchmarkAnalysisError as exc:
+        raise _benchmark_error(db, exc) from exc
+    db.commit()
+    return jsonable_encoder(payload)
+
+
+@router.post("/claims/{case_reference}/challenge-email", tags=["benchmarks"])
+def post_challenge_email(
+    case_reference: str,
+    request: ChallengeEmailRequest,
+    db: DatabaseSession,
+) -> dict[str, Any]:
+    """Draft -- never send -- the challenge email for the selected lines.
+
+    Writes one audit event recording which lines were drafted.  Copy and
+    "Open in email app" on the screen are the only send path.
+    """
+
+    try:
+        payload = draft_challenge_email(
+            db,
+            case_reference,
+            invoice_id=request.invoice_id,
+            line_ids=request.line_ids,
+            recipient=request.recipient,
+            actor=request.actor,
+        )
+        db.commit()
+    except BenchmarkAnalysisError as exc:
+        raise _benchmark_error(db, exc) from exc
+    return jsonable_encoder(payload)
 
 
 @router.get("/benchmarks/dashboard", tags=["benchmarks"])

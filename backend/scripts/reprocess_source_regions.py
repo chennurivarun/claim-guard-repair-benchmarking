@@ -22,13 +22,9 @@ def main() -> None:
             source_path = Path(document.storage_path)
             if not source_path.exists() or not document.invoices:
                 continue
-            output_dir = (
-                Path(settings.storage_dir)
-                / "cases"
-                / document.case_id
-                / document.sha256[:12]
-                / "pages"
-            )
+            # Beside the stored file: copies of one file in different upload
+            # sources share a hash but each has its own directory.
+            output_dir = source_path.parent / "pages"
             analysis = PDFPipeline(PipelineConfig(max_pages=settings.max_pdf_pages)).analyse(
                 source_path, output_dir
             )

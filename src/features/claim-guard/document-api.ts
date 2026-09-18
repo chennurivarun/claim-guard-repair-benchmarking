@@ -109,7 +109,9 @@ async function responseError(response: Response) {
   return new Error(message)
 }
 
-async function requestJson<T>(
+/** Exported for `benchmark-api.ts`, whose endpoints share this module's
+ * timeout and error handling. */
+export async function requestJson<T>(
   path: string,
   init?: RequestInit,
   timeoutMs = 15_000
@@ -313,9 +315,18 @@ export interface CaseMappingPayload {
  * to the rule. */
 export type MappingOverrideDecision = "link" | "unlink" | "reset"
 
-export function fetchCaseMapping(caseReference: string) {
+/** With `intakeGroup`, the mapping of one source only (third party is
+ * `historical_claim`, Aviva DLG is `in_house`, the new invoice is `live`).
+ * Without it, the whole claim, as before. */
+export function fetchCaseMapping(
+  caseReference: string,
+  intakeGroup?: IntakeGroup
+) {
+  const query = intakeGroup
+    ? `?${new URLSearchParams({ intake_group: intakeGroup }).toString()}`
+    : ""
   return requestJson<CaseMappingPayload>(
-    `/api/v1/claims/${encodeURIComponent(caseReference)}/document-mapping`
+    `/api/v1/claims/${encodeURIComponent(caseReference)}/document-mapping${query}`
   )
 }
 
@@ -349,14 +360,24 @@ export function overrideAssessmentMapping(
 
 /** Approve the mapping. This is what runs the case-wide link / gap-fill sweep
  * now: the handler has just said the pairs are right, so the fill runs
- * against the pairs they confirmed rather than on a standing button. */
-export function approveCaseMapping(caseReference: string, actor: string) {
+ * against the pairs they confirmed rather than on a standing button.
+ *
+ * Approval is recorded per intake group: approving third party does not
+ * approve Aviva DLG. The group is only sent when there is one, so the
+ * whole-claim screen under Advanced tools posts exactly what it did before. */
+export function approveCaseMapping(
+  caseReference: string,
+  actor: string,
+  intakeGroup?: IntakeGroup
+) {
   return requestJson<CaseMappingPayload>(
     `/api/v1/claims/${encodeURIComponent(caseReference)}/document-mapping/approve`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ actor }),
+      body: JSON.stringify(
+        intakeGroup ? { actor, intake_group: intakeGroup } : { actor }
+      ),
     },
     180_000
   )
