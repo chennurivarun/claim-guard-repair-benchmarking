@@ -35,10 +35,14 @@ import {
 import { ExtractsSection } from "./extracts-section"
 import { runIntakeBatch, type IntakeBatchEntry } from "./intake-batch"
 import { ScreenHeading, StatusBadge } from "./shared"
+import { INTAKE_GROUP_LABELS, intakeGroupsFor } from "./source-scope"
 
+// The two reference buckets carry the names Neha uses for them (D1 of the
+// 18 Sep spec: relabel, don't duplicate). The live bucket keeps its picker
+// label -- "New invoice" is the heading, "New repair invoices" the files.
 const labels: Record<IntakeGroup, string> = {
-  historical_claim: "Third-party claims invoices",
-  in_house: "In-house repair invoices",
+  historical_claim: INTAKE_GROUP_LABELS.historical_claim,
+  in_house: INTAKE_GROUP_LABELS.in_house,
   live: "New repair invoices",
 }
 const accept = ".pdf,.doc,.docx"
@@ -60,9 +64,16 @@ function isSupportedDocument(file: File) {
   return [".pdf", ".doc", ".docx"].some((extension) => name.endsWith(extension))
 }
 
+/** The upload and batch flow. Unscoped, it is the two Advanced tools screens
+ * it always was (Benchmark data setup, whole-claim Document Intelligence).
+ * With `scope`, it is one source's "Upload documents": one bucket, repair
+ * invoices and engineer assessments side by side, files or a folder on
+ * both, and nothing else -- the extracts belong to that source's Document
+ * intelligence, which `onProcessed` / `onContinue` lead to. */
 export function ClientIntakeScreen({
   caseReference,
   setup,
+  scope,
   finalised,
   onProcessed,
   onContinue,
@@ -70,6 +81,7 @@ export function ClientIntakeScreen({
 }: {
   caseReference: string
   setup: boolean
+  scope?: IntakeGroup
   finalised: boolean
   onProcessed: (documentId?: string) => Promise<void>
   onContinue: () => void
@@ -93,17 +105,22 @@ export function ClientIntakeScreen({
   /** Bumped after every batch so the file inputs drop their DOM selection:
    * without it, re-picking the same folder fires no `change` event. */
   const [pickerKey, setPickerKey] = useState(0)
+  /** Only the unscoped live screen carries the extract tables; a scoped
+   * upload leaves them to its own Document intelligence. */
+  const showsExtracts = !setup && !scope
   const [extracts, setExtracts] = useState<ClaimExtractsPayload | null>(null)
-  const [extractsLoading, setExtractsLoading] = useState(!setup)
+  const [extractsLoading, setExtractsLoading] = useState(showsExtracts)
   const [extractsError, setExtractsError] = useState<string | null>(null)
-  const groups: IntakeGroup[] = setup
-    ? ["historical_claim", "in_house"]
-    : ["live"]
+  const groups = intakeGroupsFor({ setup, scope })
+  /** Whether a group takes engineer assessments beside its invoices. Every
+   * scoped source does: the reference buckets need the assessments too, or
+   * a rolled-up invoice has no line items to benchmark. */
+  const takesAssessments = (group: IntakeGroup) => group === "live" || !!scope
 
   /** The extracts endpoint is case-scoped, so it only means something on the
-   * live screen; see the `!setup` guard on the section itself. */
+   * live screen; see the `showsExtracts` guard on the section itself. */
   async function loadExtracts() {
-    if (setup) return
+    if (!showsExtracts) return
     try {
       setExtracts(await fetchClaimExtracts(caseReference))
       setExtractsError(null)
@@ -125,7 +142,7 @@ export function ClientIntakeScreen({
     await loadExtracts()
   }
   useEffect(() => {
-    if (setup) return
+    if (!showsExtracts) return
     let active = true
     void fetchClaimExtracts(caseReference)
       .then((payload) => {
@@ -144,7 +161,7 @@ export function ClientIntakeScreen({
     return () => {
       active = false
     }
-  }, [caseReference, setup])
+  }, [caseReference, showsExtracts])
   useEffect(() => {
     let active = true
     void Promise.all([
@@ -182,7 +199,7 @@ export function ClientIntakeScreen({
    * paints the result. */
   async function upload(group: IntakeGroup) {
     const invoiceFiles = files[group] ?? []
-    const estimateFiles = group === "live" ? estimates : []
+    const estimateFiles = takesAssessments(group) ? estimates : []
     // Engineer assessments alone are refused: they would upload with nothing
     // in the case to pair against, and the label above the picker says
     // invoices are required.
@@ -194,7 +211,7 @@ export function ClientIntakeScreen({
     const roleLabel = (role: IntakeBatchEntry["role"]) =>
       role === "estimate"
         ? "Engineer assessment"
-        : group === "live"
+        : takesAssessments(group)
           ? "Repair invoice"
           : "Client document"
     setBusy(true)
@@ -238,7 +255,7 @@ export function ClientIntakeScreen({
       await refresh().catch(() => undefined)
     } finally {
       setFiles((current) => ({ ...current, [group]: [] }))
-      if (group === "live") setEstimates([])
+      if (takesAssessments(group)) setEstimates([])
       setPickerKey((current) => current + 1)
       setBusy(false)
     }
@@ -248,22 +265,38 @@ export function ClientIntakeScreen({
   )
   return (
     <>
-      <ScreenHeading
-        title={setup ? "Benchmark data setup" : "Document Intelligence"}
-        description={
-          setup
-            ? "Build your reference dataset from client-provided documents. Keep one fresh invoice aside to run through Document Intelligence."
-            : "Upload a fresh repair invoice, inspect its source pages, then review the extraction before benchmarking."
-        }
-        action={
-          <Button
-            onClick={onContinue}
-            disabled={busy || (!setup && !visibleInvoices.length)}
-          >
-            {setup ? "Process a new invoice" : "Review source documents"}
-          </Button>
-        }
-      />
+      {scope ? (
+        <ScreenHeading
+          title={scope === "live" ? "Upload new invoice" : labels[scope]}
+          description={
+            scope === "live"
+              ? "Upload documents: the new repair invoice and its engineer assessment. Once the batch lands you go to Document intelligence to check the mapping and read the extracts, then to Benchmark analysis."
+              : "Upload documents: this source's repair invoices and their engineer assessments. Once the batch lands you go to Document intelligence to check the mapping and read the extracts."
+          }
+          action={
+            <Button onClick={onContinue} disabled={busy}>
+              Go to Document intelligence
+            </Button>
+          }
+        />
+      ) : (
+        <ScreenHeading
+          title={setup ? "Benchmark data setup" : "Document Intelligence"}
+          description={
+            setup
+              ? "Build your reference dataset from client-provided documents. Keep one fresh invoice aside to run through Document Intelligence."
+              : "Upload a fresh repair invoice, inspect its source pages, then review the extraction before benchmarking."
+          }
+          action={
+            <Button
+              onClick={onContinue}
+              disabled={busy || (!setup && !visibleInvoices.length)}
+            >
+              {setup ? "Process a new invoice" : "Review source documents"}
+            </Button>
+          }
+        />
+      )}
       {fileFailures.length > 0 && (
         <Alert variant="destructive">
           <AlertTitle>
@@ -313,7 +346,7 @@ export function ClientIntakeScreen({
             <CardHeader>
               <CardTitle>{labels[group]}</CardTitle>
               <CardDescription>
-                {group === "live"
+                {takesAssessments(group)
                   ? "Hand over a whole set at once: every repair invoice, and every engineer assessment that goes with them. Pick files or a folder for each."
                   : "Upload client invoices and their corresponding engineer assessments. PDF and Word documents are supported."}
               </CardDescription>
@@ -321,7 +354,7 @@ export function ClientIntakeScreen({
             <CardContent className="space-y-4">
               <label className="block space-y-2 text-sm font-medium">
                 <span>
-                  {group === "live"
+                  {takesAssessments(group)
                     ? "Repair invoices (required)"
                     : labels[group]}
                 </span>
@@ -363,7 +396,7 @@ export function ClientIntakeScreen({
                     : "Choose files, or a whole folder."}
                 </span>
               </label>
-              {group === "live" && (
+              {takesAssessments(group) && (
                 <label className="block space-y-2 text-sm font-medium">
                   <span>Engineer assessments (optional)</span>
                   <Input
@@ -412,9 +445,11 @@ export function ClientIntakeScreen({
               >
                 {busy
                   ? "Processing documents…"
-                  : `Upload ${group === "live" ? "invoices and engineer assessments" : "documents"}`}
+                  : `Upload ${takesAssessments(group) ? "invoices and engineer assessments" : "documents"}`}
               </Button>
-              {group === "live" && !files[group]?.length && estimates.length ? (
+              {takesAssessments(group) &&
+              !files[group]?.length &&
+              estimates.length ? (
                 <p className="text-sm text-amber-700 dark:text-amber-300">
                   Add the repair invoices these engineer assessments belong to.
                   An engineer assessment uploaded on its own has nothing to
@@ -562,7 +597,7 @@ export function ClientIntakeScreen({
           intake group, so there it would show the live claim's
           invoice/assessment pairing on a screen whose every other table is
           filtered to the reference dataset. */}
-      {!setup && (
+      {showsExtracts && (
         <ExtractsSection
           extracts={extracts}
           loading={extractsLoading}

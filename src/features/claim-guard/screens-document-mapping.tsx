@@ -18,6 +18,7 @@ import {
   fetchCaseMapping,
   overrideAssessmentMapping,
   type CaseMappingPayload,
+  type IntakeGroup,
   type MappingAssessmentRow,
   type MappingInvoiceOption,
 } from "./document-api"
@@ -26,6 +27,7 @@ import {
   assessmentIdentity,
   invoiceLabel,
   pairEvidence,
+  scopeMapping,
   sortMappingRows,
 } from "./mapping-review-rows"
 import { ScreenHeading } from "./shared"
@@ -146,27 +148,39 @@ function AssessmentCard({
  *
  * It replaces the standing "Re-run pairing sweep" button. The sweep still
  * runs -- it is what Approve does -- but re-running it is no longer offered
- * as a substitute for a person correcting the mapping. */
+ * as a substitute for a person correcting the mapping.
+ *
+ * With `intakeGroup` it is one source's mapping -- read, shown and approved
+ * for that group alone -- which is how each source's Document intelligence
+ * mounts it. Without it, the whole claim, as under Advanced tools. */
 export function DocumentMappingScreen({
   caseReference,
   finalised,
+  intakeGroup,
   onApproved,
+  onApprovalChange,
   onContinue,
 }: {
   caseReference: string
   finalised: boolean
+  intakeGroup?: IntakeGroup
   onApproved?: () => Promise<void> | void
-  onContinue: () => void
+  /** Told whenever the approval state read from the server changes, so a
+   * parent can put the extract tables after approval. */
+  onApprovalChange?: (approved: boolean) => void
+  /** Omitted when the extracts follow on the same screen. */
+  onContinue?: () => void
 }) {
-  const [mapping, setMapping] = useState<CaseMappingPayload | null>(null)
+  const [rawMapping, setMapping] = useState<CaseMappingPayload | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [savingId, setSavingId] = useState<string | null>(null)
   const [approving, setApproving] = useState(false)
+  const mapping = rawMapping ? scopeMapping(rawMapping, intakeGroup) : null
 
   const load = useCallback(async () => {
     try {
-      setMapping(await fetchCaseMapping(caseReference))
+      setMapping(await fetchCaseMapping(caseReference, intakeGroup))
       setError(null)
     } catch (e) {
       setMapping(null)
@@ -174,11 +188,11 @@ export function DocumentMappingScreen({
     } finally {
       setLoading(false)
     }
-  }, [caseReference])
+  }, [caseReference, intakeGroup])
 
   useEffect(() => {
     let active = true
-    void fetchCaseMapping(caseReference)
+    void fetchCaseMapping(caseReference, intakeGroup)
       .then((payload) => {
         if (!active) return
         setMapping(payload)
@@ -195,7 +209,7 @@ export function DocumentMappingScreen({
     return () => {
       active = false
     }
-  }, [caseReference])
+  }, [caseReference, intakeGroup])
 
   async function change(assessmentId: string, invoiceId: string | null) {
     if (savingId || approving || finalised) return
@@ -214,6 +228,10 @@ export function DocumentMappingScreen({
           invoiceId,
         })
       )
+      // The override endpoint is not scoped: its answer carries the whole
+      // claim's approval, not this group's. Re-read the group so the
+      // approval banner speaks for this source only.
+      if (intakeGroup) await load()
     } catch (e) {
       setError(documentApiErrorMessage(e))
       // The server refused, so the row on screen may no longer match the
@@ -230,7 +248,9 @@ export function DocumentMappingScreen({
     setApproving(true)
     setError(null)
     try {
-      setMapping(await approveCaseMapping(caseReference, MAPPING_ACTOR))
+      setMapping(
+        await approveCaseMapping(caseReference, MAPPING_ACTOR, intakeGroup)
+      )
       await onApproved?.()
     } catch (e) {
       setError(documentApiErrorMessage(e))
@@ -241,6 +261,10 @@ export function DocumentMappingScreen({
 
   const rows = sortMappingRows(mapping?.assessments ?? [])
   const approved = mapping?.approval.approved ?? false
+
+  useEffect(() => {
+    onApprovalChange?.(approved)
+  }, [approved, onApprovalChange])
 
   return (
     <>
@@ -259,9 +283,15 @@ export function DocumentMappingScreen({
                   ? "Re-approve mapping"
                   : "Approve mapping"}
             </Button>
-            <Button variant="outline" disabled={!approved} onClick={onContinue}>
-              View extracts
-            </Button>
+            {onContinue ? (
+              <Button
+                variant="outline"
+                disabled={!approved}
+                onClick={onContinue}
+              >
+                View extracts
+              </Button>
+            ) : null}
           </>
         }
       />

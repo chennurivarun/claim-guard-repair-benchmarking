@@ -1,4 +1,9 @@
-import type { MappingAssessmentRow, MappingInvoiceOption } from "./document-api"
+import type {
+  CaseMappingPayload,
+  IntakeGroup,
+  MappingAssessmentRow,
+  MappingInvoiceOption,
+} from "./document-api"
 import { summarisePairKeyVerdicts } from "./pair-verdicts"
 
 /** The pure row logic behind the mapping review screen: how an invoice is
@@ -78,4 +83,31 @@ export function pairEvidence(row: MappingAssessmentRow): string {
     return summary.headline ?? row.pair_reasons.join(" · ")
   }
   return row.pair_reasons.join(" · ") || "Not paired"
+}
+
+/** One source's slice of the mapping, with its counts recomputed.
+ *
+ * The screen asks the server for one intake group, but the per-assessment
+ * override endpoint answers with the mapping it holds, and a third-party
+ * screen must never show -- or count -- an Aviva DLG row. So the rows are
+ * filtered here as well. A row with no `intake_group` is kept: the server
+ * was asked for this group, so an untagged row is its answer. */
+export function scopeMapping(
+  payload: CaseMappingPayload,
+  intakeGroup: IntakeGroup | undefined
+): CaseMappingPayload {
+  if (!intakeGroup) return payload
+  const ours = (group: IntakeGroup | null) =>
+    group == null || group === intakeGroup
+  const assessments = payload.assessments.filter((row) => ours(row.intake_group))
+  const paired = assessments.filter((row) => row.pair_status === "paired")
+  return {
+    ...payload,
+    invoices: payload.invoices.filter((invoice) => ours(invoice.intake_group)),
+    assessments,
+    assessments_total: assessments.length,
+    paired: paired.length,
+    unpaired: assessments.length - paired.length,
+    manual: paired.filter((row) => row.pair_source === "manual").length,
+  }
 }

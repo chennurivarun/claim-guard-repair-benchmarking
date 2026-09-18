@@ -2,18 +2,7 @@ import { useState, type CSSProperties, type ReactNode } from "react"
 import {
   CheckCircle2Icon,
   ChevronRightIcon,
-  ClipboardCheckIcon,
-  FileClockIcon,
-  FileTextIcon,
-  FolderSearch2Icon,
-  GaugeIcon,
-  BarChart3Icon,
-  LayoutDashboardIcon,
-  LibraryBigIcon,
-  LinkIcon,
   PlugZapIcon,
-  SearchCheckIcon,
-  Share2Icon,
   Settings2Icon,
 } from "lucide-react"
 
@@ -41,6 +30,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar"
 
+import { activeEntryId, advancedTools, navigationSections } from "./navigation"
 import type { LiabilityStatus, ScreenId } from "./types"
 
 /** How the app is currently placed against the ClaimGuard API. There is no
@@ -53,103 +43,6 @@ const API_STATUS_LABELS: Record<ApiStatus, string> = {
   unavailable: "API unavailable",
 }
 
-const primaryNavigation = [
-  {
-    id: "benchmark-setup",
-    label: "Benchmark data setup",
-    icon: LibraryBigIcon,
-  },
-  {
-    id: "upload-processing",
-    label: "Document Intelligence",
-    icon: FileTextIcon,
-  },
-  // The mapping step, between upload and the extract tables: the handler
-  // confirms which repair invoice each engineer assessment belongs to before
-  // anything is read against those pairs.
-  {
-    id: "document-mapping",
-    label: "Mapping review",
-    icon: LinkIcon,
-  },
-  {
-    id: "benchmark-dashboard",
-    label: "Repair Price Benchmarking",
-    icon: BarChart3Icon,
-  },
-  {
-    id: "in-house-benchmarks",
-    label: "In-house Benchmark",
-    icon: BarChart3Icon,
-  },
-  {
-    id: "price-comparison",
-    label: "Challenged invoices",
-    icon: SearchCheckIcon,
-  },
-  {
-    id: "challenge-review",
-    label: "Challenge decision",
-    icon: ClipboardCheckIcon,
-  },
-  { id: "knowledge-graph", label: "Knowledge graph", icon: Share2Icon },
-] satisfies Array<{
-  id: ScreenId
-  label: string
-  icon: typeof LayoutDashboardIcon
-}>
-
-const administration = [
-  {
-    id: "claim-liability",
-    label: "Claim & liability",
-    icon: ClipboardCheckIcon,
-  },
-
-  {
-    id: "review-findings-all",
-    label: "Review findings",
-    icon: SearchCheckIcon,
-  },
-  {
-    id: "ontology-mapping",
-    label: "Repair item matching",
-    icon: FolderSearch2Icon,
-  },
-  { id: "missing-items", label: "Manual review", icon: GaugeIcon },
-  {
-    id: "ontology-bank",
-    label: "External price library",
-    icon: LibraryBigIcon,
-  },
-] satisfies Array<{
-  id: ScreenId
-  label: string
-  icon: typeof LayoutDashboardIcon
-}>
-
-const documentScreens: ScreenId[] = [
-  "upload-processing",
-  "document-pages",
-  "extracted-invoice",
-]
-const reviewScreens: ScreenId[] = [
-  "calculation-checks",
-  "ontology-mapping",
-  "price-comparison",
-  "missing-items",
-]
-
-function primaryActiveId(activeScreen: ScreenId): ScreenId {
-  if (
-    documentScreens.includes(activeScreen) ||
-    activeScreen === "calculation-checks"
-  )
-    return "upload-processing"
-  if (reviewScreens.includes(activeScreen)) return "price-comparison"
-  return activeScreen
-}
-
 function AppSidebar({
   activeScreen,
   onNavigate,
@@ -160,11 +53,11 @@ function AppSidebar({
   apiStatus: ApiStatus
 }) {
   const { isMobile, setOpenMobile } = useSidebar()
-  const advancedToolActive = administration.some(
-    (item) => item.id === activeScreen
+  const activeEntry = activeEntryId(activeScreen)
+  const advancedToolActive = advancedTools.some(
+    (item) => item.id === activeEntry
   )
   const [administrationOpen, setAdministrationOpen] = useState(false)
-  const activePrimary = primaryActiveId(activeScreen)
   const navigate = (screen: ScreenId) => {
     onNavigate(screen)
     if (isMobile) setOpenMobile(false)
@@ -178,7 +71,7 @@ function AppSidebar({
             <SidebarMenuButton
               size="lg"
               className="h-14 px-2"
-              onClick={() => navigate("upload-processing")}
+              onClick={() => navigate("tp-upload")}
             >
               <span className="flex size-10 items-center justify-center rounded-lg bg-primary text-base font-bold text-primary-foreground">
                 CG
@@ -197,49 +90,36 @@ function AppSidebar({
       </SidebarHeader>
 
       <SidebarContent className="px-2">
-        <SidebarGroup>
-          <SidebarGroupContent>
-            <SidebarMenu className="gap-1">
-              {primaryNavigation.map((item) => {
-                const Icon = item.icon
-                return (
-                  <SidebarMenuItem key={item.id}>
-                    <SidebarMenuButton
-                      size="lg"
-                      className="h-11 rounded-lg"
-                      isActive={activePrimary === item.id}
-                      onClick={() => navigate(item.id)}
-                      tooltip={item.label}
-                    >
-                      <Icon aria-hidden />
-                      <span>{item.label}</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                )
-              })}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
-
-        <SidebarGroup>
-          <SidebarGroupLabel>Case records</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              <SidebarMenuItem>
-                <SidebarMenuButton
-                  size="lg"
-                  className="h-11 rounded-lg"
-                  isActive={activeScreen === "audit-reports"}
-                  onClick={() => navigate("audit-reports")}
-                  tooltip="Audit trail"
-                >
-                  <FileClockIcon aria-hidden />
-                  <span>Audit trail</span>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
+        {navigationSections.map((section) => (
+          <SidebarGroup key={section.id}>
+            <SidebarGroupLabel className="text-xs font-semibold text-foreground">
+              {section.label}
+            </SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu className="gap-1">
+                {section.items.map((item) => {
+                  const Icon = item.icon
+                  return (
+                    <SidebarMenuItem key={item.id}>
+                      <SidebarMenuButton
+                        className="h-9 rounded-lg"
+                        isActive={activeEntry === item.id}
+                        onClick={() => navigate(item.id)}
+                        // The same three sub-screen names recur under every
+                        // heading, so the collapsed-rail tooltip carries the
+                        // heading too.
+                        tooltip={`${section.label} · ${item.label}`}
+                      >
+                        <Icon aria-hidden />
+                        <span>{item.label}</span>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  )
+                })}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        ))}
 
         <Collapsible
           open={administrationOpen || advancedToolActive}
@@ -259,12 +139,12 @@ function AppSidebar({
             <CollapsibleContent>
               <SidebarGroupContent>
                 <SidebarMenu className="mt-2 gap-1">
-                  {administration.map((item) => {
+                  {advancedTools.map((item) => {
                     const Icon = item.icon
                     return (
                       <SidebarMenuItem key={item.id}>
                         <SidebarMenuButton
-                          isActive={activeScreen === item.id}
+                          isActive={activeEntry === item.id}
                           onClick={() => navigate(item.id)}
                           tooltip={item.label}
                         >

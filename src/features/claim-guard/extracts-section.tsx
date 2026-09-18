@@ -105,7 +105,7 @@ function breakdownSummaryLine(breakdown: SectionBreakdownPayload) {
   const rowsTotalSuffix =
     rowsTotalNumeric == null ? "" : ` (rows total ${formatMoney(rowsTotalNumeric)})`
   if (assessedNumeric == null) {
-    return `Total ${label} ${billed} billed · not captured on the assessment${rowsTotalSuffix}`
+    return `Total ${label} ${billed} billed · not captured on the engineer assessment${rowsTotalSuffix}`
   }
   const assessed = formatMoney(assessedNumeric)
   const difference = toNumber(breakdown.difference)
@@ -176,21 +176,24 @@ const BREAKDOWN_GAP_MESSAGES: Record<
   BreakdownGap,
   { title: string; body: string }
 > = {
+  // The body used to point at "the assessment extracts table below"; the
+  // split now renders on benchmark analysis, where there is no such table,
+  // so it names the screen that carries the pairing instead.
   unpaired: {
-    title: "No assessment is paired to this invoice",
-    body: "There is no engineer assessment to split this total against. Check the pairing verdict on the assessment extracts table below.",
+    title: "No engineer assessment is paired to this invoice",
+    body: "There is no engineer assessment to split this total against. Check the pairing on Document intelligence.",
   },
   unresolved: {
-    title: "This section resolves to no assessment category",
-    body: "An assessment is paired, but the tool could not match this invoice section to any section the assessment prints, so it could not build a split.",
+    title: "This section resolves to no engineer assessment category",
+    body: "An engineer assessment is paired, but the tool could not match this invoice section to any section the engineer assessment prints, so it could not build a split.",
   },
   "no-section-total": {
-    title: "The paired assessment prints no total for this section",
-    body: "This section does map to one the assessment can print, but the paired document leaves it blank — it assessed nothing under this heading. There is no figure to split against; the extraction did not fail.",
+    title: "The paired engineer assessment prints no total for this section",
+    body: "This section does map to one the engineer assessment can print, but the paired document leaves it blank — it assessed nothing under this heading. There is no figure to split against; the extraction did not fail.",
   },
   "total-only": {
-    title: "The assessment prints this section as a total only",
-    body: "The paired assessment carries the section total but no line detail behind it. The document does not itemise it — the extraction did not fail.",
+    title: "The engineer assessment prints this section as a total only",
+    body: "The paired engineer assessment carries the section total but no line detail behind it. The document does not itemise it — the extraction did not fail.",
   },
 }
 
@@ -280,25 +283,20 @@ function SectionTotalBadge() {
   )
 }
 
-/** The split itself: which assessment line items add up to one rolled-up
- * invoice total. It opens by default and keeps its own toggle so a long
- * section can be folded away again.
+/** The split itself: which engineer assessment line items add up to one
+ * rolled-up invoice total. It opens by default and keeps its own toggle so a
+ * long section can be folded away again.
  *
- * NOT MOUNTED ANYWHERE TODAY, and that is deliberate. It used to render
- * inside the invoice extracts table, under each rolled-up total. On the
- * 17 Sep walkthrough the client ruled that out for *that* screen -- "if the
- * invoice is not talking about parts, you won't show the part line items
- * there. You would show those parts in the assessment section, which is
- * below" -- because Document Intelligence exists to prove that both
- * documents were read and mapped, and each table must therefore show only
- * what its own document prints.
- *
- * The split is not cancelled: it moves to **benchmark analysis**, the screen
- * that does not exist yet, which is where she said "now we are able to
- * combine them when we do the analysis". This component, its four
- * empty-state classifications (`breakdownGap`), `breakdownSummaryLine` and
- * the difference-convention wording are all kept exported and under test so
- * that lane can mount it without rebuilding any of it. Do not delete. */
+ * Mounted on **benchmark analysis** (`screens-benchmark-analysis.tsx`), and
+ * only there. It used to render inside the invoice extracts table, under
+ * each rolled-up total. On the 17 Sep walkthrough the client ruled that out
+ * for *that* screen -- "if the invoice is not talking about parts, you won't
+ * show the part line items there. You would show those parts in the
+ * assessment section, which is below" -- because Document intelligence
+ * exists to prove that both documents were read and mapped, and each table
+ * must therefore show only what its own document prints. Benchmark analysis
+ * is where she said "now we are able to combine them when we do the
+ * analysis". */
 export function SectionBreakdownDetail({
   breakdown,
 }: {
@@ -316,11 +314,13 @@ export function SectionBreakdownDetail({
             <ExpandToggleButton
               expanded={open}
               onToggle={() => setOpen((current) => !current)}
-              label={`the assessment breakdown for ${breakdown.description}`}
+              label={`the engineer assessment breakdown for ${breakdown.description}`}
               controls={rowsId}
             />
           ) : null}
-          <span className="text-sm font-medium">Assessment breakdown</span>
+          <span className="text-sm font-medium">
+            Engineer assessment breakdown
+          </span>
         </span>
         <Badge
           variant={
@@ -332,10 +332,10 @@ export function SectionBreakdownDetail({
           }
         >
           {breakdown.matches == null
-            ? "Not captured on assessment"
+            ? "Not captured on the engineer assessment"
             : breakdown.matches
-              ? "Matches assessment"
-              : "Does not match assessment"}
+              ? "Matches engineer assessment"
+              : "Does not match engineer assessment"}
         </Badge>
       </div>
       <p className="mt-1 text-sm text-muted-foreground">
@@ -784,16 +784,22 @@ export function AssessmentExtractsTable({
   )
 }
 
+/** `scopeLabel` names the source the extracts were fetched for (the fetch
+ * itself is scoped by `intake_group`); omitted, the section reads as it
+ * always did -- which is what Review findings still renders. */
 export function ExtractsSection({
   extracts,
   loading,
   error,
+  scopeLabel,
 }: {
   extracts: ClaimExtractsPayload | null
   loading: boolean
   error: string | null
+  scopeLabel?: string
 }) {
   const [open, setOpen] = useState(true)
+  const scopeSentence = scopeLabel ? ` Showing ${scopeLabel} only.` : null
   if (
     extracts == null ||
     (extracts.invoice_extracts.length === 0 &&
@@ -809,7 +815,7 @@ export function ExtractsSection({
                 <CardDescription>
                   The two standardised tables from the invoice and engineer
                   assessment documents, kept separate. Each table shows only
-                  what its own document contains.
+                  what its own document contains.{scopeSentence}
                 </CardDescription>
               </div>
               <CollapsibleTrigger asChild>
@@ -861,7 +867,7 @@ export function ExtractsSection({
               <CardDescription>
                 The two standardised tables from the invoice and engineer
                 assessment documents, kept separate. Each table shows only what
-                its own document contains.
+                its own document contains.{scopeSentence}
               </CardDescription>
             </div>
             <CollapsibleTrigger asChild>

@@ -355,21 +355,21 @@ describe("the three empty-breakdown cases each say something different", () => {
 
   it("says nothing is paired when the invoice has no assessment at all", () => {
     const html = renderBreakdown(unpaired)
-    expect(html).toContain("No assessment is paired to this invoice")
+    expect(html).toContain("No engineer assessment is paired to this invoice")
     expect(html).toContain(
-      "Check the pairing verdict on the assessment extracts table below."
+      "Check the pairing on Document intelligence."
     )
   })
 
   it("says the section resolves to no assessment category", () => {
     const html = renderBreakdown(unresolved)
-    expect(html).toContain("This section resolves to no assessment category")
+    expect(html).toContain("This section resolves to no engineer assessment category")
     expect(html).toContain("could not build a split")
   })
 
   it("says the assessment prints a total only, and that nothing failed", () => {
     const html = renderBreakdown(totalOnly)
-    expect(html).toContain("The assessment prints this section as a total only")
+    expect(html).toContain("The engineer assessment prints this section as a total only")
     expect(html).toContain(
       "The document does not itemise it — the extraction did not fail."
     )
@@ -378,9 +378,9 @@ describe("the three empty-breakdown cases each say something different", () => {
   it("gives each case its own wording", () => {
     const rendered = [unpaired, unresolved, totalOnly].map(renderBreakdown)
     for (const phrase of [
-      "No assessment is paired to this invoice",
-      "This section resolves to no assessment category",
-      "The assessment prints this section as a total only",
+      "No engineer assessment is paired to this invoice",
+      "This section resolves to no engineer assessment category",
+      "The engineer assessment prints this section as a total only",
     ]) {
       expect(rendered.filter((html) => html.includes(phrase))).toHaveLength(1)
     }
@@ -388,7 +388,7 @@ describe("the three empty-breakdown cases each say something different", () => {
 
   it("offers no collapse control for a breakdown with nothing in it", () => {
     expect(renderBreakdown(unpaired)).not.toContain(
-      "the assessment breakdown for"
+      "the engineer assessment breakdown for"
     )
   })
 })
@@ -451,19 +451,19 @@ describe("the fourth empty-breakdown case: resolvable, but the assessment prints
       createElement(SectionBreakdownDetail, { breakdown: noSectionTotal })
     )
     expect(html).toContain(
-      "The paired assessment prints no total for this section"
+      "The paired engineer assessment prints no total for this section"
     )
     expect(html).toContain("the extraction did not fail")
-    expect(html).not.toContain("This section resolves to no assessment category")
+    expect(html).not.toContain("This section resolves to no engineer assessment category")
   })
 
   it("still calls a genuinely unresolvable section unresolved", () => {
     const html = renderStatic(
       createElement(SectionBreakdownDetail, { breakdown: unresolvable })
     )
-    expect(html).toContain("This section resolves to no assessment category")
+    expect(html).toContain("This section resolves to no engineer assessment category")
     expect(html).not.toContain(
-      "The paired assessment prints no total for this section"
+      "The paired engineer assessment prints no total for this section"
     )
   })
 
@@ -475,7 +475,7 @@ describe("the fourth empty-breakdown case: resolvable, but the assessment prints
         })
       )
       expect(html).toContain(
-        "The paired assessment prints no total for this section"
+        "The paired engineer assessment prints no total for this section"
       )
     }
   })
@@ -488,8 +488,8 @@ describe("the fourth empty-breakdown case: resolvable, but the assessment prints
 describe("no breakdown reaches the screen, whatever the payload carries", () => {
   it("shows no breakdown even when the payload is full of them", () => {
     const html = render(fixture)
-    expect(html).not.toContain("Assessment breakdown")
-    expect(html).not.toContain("No assessment is paired to this invoice")
+    expect(html).not.toContain("ssessment breakdown")
+    expect(html).not.toContain("No engineer assessment is paired to this invoice")
     expect(html).not.toContain("Rolled-up total")
   })
 
@@ -500,7 +500,7 @@ describe("no breakdown reaches the screen, whatever the payload carries", () => 
         expansion: "none",
       })
     )
-    expect(html).not.toContain("Assessment breakdown")
+    expect(html).not.toContain("ssessment breakdown")
     expect(html).toContain("Expand lines for invoice")
   })
 
@@ -508,7 +508,7 @@ describe("no breakdown reaches the screen, whatever the payload carries", () => 
     const html = renderStatic(
       createElement(InvoiceExtractsTable, { invoices: [invoiceOne] })
     )
-    expect(html).not.toContain("Assessment breakdown")
+    expect(html).not.toContain("ssessment breakdown")
     expect(html).toContain("Expand lines for invoice")
   })
 })
@@ -531,7 +531,7 @@ describe("the difference convention is not asserted where there is no difference
         } as SectionBreakdownPayload,
       })
     )
-    expect(html).toContain("No assessment is paired to this invoice")
+    expect(html).toContain("No engineer assessment is paired to this invoice")
     expect(html).not.toContain("a positive difference means")
   })
 
@@ -550,7 +550,7 @@ describe("the difference convention is not asserted where there is no difference
         } as SectionBreakdownPayload,
       })
     )
-    expect(html).toContain("This section resolves to no assessment category")
+    expect(html).toContain("This section resolves to no engineer assessment category")
     expect(html).not.toContain("a positive difference means")
   })
 
@@ -698,15 +698,70 @@ describe("the invoice table shows only what the invoice itself prints", () => {
     expect(html).toContain("Total Labour Amount")
     expect(html).toContain("Rolled-up total")
     // The assessment's rows behind it are not.
-    expect(html).not.toContain("Assessment breakdown")
+    expect(html).not.toContain("ssessment breakdown")
     expect(html).not.toContain("Front bumper replace")
     expect(html).not.toContain("Total Labour £1,910.00 billed")
   })
 
   it("opens no invoice row by itself: there is no longer a split to reveal", () => {
     const html = render(fixture)
-    expect(html).not.toContain("Assessment breakdown")
+    expect(html).not.toContain("ssessment breakdown")
     expect(html).not.toContain("Collapse lines for invoice")
     expect(html.match(/Expand lines for invoice/g) ?? []).toHaveLength(2)
+  })
+})
+
+// §3.1: "call it engineer assessment everywhere". The split was parked
+// unmounted on 17 Sep before the sweep reached it; it is mounted on
+// benchmark analysis now, so it has to speak the same language as the rest.
+describe("the breakdown calls it an engineer assessment", () => {
+  it("heads the split Engineer assessment breakdown", () => {
+    const html = renderStatic(
+      createElement(SectionBreakdownDetail, { breakdown: breakdownOne })
+    )
+    expect(html).toContain("Engineer assessment breakdown")
+    expect(html).toContain("Collapse the engineer assessment breakdown for")
+  })
+
+  it("names the engineer assessment in its match badge and summary", () => {
+    expect(
+      renderStatic(createElement(SectionBreakdownDetail, { breakdown: breakdownOne }))
+    ).toContain("Matches engineer assessment")
+    expect(
+      renderStatic(
+        createElement(SectionBreakdownDetail, {
+          breakdown: { ...breakdownOne, matches: false, difference: "10.00" },
+        })
+      )
+    ).toContain("Does not match engineer assessment")
+    const notCaptured = renderStatic(
+      createElement(SectionBreakdownDetail, {
+        breakdown: {
+          ...breakdownOne,
+          assessment_total: null,
+          matches: null,
+          difference: null,
+        },
+      })
+    )
+    expect(notCaptured).toContain("Not captured on the engineer assessment")
+    expect(notCaptured).toContain("not captured on the engineer assessment")
+  })
+
+  it("never says a bare 'assessment' where it means the document", () => {
+    for (const breakdown of [
+      breakdownOne,
+      { ...breakdownOne, assessment_id: null, rows: [], breakdown_available: false },
+      { ...breakdownOne, line_item_type: "unknown", rows: [], breakdown_available: false },
+      { ...breakdownOne, assessment_total: null, rows: [], breakdown_available: false },
+      { ...breakdownOne, rows: [], breakdown_available: false },
+    ] as SectionBreakdownPayload[]) {
+      const text = renderStatic(
+        createElement(SectionBreakdownDetail, { breakdown })
+      ).replace(/<[^>]+>/g, " ")
+      // "assessment" is always preceded by "engineer" -- "assessed" is a
+      // different word and allowed.
+      expect(text).not.toMatch(/(?<!engineer )\bassessment\b/i)
+    }
   })
 })

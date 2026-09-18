@@ -75,8 +75,11 @@ describe("the retired re-run control", () => {
   })
 })
 
-describe("the sidebar carries the mapping step", () => {
-  it("lists Mapping review alongside the existing primary entries", () => {
+// Since the 18 Sep navigation change the whole-claim Mapping review is an
+// Advanced tool: each source's Document intelligence carries its own mapping
+// step now. It is still reachable, and still opens its group when active.
+describe("the sidebar carries the whole-claim mapping step", () => {
+  it("lists Mapping review under Advanced tools, beside the other moved screens", () => {
     const html = renderToStaticMarkup(
       createElement(
         TooltipProvider,
@@ -93,7 +96,10 @@ describe("the sidebar carries the mapping step", () => {
     )
 
     expect(html).toContain("Mapping review")
-    expect(html).toContain("Document Intelligence")
+    expect(html).toContain("Document Intelligence (whole claim)")
     expect(html).toContain("Repair Price Benchmarking")
+    expect(html.indexOf("Mapping review")).toBeGreaterThan(
+      html.indexOf("Advanced tools")
+    )
   })
 })
