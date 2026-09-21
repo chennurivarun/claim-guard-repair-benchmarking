@@ -302,6 +302,34 @@ describe("breakdown and operation rows render their own text", () => {
     const html = renderStatic(createElement(SectionBreakdownDetail, { breakdown: withRowsTotal }))
     expect(html).toContain("rows total £1,910.00")
   })
+
+  it("makes the section label a link to its paired assessment operations", () => {
+    const html = renderStatic(
+      createElement(InvoiceExtractsTable, {
+        invoices: [invoiceOne],
+        expansion: "all",
+        linking: {
+          extracts: fixture,
+          state: {
+            link: null,
+            notice: null,
+            focusedInvoiceId: null,
+            scroll: null,
+          },
+          onSectionTotal: () => {},
+          onAssessmentNumber: () => {},
+          onInvoiceNumber: () => {},
+          onShowAll: () => {},
+          onBack: () => {},
+          onRelease: () => {},
+          onDismissNotice: () => {},
+        },
+      })
+    )
+    expect(html).toContain(
+      'aria-label="Show the engineer assessment operations in Labour"'
+    )
+  })
 })
 
 // A reader has to be able to tell "the tool failed to line these up" from

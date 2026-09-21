@@ -72,6 +72,14 @@ describe("a folder of invoices and a folder of engineer assessments, handed over
     expect(html).toContain("Hand over a whole set at once")
     expect(html).toContain("Upload invoices and engineer assessments")
   })
+
+  it("keeps the assessment picker on the benchmark setup screen", () => {
+    const html = renderIntake(true)
+
+    expect(html).toContain("Engineer assessments (optional)")
+    expect(html).toContain("Upload invoices and engineer assessments")
+    expect(html.match(/multiple=""/g) ?? []).toHaveLength(8)
+  })
 })
 
 // The standing "Re-run pairing sweep" control is gone from both variants of

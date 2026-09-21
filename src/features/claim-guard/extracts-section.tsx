@@ -569,7 +569,18 @@ export function InvoiceLinesTable({
                 </TableCell>
                 <TableCell>
                   <span className="inline-flex items-center gap-2">
-                    {lineItemTypeLabel(line.line_item_type)}
+                    {followable ? (
+                      <button
+                        type="button"
+                        onClick={() => linking.onSectionTotal(invoiceId, line.id)}
+                        aria-label={`Show the engineer assessment operations in ${lineItemTypeLabel(line.line_item_type)}`}
+                        className="font-medium underline decoration-dotted underline-offset-4 hover:decoration-solid"
+                      >
+                        {lineItemTypeLabel(line.line_item_type)}
+                      </button>
+                    ) : (
+                      lineItemTypeLabel(line.line_item_type)
+                    )}
                     {line.is_section_total ? <SectionTotalBadge /> : null}
                   </span>
                 </TableCell>

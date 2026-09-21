@@ -112,10 +112,13 @@ export function ClientIntakeScreen({
   const [extractsLoading, setExtractsLoading] = useState(showsExtracts)
   const [extractsError, setExtractsError] = useState<string | null>(null)
   const groups = intakeGroupsFor({ setup, scope })
-  /** Whether a group takes engineer assessments beside its invoices. Every
-   * scoped source does: the reference buckets need the assessments too, or
-   * a rolled-up invoice has no line items to benchmark. */
-  const takesAssessments = (group: IntakeGroup) => group === "live" || !!scope
+  /** Every intake bucket accepts its engineer assessments beside its
+   * invoices. The benchmark setup screen used to hide the assessment picker
+   * for the two reference buckets, which meant those invoices could never be
+   * paired and their identity fields stayed "Not extracted" until someone
+   * uploaded the same files through a different screen. */
+  const takesAssessments = (group: IntakeGroup) =>
+    group === "live" || group === "historical_claim" || group === "in_house"
 
   /** The extracts endpoint is case-scoped, so it only means something on the
    * live screen; see the `showsExtracts` guard on the section itself. */
@@ -347,7 +350,9 @@ export function ClientIntakeScreen({
               <CardTitle>{labels[group]}</CardTitle>
               <CardDescription>
                 {takesAssessments(group)
-                  ? "Hand over a whole set at once: every repair invoice, and every engineer assessment that goes with them. Pick files or a folder for each."
+                  ? setup
+                    ? "Upload client invoices and their corresponding engineer assessments. Hand over a whole set at once: every repair invoice, and every engineer assessment that goes with them. Pick files or a folder for each."
+                    : "Hand over a whole set at once: every repair invoice, and every engineer assessment that goes with them. Pick files or a folder for each."
                   : "Upload client invoices and their corresponding engineer assessments. PDF and Word documents are supported."}
               </CardDescription>
             </CardHeader>
