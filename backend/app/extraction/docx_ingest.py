@@ -1,4 +1,4 @@
-"""Pure-Python DOCX-to-PDF ingestion path used when LibreOffice is unavailable.
+"""Deterministic DOCX-to-PDF ingestion for text and table documents.
 
 The extraction pipeline (see ``app.extraction.pdf_pipeline``) only consumes
 PDF input, and its native-text tier expects machine-readable text (at least
@@ -92,6 +92,18 @@ def docx_to_pdf_bytes(content: bytes) -> bytes:
     """
 
     document = DocxDocument(io.BytesIO(content))
+    # These constructs are not rendered below. Refuse instead of silently
+    # dropping image scans, text boxes, nested tables or header/footer evidence;
+    # the upload service can use LibreOffice for these documents.
+    if document.element.xpath(".//w:drawing | .//w:pict | .//w:txbxContent | .//w:tbl//w:tbl"):
+        raise ValueError("This DOCX contains visual or nested content requiring LibreOffice.")
+    for section in document.sections:
+        for story in (
+            section.header, section.first_page_header, section.even_page_header,
+            section.footer, section.first_page_footer, section.even_page_footer,
+        ):
+            if story._element.xpath(".//w:t | .//w:drawing | .//w:pict"):
+                raise ValueError("This DOCX contains header or footer content requiring LibreOffice.")
     buffer = io.BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=A4)
 

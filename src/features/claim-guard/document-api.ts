@@ -38,6 +38,7 @@ export interface DocumentPageRecord {
     changed_fields: string[]
   } | null
   image_url: string
+  original_url?: string | null
 }
 
 export interface DocumentReviewBriefing {
@@ -60,6 +61,7 @@ export interface UploadedDocument {
   role?: string
   id: string
   filename: string
+  original_url?: string | null
   status: string
   page_count: number | null
   invoice_units?: number
@@ -265,6 +267,9 @@ export interface MappingInvoiceOption {
   claim_reference: string | null
   policy_number: string | null
   intake_group: IntakeGroup | null
+  manual_review?: boolean
+  manual_review_reason?: string | null
+  unmapped_assessment?: boolean
 }
 
 export interface MappingAssessmentRow {

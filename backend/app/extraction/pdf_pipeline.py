@@ -250,6 +250,12 @@ _STANDALONE_DOCUMENT_PATTERN = re.compile(
     r"(?i)\b(?:invoice|credit note|remittance|payment advice|statement of account|"
     r"quotation|estimate\s*/\s*order|amount due|please pay|sort code)\b"
 )
+_ASSESSMENT_CONTINUATION_HINTS = re.compile(
+    r"(?i)\b(?:model\s+options?|vehicle\s+condition|vehicle\s+details|repair\s+information|"
+    r"repair\s+(?:left|right|front|rear)|corrosion\s+protection|labour|paint\s+work|parts|"
+    r"extras|assessment\s+number|with\s+a/c|without\s+alarm|heated\s+windscreen|"
+    r"parking\s+sensor)\b"
+)
 
 
 def _schedule_row_count(text: str, pattern: re.Pattern[str]) -> int:
@@ -351,7 +357,11 @@ def _reclassify_priced_assessment_pages(pages: list[PageAnalysis]) -> None:
             and page.page_type == PageType.INVOICE
             and _MONEY_TABLE_SIGNAL in page.classification_signals
             and previous_type == PageType.ENGINEER_ASSESSMENT
-            and _is_schedule_continuation(page.text)
+            and not _STANDALONE_DOCUMENT_PATTERN.search(page.text)
+            and (
+                _is_schedule_continuation(page.text)
+                or _ASSESSMENT_CONTINUATION_HINTS.search(page.text)
+            )
         ):
             # The same continuation rescue as below, for the page that carries
             # so much money it tripped the amounts-only invoice heuristic
@@ -371,20 +381,23 @@ def _reclassify_priced_assessment_pages(pages: list[PageAnalysis]) -> None:
             previous_type = page.page_type
             continue
         elif page.page_type == PageType.OTHER:
+            if (
+                is_authorised_assessment
+                and previous_type == PageType.ENGINEER_ASSESSMENT
+                and not _STANDALONE_DOCUMENT_PATTERN.search(page.text)
+                and _priced_row_count(page.text) < 2
+                and (
+                    _is_schedule_continuation(page.text)
+                    or _ASSESSMENT_CONTINUATION_HINTS.search(page.text)
+                )
+            ):
+                page.page_type = PageType.ENGINEER_ASSESSMENT
+                page.classification_signals.append("assessment continuation")
+                page.classification_confidence = max(page.classification_confidence, 0.72)
+                page.group_key = None
+                previous_type = page.page_type
+                continue
             if _priced_row_count(page.text) < 2:
-                # ponytail: the priced-row rescue is tried first, so a genuinely
-                # unrelated priced page (a garage receipt bound behind the
-                # report) keeps going to INVOICE. Only a page that rescue does
-                # not want is considered as a schedule continuation.
-                if (
-                    is_authorised_assessment
-                    and previous_type == PageType.ENGINEER_ASSESSMENT
-                    and _is_schedule_continuation(page.text)
-                ):
-                    page.page_type = PageType.ENGINEER_ASSESSMENT
-                    page.classification_signals.append("assessment continuation")
-                    page.classification_confidence = max(page.classification_confidence, 0.72)
-                    page.group_key = None
                 previous_type = page.page_type
                 continue
             signal = "priced rows in assessment document"
@@ -396,6 +409,58 @@ def _reclassify_priced_assessment_pages(pages: list[PageAnalysis]) -> None:
         page.classification_confidence = max(page.classification_confidence, 0.72)
         page.group_key = _group_key(PageType.INVOICE, page.text, page.page_number)
         previous_type = page.page_type
+
+
+def _relink_invoice_continuation_pages(pages: list[PageAnalysis]) -> None:
+    """Keep a continued invoice in one extraction group after Word reflow.
+
+    LibreOffice can move an invoice's totals and the tail of its charges onto
+    a second PDF page. That page still contains ``Invoice total`` and enough
+    money values to classify as an invoice, but no longer repeats the invoice
+    number. Without this pass it receives a fresh ``invoice:page-N`` key and
+    becomes a phantom second invoice.
+
+    A continuation must immediately follow the same document type, have only
+    the fallback page key, carry no new document identity or heading, and
+    contain a closing total/VAT signal. A genuinely separate numberless
+    invoice headed ``INVOICE`` therefore remains its own reviewable document.
+    """
+
+    previous: PageAnalysis | None = None
+    explicit_identity = re.compile(
+        r"(?im)^\s*(?:invoice\s*(?:no\.?|number)|document\s+no\.?)\s*[:#]?\s*\S+"
+    )
+    document_heading = re.compile(
+        r"(?im)^\s*(?:sales\s+invoice|tax\s+invoice|invoice|credit\s+note|quotation)\s*$"
+    )
+    closing_totals = re.compile(
+        r"(?i)\b(?:invoice\s+total|total\s+due|amount\s+equivalent\s+to\s+vat|"
+        r"vat\s*@?|subtotal|balance\s+due)\b"
+    )
+    for page in pages:
+        fallback_key = f"{page.page_type.value}:page-{page.page_number}"
+        previous_fallback = (
+            f"{previous.page_type.value}:page-{previous.page_number}" if previous else None
+        )
+        may_continue = (
+            previous is not None
+            and page.page_number == previous.page_number + 1
+            and page.page_type == previous.page_type
+            and page.page_type in {PageType.INVOICE, PageType.ESTIMATE, PageType.CREDIT_NOTE}
+            and page.extraction_method in {"native", "azure_layout"}
+            and previous.extraction_method in {"native", "azure_layout"}
+            and page.group_key == fallback_key
+            and previous.group_key is not None
+            and previous.group_key != previous_fallback
+            and not explicit_identity.search(page.text)
+            and not document_heading.search(page.text)
+            and closing_totals.search(page.text) is not None
+        )
+        if may_continue:
+            page.group_key = previous.group_key
+            page.classification_signals.append("invoice continuation")
+            page.classification_confidence = max(page.classification_confidence, 0.8)
+        previous = page
 
 
 def _merge_assessment_batches(
@@ -567,6 +632,7 @@ class PDFPipeline:
 
         _label_rotated_service_sequences(pages)
         _reclassify_priced_assessment_pages(pages)
+        _relink_invoice_continuation_pages(pages)
 
         analysis = DocumentAnalysis(
             source_path=source,

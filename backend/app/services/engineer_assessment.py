@@ -90,6 +90,10 @@ EXPLICIT_LINK_REASON = "Uploaded together for this invoice"
 PAIR_SOURCE_AUTOMATIC = "automatic"
 PAIR_SOURCE_MANUAL = "manual"
 
+UNMATCHED_INVOICE_MANUAL_REVIEW_REASON = (
+    "This invoice is not mapped to an engineer assessment; manual review is required."
+)
+
 #: The handler's standing instruction, as stored in ``manual_pair_state``.
 #: ``None`` is the third state and means "the handler has said nothing"; it is
 #: not the same as ``MANUAL_STATE_CLEARED``, which is a person saying this
@@ -918,7 +922,11 @@ def pair_case_assessments(session: Session, case_id: str) -> None:
     invoices = session.scalars(
         select(Invoice)
         .where(Invoice.case_id == case_id)
-        .options(selectinload(Invoice.vehicle), selectinload(Invoice.line_items))
+        .options(
+            selectinload(Invoice.vehicle),
+            selectinload(Invoice.line_items),
+            selectinload(Invoice.document),
+        )
         .order_by(Invoice.created_at, Invoice.id)
     ).all()
 
@@ -942,6 +950,23 @@ def pair_case_assessments(session: Session, case_id: str) -> None:
     ]
     _apply_manual_overrides(decisions, {invoice.id: invoice for invoice in invoices})
     _resolve_contention(decisions)
+
+    paired_invoice_ids = {
+        decision.invoice.id for decision in decisions if decision.invoice is not None
+    }
+    for invoice in invoices:
+        document = invoice.document
+        if document is None:
+            continue
+        metadata = dict(document.metadata_json or {})
+        if invoice.id in paired_invoice_ids:
+            if metadata.get("manual_review_reason") == UNMATCHED_INVOICE_MANUAL_REVIEW_REASON:
+                metadata.pop("manual_review", None)
+                metadata.pop("manual_review_reason", None)
+        else:
+            metadata["manual_review"] = True
+            metadata["manual_review_reason"] = UNMATCHED_INVOICE_MANUAL_REVIEW_REASON
+        document.metadata_json = metadata
 
     for decision in decisions:
         assessment = decision.assessment

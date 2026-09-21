@@ -1,6 +1,4 @@
 import io
-from pathlib import Path
-from types import SimpleNamespace
 
 import fitz
 import pytest
@@ -42,28 +40,42 @@ def _build_invoice_docx() -> bytes:
     return buffer.getvalue()
 
 
-def test_docx_is_converted_to_pdf_before_storage(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_docx_uses_deterministic_table_preserving_conversion(monkeypatch) -> None:
     monkeypatch.setattr(document_processing.shutil, "which", lambda _: "/usr/bin/soffice")
-
-    def fake_run(command, **kwargs):
-        output_dir = Path(command[command.index("--outdir") + 1])
-        document = fitz.open()
-        document.new_page().insert_text((72, 72), "Invoice INV-1")
-        document.save(output_dir / "source.pdf")
-        document.close()
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(document_processing.subprocess, "run", fake_run)
-
+    def unexpected_conversion(*args, **kwargs):
+        pytest.fail("A text/table DOCX must not depend on the installed office renderer")
+    monkeypatch.setattr(document_processing, "_convert_with_libreoffice", unexpected_conversion)
+    docx_bytes = _build_invoice_docx()
     normalised = document_processing.normalise_document_upload(
-        "repair.docx", b"PK\x03\x04fake-office-package"
+        "repair.docx", docx_bytes
     )
 
     assert normalised.content.startswith(b"%PDF-")
     assert normalised.stored_filename == "repair.pdf"
-    assert normalised.source_format == "docx-libreoffice"
+    assert normalised.source_format == "docx-python"
+
+
+def test_docx_header_evidence_uses_office_conversion(monkeypatch) -> None:
+    document = DocxDocument(io.BytesIO(_build_invoice_docx()))
+    document.sections[0].header.paragraphs[0].text = "Invoice number: HEADER-99"
+    content = io.BytesIO()
+    document.save(content)
+    monkeypatch.setattr(document_processing.shutil, "which", lambda _: "/usr/bin/soffice")
+    expected_pdf = b"%PDF-1.7\nconverted with header"
+    monkeypatch.setattr(document_processing, "_convert_with_libreoffice", lambda *args: expected_pdf)
+    result = document_processing.normalise_document_upload("header.docx", content.getvalue())
+    assert result.source_format == "docx-libreoffice"
+    assert result.content == expected_pdf
+
+
+def test_docx_unsupported_content_is_not_silently_dropped_without_office(monkeypatch) -> None:
+    document = DocxDocument(io.BytesIO(_build_invoice_docx()))
+    document.sections[0].footer.paragraphs[0].text = "Total: 744.00"
+    content = io.BytesIO()
+    document.save(content)
+    monkeypatch.setattr(document_processing.shutil, "which", lambda _: None)
+    with pytest.raises(ValueError, match="header or footer"):
+        document_processing.normalise_document_upload("footer.docx", content.getvalue())
 
 
 def test_docx_falls_back_to_python_pdf_without_libreoffice(monkeypatch) -> None:

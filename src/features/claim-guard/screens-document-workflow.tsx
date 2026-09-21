@@ -5,6 +5,7 @@ import {
   ArrowRightIcon,
   FileCheck2Icon,
   FileTextIcon,
+  ExternalLinkIcon,
   LoaderCircleIcon,
   PencilLineIcon,
   RefreshCwIcon,
@@ -148,6 +149,16 @@ export function DocumentPagesWorkflow({
   const documentNames = Array.from(
     new Set(pages.map((page) => page.document_filename))
   )
+  const originalDocuments = Array.from(
+    new Map(
+      pages.map((page) => [
+        page.document_id,
+        { filename: page.document_filename, url: page.original_url },
+      ])
+    ).values()
+  ).filter(
+    (document): document is { filename: string; url: string } => Boolean(document.url)
+  )
   const invoiceGroups = new Set(
     pages
       .filter((page) => page.page_type === "invoice")
@@ -237,13 +248,28 @@ export function DocumentPagesWorkflow({
         title="Document Pages"
         description="Review live page images, machine classifications and handler corrections before extraction."
         action={
-          <Button
-            onClick={onContinue}
-            disabled={!pages.length || reprocessRequired}
-          >
-            Review extraction
-            <ArrowRightIcon data-icon="inline-end" />
-          </Button>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {originalDocuments.map((document) => (
+              <Button key={document.url} asChild size="sm" variant="outline">
+                <a
+                  href={documentImageUrl(document.url)}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <ExternalLinkIcon data-icon="inline-start" />
+                  Open original upload
+                  <span className="sr-only">{document.filename}</span>
+                </a>
+              </Button>
+            ))}
+            <Button
+              onClick={onContinue}
+              disabled={!pages.length || reprocessRequired}
+            >
+              Review extraction
+              <ArrowRightIcon data-icon="inline-end" />
+            </Button>
+          </div>
         }
       />
 

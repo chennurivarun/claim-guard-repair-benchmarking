@@ -1,6 +1,7 @@
 from app.extraction.pdf_pipeline import (
     _group_key,
     _reclassify_priced_assessment_pages,
+    _relink_invoice_continuation_pages,
     classify_page,
 )
 from app.extraction.schemas import PageAnalysis, PageType
@@ -49,6 +50,74 @@ def test_group_key_keeps_tilde_inside_invoice_number() -> None:
         PageType.INVOICE, "Invoice Number: 343653726836/1~3538", 1
     )
     assert key == "invoice:343653726836/1~3538"
+
+
+def test_invoice_totals_page_keeps_the_previous_numbered_group() -> None:
+    first = _page(
+        1,
+        "INVOICE\nInvoice Number: 343653726836/1~3538\nParts\nDoor 847.73",
+        PageType.INVOICE,
+    )
+    first.group_key = "invoice:343653726836/1~3538"
+    totals = _page(
+        2,
+        "E.P.A. Charge 22.00\nTotal Labour 2509.20\nVAT @20% 982.52\nInvoice total 5895.11",
+        PageType.INVOICE,
+    )
+    totals.group_key = "invoice:page-2"
+
+    _relink_invoice_continuation_pages([first, totals])
+
+    assert totals.group_key == first.group_key
+    assert "invoice continuation" in totals.classification_signals
+
+
+def test_separate_numberless_invoice_heading_is_not_joined() -> None:
+    first = _page(
+        1,
+        "INVOICE\nInvoice Number: INV-101\nDoor 847.73",
+        PageType.INVOICE,
+    )
+    first.group_key = "invoice:INV-101"
+    second = _page(
+        2,
+        "INVOICE\nLabour 200.00\nVAT 40.00\nInvoice total 240.00",
+        PageType.INVOICE,
+    )
+    second.group_key = "invoice:page-2"
+
+    _relink_invoice_continuation_pages([first, second])
+
+    assert second.group_key == "invoice:page-2"
+
+
+def test_authorised_assessment_keeps_wrapped_schedule_pages() -> None:
+    summary = _page(
+        1,
+        "Assessment report\nSummary Information\nAssessment Number D7576879",
+        PageType.ENGINEER_ASSESSMENT,
+    )
+    wrapped_labour = _page(
+        2,
+        "1000\nREPAIR LEFT SILL / BODY\nAREA\n15\n1000\nCORROSION PROTECTION\n5",
+        PageType.OTHER,
+    )
+    wrapped_parts = _page(
+        3,
+        "1781\nL/R DOOR\n7700332300\n0%\n847.73\nTotal Parts\n1237.50",
+        PageType.INVOICE,
+    )
+    wrapped_parts.classification_signals = ["financial table", "5 amounts"]
+    wrapped_parts.group_key = "invoice:page-3"
+
+    _reclassify_priced_assessment_pages([summary, wrapped_labour, wrapped_parts])
+
+    assert [page.page_type for page in (summary, wrapped_labour, wrapped_parts)] == [
+        PageType.ENGINEER_ASSESSMENT,
+        PageType.ENGINEER_ASSESSMENT,
+        PageType.ENGINEER_ASSESSMENT,
+    ]
+    assert wrapped_parts.group_key is None
 
 
 def test_assessment_identity_gate_keeps_priced_pages_as_assessment_evidence() -> None:

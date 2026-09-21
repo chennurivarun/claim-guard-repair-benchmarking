@@ -261,6 +261,9 @@ export function DocumentMappingScreen({
 
   const rows = sortMappingRows(mapping?.assessments ?? [])
   const approved = mapping?.approval.approved ?? false
+  const manualReviewInvoices = (mapping?.invoices ?? []).filter(
+    (invoice) => invoice.unmapped_assessment
+  )
 
   useEffect(() => {
     onApprovalChange?.(approved)
@@ -333,6 +336,23 @@ export function DocumentMappingScreen({
           </AlertDescription>
         </Alert>
       )}
+
+      {manualReviewInvoices.length ? (
+        <Alert variant="destructive">
+          <AlertTitle>Invoices needing manual review</AlertTitle>
+          <AlertDescription>
+            {manualReviewInvoices
+              .map(
+                (invoice) =>
+                  invoice.invoice_number || invoice.document_filename || invoice.invoice_id
+              )
+              .join(", ")}
+            {" "}
+            have no confirmed engineer-assessment mapping. Resolve the pairing
+            or leave the invoice in manual review.
+          </AlertDescription>
+        </Alert>
+      ) : null}
 
       {loading ? (
         <p className="text-sm text-muted-foreground">Loading the mapping…</p>

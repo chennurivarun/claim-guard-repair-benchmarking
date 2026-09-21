@@ -98,6 +98,7 @@ def _intake_group(document: Any) -> str | None:
 
 
 def _invoice_row(invoice: Invoice) -> dict[str, Any]:
+    metadata = (invoice.document.metadata_json if invoice.document is not None else {}) or {}
     return {
         "invoice_id": invoice.id,
         "document_id": invoice.document_id,
@@ -110,6 +111,8 @@ def _invoice_row(invoice: Invoice) -> dict[str, Any]:
         "claim_reference": invoice.claim_reference,
         "policy_number": invoice.policy_number,
         "intake_group": _intake_group(invoice.document),
+        "manual_review": bool(metadata.get("manual_review")),
+        "manual_review_reason": metadata.get("manual_review_reason"),
     }
 
 
@@ -194,6 +197,12 @@ def case_mapping_payload(
         assessments = [row for row in assessments if _intake_group(row.document) == intake_group]
         invoices = [row for row in invoices if _intake_group(row.document) == intake_group]
     rows = [_assessment_row(assessment) for assessment in assessments]
+    paired_invoice_ids = {
+        row["paired_invoice_id"] for row in rows if row["paired_invoice_id"] is not None
+    }
+    invoice_rows = [_invoice_row(invoice) for invoice in invoices]
+    for row in invoice_rows:
+        row["unmapped_assessment"] = row["invoice_id"] not in paired_invoice_ids
     payload = {
         "case_reference": case.case_reference,
         "approval": (
@@ -201,7 +210,7 @@ def case_mapping_payload(
             if intake_group is None
             else _group_approval_payload(case, intake_group)
         ),
-        "invoices": [_invoice_row(invoice) for invoice in invoices],
+        "invoices": invoice_rows,
         "assessments": rows,
         "assessments_total": len(rows),
         "paired": sum(1 for row in rows if row["pair_status"] == "paired"),

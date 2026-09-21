@@ -27,6 +27,7 @@ are present either way (null when that tier has nothing to put in them):
 from __future__ import annotations
 
 import hashlib
+import mimetypes
 import os
 import re
 import shutil
@@ -194,26 +195,26 @@ def normalise_document_upload(filename: str, content: bytes) -> NormalisedDocume
         pdf_content = _convert_with_libreoffice(executable, suffix, content)
         return NormalisedDocumentUpload(pdf_content, stored_name, "doc")
 
-    # .docx: prefer LibreOffice's higher-fidelity conversion when it is present,
-    # but fall back to the pure-Python reportlab renderer otherwise or on failure.
-    pdf_content: bytes | None = None
-    source_format = "docx-python"
-    if executable:
+    # .docx: use the deterministic renderer first. LibreOffice can reflow
+    # side-by-side Word tables when it creates a PDF, splitting identity and
+    # assessment rows across lines. The renderer preserves the document's
+    # block/table order for the extraction parser. LibreOffice remains a
+    # fallback for DOCX files containing constructs the renderer cannot read.
+    try:
+        pdf_content = docx_to_pdf_bytes(content)
+    except Exception as python_exc:
+        if not executable:
+            raise ValueError(f"DOCX document could not be read: {python_exc}") from python_exc
         try:
             pdf_content = _convert_with_libreoffice(executable, suffix, content)
-            source_format = "docx-libreoffice"
-        except ValueError:
-            pdf_content = None
-    if pdf_content is None:
-        try:
-            pdf_content = docx_to_pdf_bytes(content)
-        except Exception as exc:
-            raise ValueError(f"DOCX document could not be read: {exc}") from exc
-        if len(pdf_content) > settings.max_upload_bytes:
-            raise ValueError(
-                f"Converted PDF exceeds the {settings.max_upload_bytes}-byte upload limit."
-            )
-    return NormalisedDocumentUpload(pdf_content, stored_name, source_format)
+        except ValueError as libreoffice_exc:
+            raise ValueError(f"DOCX document could not be read: {python_exc}") from libreoffice_exc
+        return NormalisedDocumentUpload(pdf_content, stored_name, "docx-libreoffice")
+    if len(pdf_content) > settings.max_upload_bytes:
+        raise ValueError(
+            f"Converted PDF exceeds the {settings.max_upload_bytes}-byte upload limit."
+        )
+    return NormalisedDocumentUpload(pdf_content, stored_name, "docx-python")
 
 
 def _convert_with_libreoffice(executable: str, suffix: str, content: bytes) -> bytes:
@@ -398,6 +399,14 @@ def store_pdf(
     storage_dir.mkdir(parents=True, exist_ok=True)
     stored_path = storage_dir / normalised.stored_filename
     stored_path.write_bytes(normalised.content)
+    # Keep the byte-for-byte upload alongside the normalized PDF. Extraction
+    # needs the PDF contract, while handlers need to inspect exactly what was
+    # submitted (especially when the upload was a DOCX later rendered to PDF).
+    original_dir = storage_dir / "original"
+    original_dir.mkdir(parents=True, exist_ok=True)
+    original_path = original_dir / _safe_filename(filename)
+    original_path.write_bytes(content)
+    original_mime_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     document = Document(
         case_id=case.id,
         document_role=role,
@@ -410,6 +419,8 @@ def store_pdf(
         metadata_json={
             "safe_filename": normalised.stored_filename,
             "source_format": normalised.source_format,
+            "original_storage_path": str(original_path),
+            "original_mime_type": original_mime_type,
             "intake_group": intake_group,
             "paired_document_id": paired_document_id,
         },
@@ -1245,10 +1256,16 @@ def serialise_document(document: Document) -> dict[str, Any]:
         and document.engineer_assessment is None
     )
     manual_review = bool(metadata.get("manual_review")) or inferred_manual_review
+    original_url = (
+        f"/api/v1/documents/{document.id}/original"
+        if metadata.get("original_storage_path")
+        else None
+    )
     return {
         "id": document.id,
         "case_id": document.case_id,
         "filename": document.original_filename,
+        "original_url": original_url,
         "sha256": document.sha256,
         "role": document.document_role.value,
         "intake_group": metadata.get("intake_group"),

@@ -258,6 +258,7 @@ def _liability_display(value: LiabilityStatus | None) -> str:
 def _page_payload(page: DocumentPage) -> dict[str, Any]:
     document_metadata = page.document.metadata_json or {}
     correction = (document_metadata.get("page_corrections") or {}).get(str(page.page_number))
+    original_storage_path = document_metadata.get("original_storage_path")
     return {
         "id": page.id,
         "document_id": page.document_id,
@@ -275,6 +276,11 @@ def _page_payload(page: DocumentPage) -> dict[str, Any]:
         "reprocess_required": bool(document_metadata.get("reprocess_required")),
         "correction": correction,
         "image_url": f"/api/v1/pages/{page.id}/image",
+        "original_url": (
+            f"/api/v1/documents/{page.document_id}/original"
+            if original_storage_path
+            else None
+        ),
     }
 
 
@@ -1468,6 +1474,28 @@ def get_page_image(page_id: str, db: DatabaseSession):
         path,
         media_type="image/png",
         filename=filename,
+        content_disposition_type="inline",
+    )
+
+
+@router.get("/documents/{document_id}/original", response_class=FileResponse, tags=["documents"])
+def get_original_document(document_id: str, db: DatabaseSession):
+    """Serve the exact bytes uploaded by the handler, not the normalized PDF."""
+
+    document = db.get(Document, document_id)
+    if document is None:
+        raise _not_found("Document not found")
+    metadata = document.metadata_json or {}
+    original_path = Path(str(metadata.get("original_storage_path") or ""))
+    if not original_path.exists():
+        # Documents created before original-upload retention remain usable via
+        # their normalized storage path; do not manufacture a misleading URL.
+        raise _not_found("Original document file not found")
+    media_type = str(metadata.get("original_mime_type") or "application/octet-stream")
+    return FileResponse(
+        original_path,
+        media_type=media_type,
+        filename=document.original_filename,
         content_disposition_type="inline",
     )
 
