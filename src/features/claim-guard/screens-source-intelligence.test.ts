@@ -49,9 +49,9 @@ describe("Upload documents, per source", () => {
   it("offers one bucket, named for the source", () => {
     const html = renderUpload("in_house")
 
-    expect(html).toContain("Aviva DLG invoices")
-    expect(html).not.toContain("Third party insured invoices")
-    expect(html).not.toContain("New repair invoices")
+    expect(html).toContain("Insurer TP invoices – Model training")
+    expect(html).not.toContain("Insurer TP invoices</")
+    expect(html).not.toContain("Upload new invoice – Compare benchmark")
   })
 
   it("takes repair invoices and engineer assessments, files or a folder, on both slots", () => {
@@ -80,7 +80,7 @@ describe("Document intelligence, per source", () => {
   it("leads with the mapping review for that source", () => {
     const html = renderIntelligence("historical_claim")
 
-    expect(html).toContain("Third party insured invoices")
+    expect(html).toContain("Insurer TP invoices")
     expect(html).toContain("Mapping review")
     expect(html).toContain("Approve mapping")
     expect(html).toContain("Mapping not approved yet")
@@ -97,6 +97,8 @@ describe("Document intelligence, per source", () => {
   })
 
   it("names the new invoice's screen for the new invoice", () => {
-    expect(renderIntelligence("live")).toContain("New invoice")
+    expect(renderIntelligence("live")).toContain(
+      "Upload new invoice – Compare benchmark"
+    )
   })
 })

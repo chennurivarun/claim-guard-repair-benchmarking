@@ -210,7 +210,7 @@ export function App() {
       setLiabilityStatus("PENDING")
       setLiabilityConfirmed(false)
       if (result.status === "unavailable") {
-        toast.error("ClaimGuard API is not ready", {
+        toast.error("Price Benchmarking Model TP Repair API is not ready", {
           description: `${result.message} Nothing is shown until the connection is restored.`,
         })
       }
@@ -883,11 +883,20 @@ export function App() {
           finalised={caseFinalised}
           onProcessed={async (preferredDocumentId) => {
             await refreshAfterSourceChange(preferredDocumentId)
-            // Upload, then that source's mapping and extracts.
-            setActiveScreen(sourceScreen(scope.intakeGroup, "intelligence"))
+            // Keep the mapping and extracts on the upload page. The page now
+            // expands its source intelligence section after the handover, so
+            // the user can verify matching without opening Advanced tools.
           }}
           onContinue={() =>
             navigate(sourceScreen(scope.intakeGroup, "intelligence"))
+          }
+          onOpenBenchmarks={() =>
+            navigate(
+              sourceScreen(
+                scope.intakeGroup,
+                scope.intakeGroup === "live" ? "analysis" : "benchmarks"
+              )
+            )
           }
         />
       )

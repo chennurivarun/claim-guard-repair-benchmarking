@@ -84,8 +84,10 @@ describe("the upload screen offers exactly one bucket when scoped", () => {
 
   it("names the buckets the way she does", () => {
     expect(INTAKE_GROUP_LABELS.historical_claim).toBe(
-      "Third party insured invoices"
+      "Insurer TP invoices"
     )
-    expect(INTAKE_GROUP_LABELS.in_house).toBe("Aviva DLG invoices")
+    expect(INTAKE_GROUP_LABELS.in_house).toBe(
+      "Insurer TP invoices – Model training"
+    )
   })
 })

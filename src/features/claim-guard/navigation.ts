@@ -38,7 +38,7 @@ export const navigationSections: Array<{
 }> = [
   {
     id: "third-party",
-    label: "Third party insured invoices",
+    label: "Insurer TP invoices",
     items: [
       { id: "tp-upload", label: "Upload documents", icon: UploadIcon },
       { id: "tp-intelligence", label: "Document intelligence", icon: FileTextIcon },
@@ -47,7 +47,7 @@ export const navigationSections: Array<{
   },
   {
     id: "aviva-dlg",
-    label: "Aviva DLG invoices",
+    label: "Insurer TP invoices – Model training",
     items: [
       { id: "dlg-upload", label: "Upload documents", icon: UploadIcon },
       { id: "dlg-intelligence", label: "Document intelligence", icon: FileTextIcon },
@@ -56,7 +56,7 @@ export const navigationSections: Array<{
   },
   {
     id: "new-invoice",
-    label: "Upload new invoice",
+    label: "Upload new invoice – Compare benchmark",
     items: [
       { id: "new-invoice-upload", label: "Upload", icon: UploadIcon },
       {

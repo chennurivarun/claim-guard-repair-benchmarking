@@ -39,7 +39,7 @@ describe("loading state", () => {
   it("says it is loading and shows nothing that could be read as data", () => {
     const html = renderToStaticMarkup(createElement(ConnectingPanel))
 
-    expect(html).toContain("Connecting to ClaimGuard")
+    expect(html).toContain("Connecting to Price Benchmarking Model TP Repair")
     expect(html).toContain("Nothing is displayed until the database answers")
     expectNoFabricatedData(html)
   })
@@ -137,7 +137,9 @@ describe("API-unavailable state", () => {
       })
     )
 
-    expect(html).toContain("ClaimGuard API is unavailable")
+    expect(html).toContain(
+      "Price Benchmarking Model TP Repair API is unavailable"
+    )
     expect(html).toContain("API returned 503.")
     expect(html).toContain("because none could be read")
     expect(html).toContain("Retry connection")

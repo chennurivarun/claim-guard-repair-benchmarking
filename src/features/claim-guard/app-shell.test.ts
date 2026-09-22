@@ -55,7 +55,7 @@ describe("the left navigation Neha described", () => {
       }))
     ).toEqual([
       {
-        label: "Third party insured invoices",
+        label: "Insurer TP invoices",
         items: [
           ["tp-upload", "Upload documents"],
           ["tp-intelligence", "Document intelligence"],
@@ -63,7 +63,7 @@ describe("the left navigation Neha described", () => {
         ],
       },
       {
-        label: "Aviva DLG invoices",
+        label: "Insurer TP invoices – Model training",
         items: [
           ["dlg-upload", "Upload documents"],
           ["dlg-intelligence", "Document intelligence"],
@@ -71,7 +71,7 @@ describe("the left navigation Neha described", () => {
         ],
       },
       {
-        label: "Upload new invoice",
+        label: "Upload new invoice – Compare benchmark",
         items: [
           ["new-invoice-upload", "Upload"],
           ["new-invoice-intelligence", "Document intelligence"],
@@ -83,9 +83,9 @@ describe("the left navigation Neha described", () => {
 
   it("renders the three headings in that order", () => {
     const html = renderShell("tp-upload")
-    const thirdParty = html.indexOf("Third party insured invoices")
-    const aviva = html.indexOf("Aviva DLG invoices")
-    const newInvoice = html.indexOf("Upload new invoice")
+    const thirdParty = html.indexOf("Insurer TP invoices")
+    const aviva = html.indexOf("Insurer TP invoices – Model training")
+    const newInvoice = html.indexOf("Upload new invoice – Compare benchmark")
 
     expect(thirdParty).toBeGreaterThan(-1)
     expect(aviva).toBeGreaterThan(thirdParty)
@@ -96,7 +96,7 @@ describe("the left navigation Neha described", () => {
 
   it("marks the sub-screen under the right heading active, not its namesake under the other", () => {
     const html = renderShell("dlg-intelligence")
-    const aviva = html.indexOf("Aviva DLG invoices")
+    const aviva = html.indexOf("Insurer TP invoices – Model training")
 
     // The first "Document intelligence" is the third-party one.
     expect(isMarkedActiveNear(html, "Document intelligence")).toBe(false)

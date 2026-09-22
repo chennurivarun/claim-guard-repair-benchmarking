@@ -48,9 +48,9 @@ export function sourceScreen(
 /** The bucket names she uses. D1: the two existing upload buckets relabelled,
  * not duplicated. */
 export const INTAKE_GROUP_LABELS: Record<IntakeGroup, string> = {
-  historical_claim: "Third party insured invoices",
-  in_house: "Aviva DLG invoices",
-  live: "New invoice",
+  historical_claim: "Insurer TP invoices",
+  in_house: "Insurer TP invoices – Model training",
+  live: "Upload new invoice – Compare benchmark",
 }
 
 /** Which upload buckets the intake screen offers. A scoped screen offers its

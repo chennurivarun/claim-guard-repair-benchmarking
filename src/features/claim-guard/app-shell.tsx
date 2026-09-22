@@ -33,6 +33,8 @@ import {
 import { activeEntryId, advancedTools, navigationSections } from "./navigation"
 import type { LiabilityStatus, ScreenId } from "./types"
 
+const PRODUCT_NAME = "Price Benchmarking Model TP Repair"
+
 /** How the app is currently placed against the ClaimGuard API. There is no
  * "demo" state: the footer reports the real connection, never a stand-in. */
 export type ApiStatus = "connecting" | "connected" | "unavailable"
@@ -73,15 +75,15 @@ function AppSidebar({
               className="h-14 px-2"
               onClick={() => navigate("tp-upload")}
             >
-              <span className="flex size-10 items-center justify-center rounded-lg bg-primary text-base font-bold text-primary-foreground">
-                CG
+              <span className="flex size-10 items-center justify-center rounded-lg bg-[#f97316] text-base font-bold text-white">
+                TP
               </span>
               <span className="grid min-w-0 flex-1 text-left leading-tight">
-                <span className="truncate text-base font-semibold">
-                  ClaimGuard
+                <span className="truncate text-base font-semibold text-[#f97316]">
+                  {PRODUCT_NAME}
                 </span>
                 <span className="truncate text-xs text-muted-foreground">
-                  Motor claims review
+                  Motor claims price benchmarking
                 </span>
               </span>
             </SidebarMenuButton>
@@ -92,7 +94,7 @@ function AppSidebar({
       <SidebarContent className="px-2">
         {navigationSections.map((section) => (
           <SidebarGroup key={section.id}>
-            <SidebarGroupLabel className="text-xs font-semibold text-foreground">
+            <SidebarGroupLabel className="text-sm font-bold text-[#f97316] dark:text-orange-400">
               {section.label}
             </SidebarGroupLabel>
             <SidebarGroupContent>
@@ -215,7 +217,9 @@ export function AppShell({
       <SidebarInset className="min-w-0 overflow-hidden bg-background">
         <header className="flex h-14 shrink-0 items-center border-b px-4 md:hidden">
           <SidebarTrigger />
-          <span className="ml-3 text-sm font-semibold">ClaimGuard</span>
+          <span className="ml-3 text-sm font-semibold text-[#f97316]">
+            {PRODUCT_NAME}
+          </span>
         </header>
         <main className="min-h-0 flex-1 overflow-y-auto bg-background">
           <div className="mx-auto flex w-full max-w-[1280px] flex-col gap-6 px-5 py-8 lg:px-10 lg:py-10">

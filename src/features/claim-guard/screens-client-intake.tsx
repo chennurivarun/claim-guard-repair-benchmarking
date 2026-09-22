@@ -34,6 +34,7 @@ import {
 } from "./document-api"
 import { ExtractsSection } from "./extracts-section"
 import { runIntakeBatch, type IntakeBatchEntry } from "./intake-batch"
+import { SourceIntelligenceScreen } from "./screens-source-intelligence"
 import { ScreenHeading, StatusBadge } from "./shared"
 import { INTAKE_GROUP_LABELS, intakeGroupsFor } from "./source-scope"
 
@@ -77,6 +78,7 @@ export function ClientIntakeScreen({
   finalised,
   onProcessed,
   onContinue,
+  onOpenBenchmarks,
   onOpenManualReview,
 }: {
   caseReference: string
@@ -85,6 +87,7 @@ export function ClientIntakeScreen({
   finalised: boolean
   onProcessed: (documentId?: string) => Promise<void>
   onContinue: () => void
+  onOpenBenchmarks?: () => void
   onOpenManualReview: (documentId: string) => void
 }) {
   const [documents, setDocuments] = useState<UploadedDocument[]>([])
@@ -266,6 +269,12 @@ export function ClientIntakeScreen({
   const visibleInvoices = invoices.filter((row) =>
     groups.includes(row.intake_group as IntakeGroup)
   )
+  const hasScopedDocuments =
+    scope != null &&
+    documents.some(
+      (document) =>
+        document.intake_group === scope && document.status === "ready"
+    )
   return (
     <>
       {scope ? (
@@ -623,6 +632,15 @@ export function ClientIntakeScreen({
             Review {d.filename}
           </Button>
         ))}
+      {scope && hasScopedDocuments ? (
+        <SourceIntelligenceScreen
+          caseReference={caseReference}
+          intakeGroup={scope}
+          finalised={finalised}
+          onApproved={refresh}
+          onOpenBenchmarks={onOpenBenchmarks ?? onContinue}
+        />
+      ) : null}
       {setup && (
         <Card>
           <CardHeader>

@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button"
 export function ConnectingPanel() {
   return (
     <Alert data-testid="state-connecting">
-      <AlertTitle>Connecting to ClaimGuard</AlertTitle>
+      <AlertTitle>Connecting to Price Benchmarking Model TP Repair</AlertTitle>
       <AlertDescription>
         Loading claims, invoices and benchmark data. Nothing is displayed until
         the database answers.
@@ -30,7 +30,7 @@ export function ApiUnavailablePanel({
 }) {
   return (
     <Alert variant="destructive" data-testid="state-unavailable">
-      <AlertTitle>ClaimGuard API is unavailable</AlertTitle>
+      <AlertTitle>Price Benchmarking Model TP Repair API is unavailable</AlertTitle>
       <AlertDescription className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <span>
           {message} No claim, invoice or price data is shown, because none could
