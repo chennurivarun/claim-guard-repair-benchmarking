@@ -38,7 +38,8 @@ _MEASURE = canvas.Canvas(io.BytesIO())
 def _iter_block_items(document: DocxDocument) -> list[DocxParagraph | DocxTable]:
     """Return the document body's paragraphs and tables in document order."""
 
-    body = document.element.body
+    element = document._element
+    body = getattr(element, "body", element)
     blocks: list[DocxParagraph | DocxTable] = []
     for child in body.iterchildren():
         if child.tag.endswith("}p"):
@@ -97,15 +98,35 @@ def docx_to_pdf_bytes(content: bytes) -> bytes:
     # the upload service can use LibreOffice for these documents.
     if document.element.xpath(".//w:drawing | .//w:pict | .//w:txbxContent | .//w:tbl//w:tbl"):
         raise ValueError("This DOCX contains visual or nested content requiring LibreOffice.")
+    headers = []
+    footers = []
+    seen_stories = set()
     for section in document.sections:
         for story in (
             section.header, section.first_page_header, section.even_page_header,
             section.footer, section.first_page_footer, section.even_page_footer,
         ):
-            if story._element.xpath(".//w:t | .//w:drawing | .//w:pict"):
-                raise ValueError("This DOCX contains header or footer content requiring LibreOffice.")
+            if story._element.xpath(".//w:drawing | .//w:pict | .//w:txbxContent | .//w:tbl//w:tbl"):
+                raise ValueError("This DOCX contains visual header or footer content requiring LibreOffice.")
+            if story._element in seen_stories:
+                continue
+            seen_stories.add(story._element)
+            target = headers if story._element.tag.endswith("}hdr") else footers
+            target.extend(_iter_block_items(story))
+    blocks = [*headers, *_iter_block_items(document), *footers]
+    # This PDF is an extraction intermediate, not the original-file preview.
+    # Keep complete table rows on the page: clipping previously lost the
+    # rightmost identity and amount columns before the parser even saw them.
+    row_widths = [
+        _MEASURE.stringWidth(line, TABLE_FONT, TABLE_FONT_SIZE)
+        for block in blocks if isinstance(block, DocxTable)
+        for line in _table_row_text(block)
+    ]
+    page_width = max(PAGE_WIDTH, max(row_widths, default=0) + LEFT_MARGIN + RIGHT_MARGIN)
+    if page_width > 14400:
+        raise ValueError("This DOCX contains oversized tables requiring LibreOffice.")
     buffer = io.BytesIO()
-    pdf = canvas.Canvas(buffer, pagesize=A4)
+    pdf = canvas.Canvas(buffer, pagesize=(page_width, PAGE_HEIGHT))
 
     cursor_y = PAGE_HEIGHT - TOP_MARGIN
 
@@ -130,7 +151,7 @@ def docx_to_pdf_bytes(content: bytes) -> bytes:
         cursor_y -= leading
 
     wrote_any_content = False
-    for block in _iter_block_items(document):
+    for block in blocks:
         if isinstance(block, DocxParagraph):
             text = block.text.strip()
             if not text:

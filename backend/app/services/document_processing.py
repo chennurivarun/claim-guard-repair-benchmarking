@@ -389,6 +389,11 @@ def store_pdf(
     if existing:
         reused = _reuse_existing_upload(existing, intake_group)
         if reused is not None:
+            if document_kind_hint and not reused.invoices and reused.engineer_assessment is None:
+                reused.metadata_json = {
+                    **(reused.metadata_json or {}),
+                    "document_kind_hint": document_kind_hint,
+                }
             return reused
 
     # A byte-identical file may now be stored once per source, so each copy
@@ -1201,6 +1206,7 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
             document_metadata.pop("manual_review", None)
             document_metadata.pop("manual_review_reason", None)
             document.review_briefing_json = None
+        document_metadata.pop("processing_error", None)
         if manual_page_corrections:
             document_metadata["reprocess_required"] = False
             document_metadata.pop("reprocess_reason", None)
@@ -1231,6 +1237,13 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
         failed_case = session.get(Case, case_id)
         if failed_document is not None:
             failed_document.upload_status = UploadStatus.FAILED
+            failed_document.metadata_json = {
+                **(failed_document.metadata_json or {}),
+                "processing_error": (
+                    "Extraction failed. The uploaded file is retained. Retry processing; "
+                    "if it fails again, review the document format and OCR configuration."
+                ),
+            }
         if failed_case is not None:
             failed_run = _new_run(session, failed_case, make_current=False)
             failed_run.status = RunStatus.FAILED
@@ -1282,6 +1295,20 @@ def serialise_document(document: Document) -> dict[str, Any]:
         "status": document.upload_status.value,
         "page_count": document.page_count,
         "invoice_units": invoice_units,
+        "extracted_invoice_units": sum(
+            not (invoice.extraction_payload_json or {}).get("manual_entry_placeholder")
+            for invoice in document.invoices
+        ),
+        "assessment_units": int(document.engineer_assessment is not None),
+        "processing_error": metadata.get("processing_error") or (
+            "Extraction failed. Review this file's processing configuration or retry extraction."
+            if document.upload_status == UploadStatus.FAILED else None
+        ),
+        "can_retry_extraction": (
+            invoice_units == 0
+            and document.engineer_assessment is None
+            and document.upload_status != UploadStatus.PROCESSING
+        ),
         "review_briefing": document.review_briefing_json,
         "reprocess_required": bool(metadata.get("reprocess_required")),
         "manual_review": manual_review,

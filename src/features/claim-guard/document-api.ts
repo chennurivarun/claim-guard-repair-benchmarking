@@ -65,6 +65,10 @@ export interface UploadedDocument {
   status: string
   page_count: number | null
   invoice_units?: number
+  extracted_invoice_units?: number
+  assessment_units?: number
+  processing_error?: string | null
+  can_retry_extraction?: boolean
   reprocess_required: boolean
   kind?:
     "unknown" | "repair_invoice" | "engineer_assessment" | "supporting_evidence"
@@ -175,6 +179,14 @@ export function processUploadedDocument(documentId: string, force = false) {
   const query = force ? "?force=true" : ""
   return requestJson<DocumentProcessingResult>(
     `/api/v1/documents/${encodeURIComponent(documentId)}/process${query}`,
+    { method: "POST" },
+    180_000
+  )
+}
+
+export function retryEmptyDocument(documentId: string) {
+  return requestJson<DocumentProcessingResult>(
+    `/api/v1/documents/${encodeURIComponent(documentId)}/process?retry_empty=true`,
     { method: "POST" },
     180_000
   )

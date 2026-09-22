@@ -662,7 +662,11 @@ def _select_invoice(
 
     if ambiguous:
         return _Decision(assessment, None, 0.0, [AMBIGUOUS_INVOICES_REASON])
-    fallback = next(iter(rejected or conflicting), None)
+    # Explain the closest conflicting candidate, not an arbitrary unrelated
+    # first invoice. This changes the explanation only, never the decision.
+    conflicting.sort(key=lambda row: row.strength, reverse=True)
+    relevant_conflicts = [row for row in conflicting if row.matched]
+    fallback = next(iter(relevant_conflicts or rejected or conflicting), None)
     if fallback is None:
         return _Decision(assessment, None, 0.0, [NO_SHARED_IDENTIFIER_REASON])
     conflicts = [

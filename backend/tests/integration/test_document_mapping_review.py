@@ -774,3 +774,85 @@ def test_an_unknown_assessment_is_a_404(mapping_client) -> None:
     response = _override(mapping_client, "missing-assessment", "unlink")
     assert response.status_code == 404, response.text
     assert response.json()["detail"]["code"] == "ASSESSMENT_NOT_FOUND"
+
+
+def test_failed_extraction_has_persistent_receipt_and_safe_retry(mapping_client, monkeypatch):
+    from app.extraction.pdf_pipeline import PDFPipeline
+
+    client = mapping_client
+    client.post("/api/v1/claims", json={
+        "case_reference": REFERENCE, "claim_number": "RETRY-1", "created_by": HANDLER,
+    })
+    uploaded = client.post(
+        f"/api/v1/claims/{REFERENCE}/documents",
+        files={"file": (INVOICE_A, (FIXTURES / INVOICE_A).read_bytes(), DOCX_MIME)},
+        data={"role": "current", "intake_group": "historical_claim"},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    document_id = uploaded.json()["id"]
+    original = uploaded.json()["original_url"]
+    with monkeypatch.context() as patch:
+        def fail(*args, **kwargs):
+            raise RuntimeError("private internal diagnostic")
+        patch.setattr(PDFPipeline, "analyse", fail)
+        assert client.post(f"/api/v1/documents/{document_id}/process").status_code == 422
+    receipt = client.get(f"/api/v1/claims/{REFERENCE}/documents").json()
+    row = next(row for row in receipt if row["id"] == document_id)
+    assert row["status"] == "failed"
+    assert row["can_retry_extraction"] is True
+    assert row["processing_error"]
+    assert "private internal" not in str(row)
+    recovered = client.post(f"/api/v1/documents/{document_id}/process?retry_empty=true")
+    assert recovered.status_code == 200, recovered.text
+    row = recovered.json()["document"]
+    assert row["status"] == "ready"
+    assert row["invoice_units"] == 1
+    assert row["processing_error"] is None
+    assert row["can_retry_extraction"] is False
+    assert client.get(original).content == (FIXTURES / INVOICE_A).read_bytes()
+    with _session(client) as session:
+        invoice_ids = [invoice.id for invoice in session.get(Document, document_id).invoices]
+    refused = client.post(f"/api/v1/documents/{document_id}/process?retry_empty=true")
+    assert refused.status_code == 409
+    with _session(client) as session:
+        assert [invoice.id for invoice in session.get(Document, document_id).invoices] == invoice_ids
+
+
+def test_empty_extraction_with_saved_pages_can_be_retried(mapping_client, monkeypatch):
+    from app.extraction.pdf_pipeline import PDFPipeline
+    from app.extraction.schemas import PageType
+
+    client = mapping_client
+    client.post("/api/v1/claims", json={
+        "case_reference": REFERENCE, "claim_number": "EMPTY-1", "created_by": HANDLER,
+    })
+    uploaded = client.post(
+        f"/api/v1/claims/{REFERENCE}/documents",
+        files={"file": (INVOICE_A, (FIXTURES / INVOICE_A).read_bytes(), DOCX_MIME)},
+        data={"role": "current", "intake_group": "historical_claim"},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    document_id = uploaded.json()["id"]
+    analyse = PDFPipeline.analyse
+    with monkeypatch.context() as patch:
+        def miss_records(self, *args, **kwargs):
+            result = analyse(self, *args, **kwargs)
+            result.invoices = []
+            result.engineer_assessments = []
+            # This exercises pages with no records. A manual-entry invoice
+            # container is an existing record and deliberately blocks retry.
+            result.manual_review_reason = None
+            for page in result.pages:
+                page.page_type = PageType.OTHER
+            return result
+        patch.setattr(PDFPipeline, "analyse", miss_records)
+        result = client.post(f"/api/v1/documents/{document_id}/process")
+        assert result.status_code == 200, result.text
+        assert result.json()["document"]["can_retry_extraction"] is True, result.json()
+    recovered = client.post(f"/api/v1/documents/{document_id}/process?retry_empty=true")
+    assert recovered.status_code == 200, recovered.text
+    assert recovered.json()["document"]["invoice_units"] == 1
+    with _session(client) as session:
+        document = session.get(Document, document_id)
+        assert len(document.pages) == document.page_count
+        assert len({page.page_number for page in document.pages}) == document.page_count

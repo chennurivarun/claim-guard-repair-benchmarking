@@ -27,6 +27,7 @@ import {
 import {
   fetchCaseDocuments,
   processUploadedDocument,
+  retryEmptyDocument,
   runCaseLinkSweep,
   uploadCurrentDocument,
   type IntakeGroup,
@@ -108,6 +109,7 @@ export function ClientIntakeScreen({
   /** Bumped after every batch so the file inputs drop their DOM selection:
    * without it, re-picking the same folder fires no `change` event. */
   const [pickerKey, setPickerKey] = useState(0)
+  const [receiptVersion, setReceiptVersion] = useState(0)
   /** Only the unscoped live screen carries the extract tables; a scoped
    * upload leaves them to its own Document intelligence. */
   const showsExtracts = !setup && !scope
@@ -145,7 +147,27 @@ export function ClientIntakeScreen({
     ])
     setDocuments(docs)
     setInvoices(rows)
+    setReceiptVersion((version) => version + 1)
     await loadExtracts()
+  }
+  async function retryExtraction(documentId: string) {
+    if (busy || finalised) return
+    setBusy(true)
+    setError(null)
+    try {
+      await retryEmptyDocument(documentId)
+      await runCaseLinkSweep(caseReference)
+      await onProcessed(documentId)
+    } catch (e) {
+      setError(getApiErrorMessage(e))
+    } finally {
+      try {
+        await refresh()
+      } catch (e) {
+        setError(getApiErrorMessage(e))
+      }
+      setBusy(false)
+    }
   }
   useEffect(() => {
     if (!showsExtracts) return
@@ -280,8 +302,8 @@ export function ClientIntakeScreen({
           title={scope === "live" ? "Upload new invoice" : labels[scope]}
           description={
             scope === "live"
-              ? "Upload documents: the new repair invoice and its engineer assessment. Once the batch lands you go to Document intelligence to check the mapping and read the extracts, then to Benchmark analysis."
-              : "Upload documents: this source's repair invoices and their engineer assessments. Once the batch lands you go to Document intelligence to check the mapping and read the extracts."
+              ? "Upload the new repair invoice and its engineer assessment. Review processing status, matching and extracts below, then continue to Benchmark analysis."
+              : "Upload this source's repair invoices and engineer assessments. Review processing status, matching and extracts below."
           }
           action={
             <Button onClick={onContinue} disabled={busy}>
@@ -489,6 +511,45 @@ export function ClientIntakeScreen({
           </Card>
         ))}
       </div>
+      {documents.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Stored documents and extraction status</CardTitle>
+            <CardDescription>
+              This receipt stays available after refresh. Files in other sources
+              are listed too, so a missing assessment can be located. Retry is
+              available only when a file has no extracted records.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <TableHeader><TableRow>
+                <TableHead>File</TableHead><TableHead>Source</TableHead>
+                <TableHead>Status</TableHead><TableHead>Extracted records</TableHead>
+                <TableHead>Details</TableHead><TableHead>Action</TableHead>
+              </TableRow></TableHeader>
+              <TableBody>{documents.map((document) => (
+                <TableRow key={document.id}>
+                  <TableCell>{document.filename}</TableCell>
+                  <TableCell>{document.intake_group ? labels[document.intake_group] : "Unassigned source"}</TableCell>
+                  <TableCell>{document.status}</TableCell>
+                  <TableCell>{document.extracted_invoice_units ?? document.invoice_units ?? 0} invoices · {document.assessment_units ?? 0} assessments</TableCell>
+                  <TableCell>{document.processing_error || document.manual_review_reason || (
+                    document.kind === "engineer_assessment"
+                      ? document.paired ? "Assessment matched" : "Assessment extracted; no confirmed match"
+                      : document.status === "ready" ? "Extraction complete" : "Awaiting extraction"
+                  )}</TableCell>
+                  <TableCell className="space-x-2">
+                    {document.original_url && <a className="underline" href={document.original_url} target="_blank" rel="noreferrer">Original</a>}
+                    {document.can_retry_extraction && <Button size="sm" variant="outline" disabled={busy || finalised} onClick={() => void retryExtraction(document.id)}>Retry extraction</Button>}
+                    {document.manual_review && <Button size="sm" variant="outline" onClick={() => onOpenManualReview(document.id)}>Review</Button>}
+                  </TableCell>
+                </TableRow>
+              ))}</TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
       {results.length > 0 && (
         <Card>
           <CardHeader>
@@ -629,7 +690,7 @@ export function ClientIntakeScreen({
         ))}
       {scope && hasScopedDocuments ? (
         <SourceIntelligenceScreen
-          key={documents.filter((d) => d.intake_group === scope).map((d) => `${d.id}:${d.status}`).join("|")}
+          key={`${receiptVersion}:${documents.filter((d) => d.intake_group === scope).map((d) => `${d.id}:${d.status}`).join("|")}`}
           caseReference={caseReference}
           intakeGroup={scope}
           finalised={finalised}

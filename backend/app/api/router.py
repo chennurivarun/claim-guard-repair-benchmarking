@@ -120,7 +120,12 @@ from app.services.document_mapping import (
     case_mapping_payload,
     override_assessment_pairing,
 )
-from app.services.document_processing import process_document, serialise_document, store_pdf
+from app.services.document_processing import (
+    normalise_document_upload,
+    process_document,
+    serialise_document,
+    store_pdf,
+)
 from app.services.engineer_assessment import (
     engineer_assessment_payload,
     manual_override_payload,
@@ -1148,6 +1153,7 @@ def run_document_pipeline(
     document_id: str,
     db: DatabaseSession,
     force: bool = False,
+    retry_empty: bool = False,
 ) -> dict[str, Any]:
     document = db.get(Document, document_id)
     if document is None:
@@ -1161,6 +1167,24 @@ def run_document_pipeline(
                 "message": "Create a new case revision before reprocessing documents.",
             },
         )
+    if retry_empty:
+        # Never replace extracted records, their IDs or human decisions through
+        # the recovery button. It is solely for failed/empty extraction attempts.
+        if document.invoices or document.engineer_assessment is not None:
+            raise HTTPException(status_code=409, detail={
+                "code": "EXTRACTION_ALREADY_EXISTS",
+                "message": "This file already has extracted records. Use document review to correct them.",
+            })
+        if document.upload_status == UploadStatus.PROCESSING:
+            raise HTTPException(status_code=409, detail={
+                "code": "DOCUMENT_PROCESSING",
+                "message": "This file is already being processed.",
+            })
+        for page in list(document.pages):
+            db.delete(page)
+        db.flush()
+        document.page_count = None
+        document.upload_status = UploadStatus.PENDING
     if document.page_count is not None and document.pages:
         reprocess_required = bool((document.metadata_json or {}).get("reprocess_required"))
         if force and reprocess_required:
@@ -1181,8 +1205,22 @@ def run_document_pipeline(
                 "reprocess_required": reprocess_required,
             }
     try:
+        if retry_empty:
+            metadata = document.metadata_json or {}
+            original_path = metadata.get("original_storage_path")
+            if original_path and Path(document.original_filename).suffix.lower() in {".docx", ".doc"}:
+                normalised = normalise_document_upload(
+                    document.original_filename, Path(original_path).read_bytes()
+                )
+                # Only the disposable extraction intermediate changes; the
+                # byte-for-byte original remains available for inspection.
+                Path(document.storage_path).write_bytes(normalised.content)
+                document.file_size = len(normalised.content)
         run = process_document(db, document)
         db.commit()
+        # Recovery checks load the old (empty) relationships. Refresh them so
+        # the response reports records inserted by the extraction pipeline.
+        db.expire(document, ["invoices", "engineer_assessment", "pages"])
     except ValueError as exc:
         # Validation errors carry messages written for the handler; pass them through.
         db.rollback()

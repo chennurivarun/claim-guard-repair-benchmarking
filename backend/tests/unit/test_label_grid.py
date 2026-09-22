@@ -450,3 +450,8 @@ def test_a_longer_label_is_not_left_on_the_front_of_its_value() -> None:
     assert read_label_values("Insured Name John Smith\n")["customer_name"] == "John Smith"
     # The bare synonym still reads the shape the DLAS grids print.
     assert read_label_values("Insured   John Smith\n")["customer_name"] == "John Smith"
+
+
+def test_explicit_claim_label_preserves_prefix_and_does_not_read_heading():
+    assert read_label_values("Claim: ABC 123456")["claim_reference"] == "ABC 123456"
+    assert "claim_reference" not in read_label_values("Claim\nSummary Information\nAssessment Number   D123")

@@ -275,16 +275,8 @@ def test_exl_demo_pair_identity(api) -> None:
         assert assessment.registration == "ABC02QQQ"
         assert assessment.vehicle_make == "VOLVO"
         assert assessment.vehicle_model == "XC40(XZ)(18-)"
-        # GAP, deliberately still open: the report prints "Claim: ABC 123456"
-        # and its invoice prints "123456". Reading the label -- which is a
-        # three-line change, and the only thing needed is to accept "Claim"
-        # when a colon follows it -- makes the two documents disagree on the
-        # claim reference, and ``_compare_pair_keys`` scores that a conflict,
-        # which is fatal: the demo pair stops pairing at all. Leaving the
-        # field empty is the lesser harm until the pairing rule decides
-        # whether a printed prefix token may be tolerated. See the comment on
-        # ``label_grid.FIELD_SYNONYMS["claim_reference"]``.
-        assert assessment.claim_reference is None
+        # Preserve the actual printed identifier, even when it conflicts.
+        assert assessment.claim_reference == "ABC 123456"
 
         assert invoice.invoice_number == "ABC1234"
         # No "/n" suffix, against format 2's "123456/1".
@@ -305,12 +297,10 @@ def test_exl_demo_pair_identity(api) -> None:
         # table, so none of it is left on the front of the value.
         assert invoice.customer_name == "John Smith"
 
-        # The report prints no claim reference the reader takes and the
-        # invoice prints no policy number, so registration is the only
-        # comparable key and the pair is flagged weak rather than strong.
-        assert assessment.pair_status == "paired"
-        assert assessment.paired_invoice_id == invoice.id
-        assert any("weak pair" in reason for reason in assessment.pair_reasons_json)
+        assert assessment.pair_status == "unpaired"
+        assert assessment.paired_invoice_id is None
+        assert any("conflict" in reason for reason in assessment.pair_reasons_json)
+
 
 
 def test_exl_claim_reference_never_collides_with_format_2(api) -> None:
@@ -686,10 +676,18 @@ def test_all_eight_pairs_in_primary_source(api):
         assert processed.json()['document']['kind'] == entry['document_kind'], filename
     sweep = api.post(f'/api/v1/claims/{reference}/documents/link-sweep')
     assert sweep.status_code == 200, sweep.text
+    conflict = next(row for row in sweep.json()['details'] if row['assessment_number'] == 'AAA6576879')
+    assert conflict['pair_reasons'] == ['claim reference conflict: assessment ABC 123456 versus invoice 123456']
     payload = api.get(f'/api/v1/claims/{reference}/extracts?intake_group=historical_claim').json()
     assert len(payload['invoice_extracts']) == 8
     assert len(payload['assessment_extracts']) == 8
+    assert sum(row['pair_status'] == 'paired' for row in payload['assessment_extracts']) == 7
     for assessment in payload['assessment_extracts']:
+        assert assessment['lines'], assessment
+        if assessment['assessment_number'] == 'AAA6576879':
+            assert assessment['claim_number'] == 'ABC 123456'
+            assert assessment['pair_status'] == 'unpaired'
+            continue
         assert assessment['pair_status'] == 'paired', assessment
         invoice = next(row for row in payload['invoice_extracts']
                        if row['vehicle_registration'] == assessment['vehicle_registration'])
