@@ -18,15 +18,8 @@ import { ExtractsSection } from "./extracts-section"
 import { DocumentMappingScreen } from "./screens-document-mapping"
 import { INTAKE_GROUP_LABELS } from "./source-scope"
 
-/** One source's Document intelligence: the mapping review, then that
- * source's two extract tables -- in that order, because that is the sequence
- * Neha asked for: "show the mapping … approve … then the documents are
- * read … then the extracts". The extract tables are what follows approval,
- * so until the source's mapping is approved they are not offered at all.
- *
- * Built from the two existing pieces, scoped by `intake_group`, rather than
- * forked: the same mapping screen and the same extracts section serve third
- * party, Aviva DLG and the new invoice. */
+/** Source-scoped mapping review and extracted evidence. Evidence remains visible
+ * before approval so the handler can inspect documents before confirming pairs. */
 export function SourceIntelligenceScreen({
   caseReference,
   intakeGroup,
@@ -52,7 +45,6 @@ export function SourceIntelligenceScreen({
   const label = INTAKE_GROUP_LABELS[intakeGroup]
 
   useEffect(() => {
-    if (!approved) return
     let active = true
     void fetchClaimExtracts(caseReference, intakeGroup)
       .then((payload) => {
@@ -74,6 +66,7 @@ export function SourceIntelligenceScreen({
   }, [approved, caseReference, intakeGroup, extractsVersion])
 
   const handleApproved = useCallback(async () => {
+    setExtractsLoading(true)
     setExtractsVersion((current) => current + 1)
     await onApproved?.()
   }, [onApproved])
@@ -103,25 +96,24 @@ export function SourceIntelligenceScreen({
         onApprovalChange={setApproved}
       />
 
-      {approved ? (
-        <ExtractsSection
-          extracts={extracts}
-          loading={extractsLoading}
-          error={extractsError}
-          scopeLabel={label}
-        />
-      ) : (
+      {!approved && (
         <Card className="border-dashed">
           <CardHeader>
-            <CardTitle>The extract tables follow approval</CardTitle>
+            <CardTitle>Review extracted documents and proposed pairs</CardTitle>
             <CardDescription>
-              Approve the mapping above and the documents are read against the
-              pairs you confirmed; the invoice and engineer assessment extract
-              tables for {label} then appear here.
+              Extracted values are shown below before approval so you can inspect
+              both documents. Approve mapping after checking the proposed pairs.
+              Missing or ambiguous matches remain in manual review.
             </CardDescription>
           </CardHeader>
         </Card>
       )}
+      <ExtractsSection
+        extracts={extracts}
+        loading={extractsLoading}
+        error={extractsError}
+        scopeLabel={label}
+      />
     </>
   )
 }

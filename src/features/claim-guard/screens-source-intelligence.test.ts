@@ -57,7 +57,7 @@ describe("Upload documents, per source", () => {
   it("takes repair invoices and engineer assessments, files or a folder, on both slots", () => {
     const html = renderUpload("historical_claim")
 
-    expect(html).toContain("Repair invoices (required)")
+    expect(html).toContain("Repair invoices")
     expect(html).toContain("Engineer assessments (optional)")
     expect(html.match(/multiple=""/g) ?? []).toHaveLength(4)
     expect(html.match(/webkitdirectory=""/g) ?? []).toHaveLength(2)
@@ -86,13 +86,13 @@ describe("Document intelligence, per source", () => {
     expect(html).toContain("Mapping not approved yet")
   })
 
-  it("puts the extract tables after approval, not before", () => {
+  it("shows extracted documents before pairing approval", () => {
     const html = renderIntelligence("in_house")
 
-    expect(html).toContain("The extract tables follow approval")
-    expect(html).not.toContain("Invoice extracts and associated engineer assessment")
+    expect(html).toContain("Review extracted documents and proposed pairs")
+    expect(html).toContain("Loading invoice and engineer assessment extracts")
     expect(html.indexOf("Approve mapping")).toBeLessThan(
-      html.indexOf("The extract tables follow approval")
+      html.indexOf("Review extracted documents and proposed pairs")
     )
   })
 

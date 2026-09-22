@@ -21,7 +21,8 @@ export interface IntakeBatchPorts {
     file: File,
     caseReference: string,
     intakeGroup: IntakeGroup,
-    pairedDocumentId?: string
+    pairedDocumentId?: string,
+    documentKind?: "engineer_assessment"
   ): Promise<UploadedDocument>
   process(documentId: string): Promise<DocumentProcessingResult>
   sweep(caseReference: string): Promise<CaseLinkSweepResult>
@@ -91,7 +92,8 @@ export async function runIntakeBatch(
         file,
         caseReference,
         group,
-        role === "estimate" && explicitPairing ? pairTarget : undefined
+        role === "estimate" && explicitPairing ? pairTarget : undefined,
+        role === "estimate" ? "engineer_assessment" : undefined
       )
       ports.onStatus(index, "Extracting…")
       const result = await ports.process(document.id)

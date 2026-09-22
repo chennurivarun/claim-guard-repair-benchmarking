@@ -712,10 +712,13 @@ def upload_document(
     role: Annotated[str, Form()] = "current",
     intake_group: Annotated[str | None, Form()] = None,
     paired_document_id: Annotated[str | None, Form()] = None,
+    document_kind: Annotated[str | None, Form()] = None,
 ) -> dict[str, Any]:
     case = _uploadable_case(db, case_reference)
     try:
         document_role = _resolve_document_role(role, intake_group)
+        if document_kind not in (None, "engineer_assessment"):
+            raise ValueError("Unsupported document kind hint.")
         if paired_document_id:
             target = db.get(Document, paired_document_id)
             if target is None or target.case_id != case.id or not target.invoices:
@@ -733,6 +736,7 @@ def upload_document(
             role=document_role,
             intake_group=intake_group,
             paired_document_id=paired_document_id,
+            document_kind_hint=document_kind,
         )
         db.commit()
     except ValueError as exc:
@@ -899,6 +903,7 @@ def upload_document_batch(
                 content=content,
                 role=document_role,
                 intake_group=intake_group,
+                document_kind_hint="engineer_assessment" if slot == "estimate" else None,
             )
             entry["document_id"] = document.id
             already_processed = document.page_count is not None and bool(document.pages)

@@ -51,7 +51,7 @@ describe("a folder of invoices and a folder of engineer assessments, handed over
   it("accepts many repair invoices and many engineer assessments", () => {
     const html = renderIntake(false)
 
-    expect(html).toContain("Repair invoices (required)")
+    expect(html).toContain("Repair invoices")
     expect(html).toContain("Engineer assessments (optional)")
     // Four file inputs: files + folder, for each of the two kinds. Every one
     // of them is `multiple`, so the single-file form is gone on both sides.

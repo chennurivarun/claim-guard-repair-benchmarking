@@ -75,11 +75,11 @@ function AppSidebar({
               className="h-14 px-2"
               onClick={() => navigate("tp-upload")}
             >
-              <span className="flex size-10 items-center justify-center rounded-lg bg-[#f97316] text-base font-bold text-white">
+              <span className="flex size-10 items-center justify-center rounded-lg bg-[#F15A24] text-base font-bold text-white">
                 TP
               </span>
               <span className="grid min-w-0 flex-1 text-left leading-tight">
-                <span className="truncate text-base font-semibold text-[#f97316]">
+                <span className="truncate text-base font-semibold text-[#F15A24]">
                   {PRODUCT_NAME}
                 </span>
                 <span className="truncate text-xs text-muted-foreground">
@@ -94,7 +94,7 @@ function AppSidebar({
       <SidebarContent className="px-2">
         {navigationSections.map((section) => (
           <SidebarGroup key={section.id}>
-            <SidebarGroupLabel className="text-sm font-bold text-[#f97316] dark:text-orange-400">
+            <SidebarGroupLabel className="text-sm font-bold text-[#F15A24]">
               {section.label}
             </SidebarGroupLabel>
             <SidebarGroupContent>
@@ -217,7 +217,7 @@ export function AppShell({
       <SidebarInset className="min-w-0 overflow-hidden bg-background">
         <header className="flex h-14 shrink-0 items-center border-b px-4 md:hidden">
           <SidebarTrigger />
-          <span className="ml-3 text-sm font-semibold text-[#f97316]">
+          <span className="ml-3 text-sm font-semibold text-[#F15A24]">
             {PRODUCT_NAME}
           </span>
         </header>

@@ -267,3 +267,22 @@ describe("a failed sweep is a notice with a retry, not a failed hand-over", () =
     ).resolves.toMatchObject({ failures: [] })
   })
 })
+
+it("preserves the assessment picker intent without inventing a paired invoice", async () => {
+  const log = recorder()
+  const testPorts = ports(log)
+  const hints: Array<string | undefined> = []
+  const originalUpload = testPorts.upload
+  testPorts.upload = async (file, ref, group, pair, kind) => {
+    hints.push(kind)
+    return originalUpload(file, ref, group, pair, kind)
+  }
+  const result = await runIntakeBatch(
+    batchOf([], ["estimate-a.pdf", "estimate-b.pdf"]), CASE, "historical_claim", testPorts
+  )
+  expect(hints).toEqual(["engineer_assessment", "engineer_assessment"])
+  expect(log.uploads.every((entry) => entry.pairedDocumentId === undefined)).toBe(true)
+  expect(log.processed).toHaveLength(2)
+  expect(log.sweeps).toEqual([CASE])
+  expect(result.failures).toEqual([])
+})

@@ -206,10 +206,8 @@ export function ClientIntakeScreen({
   async function upload(group: IntakeGroup) {
     const invoiceFiles = files[group] ?? []
     const estimateFiles = takesAssessments(group) ? estimates : []
-    // Engineer assessments alone are refused: they would upload with nothing
-    // in the case to pair against, and the label above the picker says
-    // invoices are required.
-    if (busy || finalised || !invoiceFiles.length) return
+    // A later batch may supply only the missing assessments.
+    if (busy || finalised || (!invoiceFiles.length && !estimateFiles.length)) return
     const batch: IntakeBatchEntry[] = [
       ...invoiceFiles.map((file) => ({ file, role: "invoice" as const })),
       ...estimateFiles.map((file) => ({ file, role: "estimate" as const })),
@@ -369,7 +367,7 @@ export function ClientIntakeScreen({
               <label className="block space-y-2 text-sm font-medium">
                 <span>
                   {takesAssessments(group)
-                    ? "Repair invoices (required)"
+                    ? "Repair invoices"
                     : labels[group]}
                 </span>
                 <Input
@@ -450,11 +448,8 @@ export function ClientIntakeScreen({
                   </span>
                 </label>
               )}
-              {/* Invoices are required, and the gate says so. It used to pass
-                  on engineer assessments alone, which uploaded a folder of
-                  them into a case with nothing to pair them against. */}
               <Button
-                disabled={busy || finalised || !files[group]?.length}
+                disabled={busy || finalised || (!files[group]?.length && !estimates.length)}
                 onClick={() => void upload(group)}
               >
                 {busy
@@ -465,9 +460,9 @@ export function ClientIntakeScreen({
               !files[group]?.length &&
               estimates.length ? (
                 <p className="text-sm text-amber-700 dark:text-amber-300">
-                  Add the repair invoices these engineer assessments belong to.
-                  An engineer assessment uploaded on its own has nothing to
-                  pair against.
+                  You can add assessments separately. They will be matched to
+                  invoices already uploaded in this source; unmatched assessments
+                  remain available for review.
                 </p>
               ) : null}
               {/* "What do you mean, nine invoices extracted? … remove it."
@@ -634,6 +629,7 @@ export function ClientIntakeScreen({
         ))}
       {scope && hasScopedDocuments ? (
         <SourceIntelligenceScreen
+          key={documents.filter((d) => d.intake_group === scope).map((d) => `${d.id}:${d.status}`).join("|")}
           caseReference={caseReference}
           intakeGroup={scope}
           finalised={finalised}

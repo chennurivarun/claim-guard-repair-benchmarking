@@ -155,12 +155,14 @@ export function uploadCurrentDocument(
   file: File,
   caseReference: string,
   intakeGroup?: IntakeGroup,
-  pairedDocumentId?: string
+  pairedDocumentId?: string,
+  documentKind?: "engineer_assessment"
 ) {
   const form = new FormData()
   form.append("file", file)
   form.append("role", "current")
   if (intakeGroup) form.append("intake_group", intakeGroup)
+  if (documentKind) form.append("document_kind", documentKind)
   if (pairedDocumentId) form.append("paired_document_id", pairedDocumentId)
   return requestJson<UploadedDocument>(
     `/api/v1/claims/${encodeURIComponent(caseReference)}/documents`,

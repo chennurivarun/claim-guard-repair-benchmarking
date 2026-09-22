@@ -373,6 +373,7 @@ def store_pdf(
     role: DocumentRole = DocumentRole.CURRENT,
     intake_group: str | None = None,
     paired_document_id: str | None = None,
+    document_kind_hint: str | None = None,
 ) -> Document:
     """Normalise and immutably store a supported document before creating its record."""
 
@@ -423,6 +424,7 @@ def store_pdf(
             "original_mime_type": original_mime_type,
             "intake_group": intake_group,
             "paired_document_id": paired_document_id,
+            "document_kind_hint": document_kind_hint,
         },
         intake_group=intake_group,
     )
@@ -746,7 +748,10 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
             page for page in analysis.pages
             if page.page_type.value == PageType.ENGINEER_ASSESSMENT.value
         ]
-        if document_metadata.get("paired_document_id"):
+        if (
+            document_metadata.get("paired_document_id")
+            or document_metadata.get("document_kind_hint") == "engineer_assessment"
+        ):
             engineer_pages = analysis.pages
             for page_row in page_rows.values():
                 page_row.page_type = PageType.ENGINEER_ASSESSMENT

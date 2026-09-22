@@ -331,8 +331,8 @@ export function DocumentMappingScreen({
         <Alert>
           <AlertTitle>Mapping not approved yet</AlertTitle>
           <AlertDescription>
-            The pairing engine proposes; you decide. Nothing is read against
-            these pairs until you approve them.
+            The pairing engine proposes; you decide. Inspect the extracted
+            documents and matching reasons before approving these pairs.
           </AlertDescription>
         </Alert>
       )}
@@ -361,8 +361,10 @@ export function DocumentMappingScreen({
           <CardHeader>
             <CardTitle>No engineer assessments yet</CardTitle>
             <CardDescription>
-              Upload an engineer assessment alongside its repair invoice and
-              the proposed mapping appears here.
+              No assessment records were extracted in this source. Add the reports
+              using the Engineer assessments picker on Upload documents. You can
+              upload assessments separately after the invoices. If already
+              uploaded, check their processing status and source.
             </CardDescription>
           </CardHeader>
         </Card>

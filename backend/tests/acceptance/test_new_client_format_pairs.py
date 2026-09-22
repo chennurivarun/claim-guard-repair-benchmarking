@@ -667,3 +667,63 @@ def test_exl_invoice_reconciles_against_its_own_summary(api) -> None:
         )
 
 
+
+
+def test_all_eight_pairs_in_primary_source(api):
+    reference = 'ALL-EIGHT-SOURCE'
+    _create_case(api, reference)
+    entries = sorted(MANIFEST, key=lambda row: row['document_kind'] == 'engineer_assessment')
+    for entry in entries:
+        filename = entry['filename']
+        uploaded = api.post(
+            f'/api/v1/claims/{reference}/documents',
+            files={'file': (filename, (FIXTURES / filename).read_bytes(), DOCX_MIME)},
+            data={'intake_group': 'historical_claim'},
+        )
+        assert uploaded.status_code == 200, (filename, uploaded.text)
+        processed = api.post(f"/api/v1/documents/{uploaded.json()['id']}/process")
+        assert processed.status_code == 200, (filename, processed.text)
+        assert processed.json()['document']['kind'] == entry['document_kind'], filename
+    sweep = api.post(f'/api/v1/claims/{reference}/documents/link-sweep')
+    assert sweep.status_code == 200, sweep.text
+    payload = api.get(f'/api/v1/claims/{reference}/extracts?intake_group=historical_claim').json()
+    assert len(payload['invoice_extracts']) == 8
+    assert len(payload['assessment_extracts']) == 8
+    for assessment in payload['assessment_extracts']:
+        assert assessment['pair_status'] == 'paired', assessment
+        invoice = next(row for row in payload['invoice_extracts']
+                       if row['vehicle_registration'] == assessment['vehicle_registration'])
+        assert invoice['paired_assessment_number'] == assessment['assessment_number']
+        assert invoice['invoice_number'] == assessment['paired_invoice_number']
+        assert assessment['lines'], assessment
+
+
+def test_assessment_picker_hint_recovers_missed_page_classification(api, monkeypatch):
+    from app.extraction.schemas import PageType
+    from app.services import document_processing
+
+    reference = 'ASSESSMENT-HINT'
+    _create_case(api, reference)
+    filename = 'DL_Auda_format_1_assessment.docx'
+    uploaded = api.post(
+        f'/api/v1/claims/{reference}/documents',
+        files={'file': ('report.docx', (FIXTURES / filename).read_bytes(), DOCX_MIME)},
+        data={'intake_group': 'historical_claim', 'document_kind': 'engineer_assessment'},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    original_analyse = document_processing.PDFPipeline.analyse
+
+    def miss_classification(self, *args, **kwargs):
+        result = original_analyse(self, *args, **kwargs)
+        for page in result.pages:
+            page.page_type = PageType.OTHER
+        result.engineer_assessments = []
+        return result
+
+    monkeypatch.setattr(document_processing.PDFPipeline, 'analyse', miss_classification)
+    processed = api.post(f"/api/v1/documents/{uploaded.json()['id']}/process")
+    assert processed.status_code == 200, processed.text
+    extracts = api.get(f'/api/v1/claims/{reference}/extracts?intake_group=historical_claim').json()
+    assert len(extracts['assessment_extracts']) == 1
+    assert extracts['assessment_extracts'][0]['assessment_number'] == 'D7576879'
+    assert extracts['invoice_extracts'] == []
