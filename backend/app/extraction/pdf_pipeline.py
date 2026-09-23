@@ -49,6 +49,7 @@ class PipelineConfig:
     max_pages: int = 100
     vision_max_batches: int = 3
     text_max_batches: int = 3
+    assessment_document: bool = False
 
 
 def sha256_file(path: Path) -> str:
@@ -633,6 +634,15 @@ class PDFPipeline:
         _label_rotated_service_sequences(pages)
         _reclassify_priced_assessment_pages(pages)
         _relink_invoice_continuation_pages(pages)
+
+        # Apply the explicit upload role before selecting any extraction tier.
+        # Otherwise unfamiliar report headings bypass the assessment readers;
+        # relabelling them later in persistence is too late to recover evidence.
+        if self.config.assessment_document:
+            for page in pages:
+                page.page_type = PageType.ENGINEER_ASSESSMENT
+                page.group_key = None
+                page.classification_signals.append("upload:engineer_assessment")
 
         analysis = DocumentAnalysis(
             source_path=source,

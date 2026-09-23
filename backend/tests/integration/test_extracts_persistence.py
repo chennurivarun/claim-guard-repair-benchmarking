@@ -374,21 +374,19 @@ def test_format_2_schedule_continuation_page_is_stored_as_assessment(
         assert continuation.page_type == PageType.ENGINEER_ASSESSMENT
 
         operations = _operations(session, assessment)
-        # Every operation is sourced from a page the document also calls an
-        # assessment page -- 15 of the 17 from the continuation.
+        # Header/footer preservation can move a row across the PDF page break.
+        # Verify all 17 operations against their actual source text, rather
+        # than fixing the renderer's pagination at 15 continuation rows.
+        assert len(operations) == 17
         assert all(
             session.get(DocumentPage, operation.source_page_id).page_type
             == PageType.ENGINEER_ASSESSMENT
             for operation in operations
         )
-        assert (
-            sum(
-                1
-                for operation in operations
-                if operation.source_page_id == continuation.id
-            )
-            == 15
-        )
+        assert any(operation.source_page_id == continuation.id for operation in operations)
+        for operation in operations:
+            source = session.get(DocumentPage, operation.source_page_id)
+            assert " ".join(operation.raw_description.split()) in " ".join(source.raw_text.split())
 
 
 def test_format_2_section_totals_are_never_mapped_priced_or_compared(

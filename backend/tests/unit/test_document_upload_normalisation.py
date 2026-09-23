@@ -3,6 +3,7 @@ import io
 import fitz
 import pytest
 from docx import Document as DocxDocument
+from PIL import Image
 
 import app.services.document_processing as document_processing
 
@@ -58,6 +59,9 @@ def test_docx_uses_deterministic_table_preserving_conversion(monkeypatch) -> Non
 def test_docx_header_evidence_uses_office_conversion(monkeypatch) -> None:
     document = DocxDocument(io.BytesIO(_build_invoice_docx()))
     document.sections[0].header.paragraphs[0].text = "Invoice number: HEADER-99"
+    image = io.BytesIO()
+    Image.new("RGB", (12, 12), "white").save(image, format="PNG")
+    document.sections[0].header.paragraphs[0].add_run().add_picture(io.BytesIO(image.getvalue()))
     content = io.BytesIO()
     document.save(content)
     monkeypatch.setattr(document_processing.shutil, "which", lambda _: "/usr/bin/soffice")
@@ -71,11 +75,34 @@ def test_docx_header_evidence_uses_office_conversion(monkeypatch) -> None:
 def test_docx_unsupported_content_is_not_silently_dropped_without_office(monkeypatch) -> None:
     document = DocxDocument(io.BytesIO(_build_invoice_docx()))
     document.sections[0].footer.paragraphs[0].text = "Total: 744.00"
+    image = io.BytesIO()
+    Image.new("RGB", (12, 12), "white").save(image, format="PNG")
+    document.sections[0].footer.paragraphs[0].add_run().add_picture(io.BytesIO(image.getvalue()))
     content = io.BytesIO()
     document.save(content)
-    monkeypatch.setattr(document_processing.shutil, "which", lambda _: None)
+    monkeypatch.setattr(document_processing, "find_libreoffice", lambda: None)
     with pytest.raises(ValueError, match="header or footer"):
         document_processing.normalise_document_upload("footer.docx", content.getvalue())
+
+
+def test_windows_office_install_is_found_when_not_on_path(tmp_path, monkeypatch):
+    program_files = tmp_path / "Program Files"
+    executable = program_files / "LibreOffice" / "program" / "soffice.exe"
+    executable.parent.mkdir(parents=True)
+    executable.touch()
+    monkeypatch.setenv("ProgramFiles", str(program_files))
+    monkeypatch.setattr(document_processing.shutil, "which", lambda _: None)
+
+    def convert(path, suffix, content):
+        assert path == str(executable)
+        assert suffix == ".doc"
+        return b"%PDF-1.7\nconverted"
+
+    monkeypatch.setattr(document_processing, "_convert_with_libreoffice", convert)
+    result = document_processing.normalise_document_upload(
+        "assessment.doc", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1synthetic"
+    )
+    assert result.content == b"%PDF-1.7\nconverted"
 
 
 def test_docx_falls_back_to_python_pdf_without_libreoffice(monkeypatch) -> None:
@@ -99,7 +126,7 @@ def test_docx_falls_back_to_python_pdf_without_libreoffice(monkeypatch) -> None:
 
 
 def test_doc_without_libreoffice_raises_clear_error(monkeypatch) -> None:
-    monkeypatch.setattr(document_processing.shutil, "which", lambda _: None)
+    monkeypatch.setattr(document_processing, "find_libreoffice", lambda: None)
 
     with pytest.raises(ValueError, match="DOC \\(legacy\\)"):
         document_processing.normalise_document_upload(

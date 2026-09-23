@@ -19,6 +19,8 @@ from sqlalchemy.orm import Session
 from app.enums import DocumentRole, UploadStatus
 from app.extraction.pdf_pipeline import PDFPipeline, PipelineConfig
 from app.extraction.schemas import (
+    EngineerAssessmentFields,
+    ExtractedEngineerAssessment,
     ExtractedInvoice,
     ExtractedLine,
     FieldSource,
@@ -346,5 +348,72 @@ def test_unparseable_engineer_assessment_is_reviewable_not_failed(
             assert serialised["manual_review_reason"] == (
                 "Engineer assessment could not be parsed automatically; manual review required."
             )
+    finally:
+        engine.dispose()
+
+
+def test_assessment_picker_routes_unfamiliar_report_to_text_reader(tmp_path, monkeypatch):
+    """The upload hint must reach the reader before keyword classification gates it."""
+    invoice_path = _native_pdf(
+        tmp_path, "invoice.pdf",
+        "Tax invoice\nInvoice number: INV-302\nRegistration: AB12XYZ\n"
+        "This invoice covers the replacement of the front door and repair of its fittings.\n"
+        "The repair work was carried out at the garage for the vehicle owner.",
+    )
+    pdf_path = _native_pdf(
+        tmp_path, "inspection.pdf",
+        "Repair authorisation\nOur reference AUTH-302\n"
+        "This vehicle carries plate AB12XYZ and has damage to the front door.\n"
+        "The approved work involves replacing the door and repairing its fittings.\n"
+        "These findings were recorded after inspecting the vehicle at the garage.",
+    )
+
+    class AssessmentReader:
+        max_pages = 8
+        calls = 0
+
+        def extract_assessment_from_text(self, pages):
+            self.calls += 1
+            return ExtractedEngineerAssessment(
+                fields=EngineerAssessmentFields(
+                    assessment_number="AUTH-302", registration="AB12XYZ"
+                ),
+                page_numbers=[page.page_number for page in pages],
+                extraction_method="llm_text", extraction_confidence=0.85,
+            )
+
+    reader = AssessmentReader()
+    monkeypatch.setattr(document_processing.settings, "storage_dir", tmp_path / "storage")
+    monkeypatch.setattr(document_processing.settings, "document_ocr_provider", "disabled")
+    monkeypatch.setattr(document_processing, "_build_cloud_ocr", lambda _: None)
+    monkeypatch.setattr(document_processing, "build_invoice_vision_extractor", lambda _: None)
+    monkeypatch.setattr(document_processing, "build_invoice_text_extractor", lambda _: reader)
+    monkeypatch.setattr(document_processing, "build_document_briefing_generator", lambda _: None)
+    engine = create_engine(f"sqlite:///{tmp_path / 'hint.db'}")
+    initialize_database(engine, seed_defaults=True)
+    try:
+        with Session(engine) as session:
+            case = Case(case_reference="HINT-302", created_by="pytest")
+            session.add(case)
+            session.flush()
+            invoice_doc = document_processing.store_pdf(
+                session, case=case, filename=invoice_path.name, content=invoice_path.read_bytes(),
+                intake_group="historical_claim",
+            )
+            session.commit()
+            document_processing.process_document(session, invoice_doc)
+            session.commit()
+            doc = document_processing.store_pdf(
+                session, case=case, filename=pdf_path.name, content=pdf_path.read_bytes(),
+                intake_group="historical_claim", document_kind_hint="engineer_assessment",
+            )
+            session.commit()
+            document_processing.process_document(session, doc)
+            session.commit()
+            assert reader.calls == 1
+            assert doc.engineer_assessment is not None
+            assert doc.engineer_assessment.assessment_number == "AUTH-302"
+            assert doc.engineer_assessment.paired_invoice_id == invoice_doc.invoices[0].id
+            assert not doc.invoices
     finally:
         engine.dispose()

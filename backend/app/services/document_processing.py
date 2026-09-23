@@ -157,6 +157,22 @@ class NormalisedDocumentUpload:
     source_format: str
 
 
+def find_libreoffice() -> str | None:
+    """Find Office installs that Windows/macOS installers don't add to PATH."""
+    executable = shutil.which("soffice") or shutil.which("libreoffice")
+    if executable:
+        return executable
+    candidates = [
+        Path(root) / "LibreOffice" / "program" / "soffice.exe"
+        for name in ("ProgramFiles", "ProgramFiles(x86)")
+        if (root := os.environ.get(name))
+    ]
+    if root := os.environ.get("LOCALAPPDATA"):
+        candidates.append(Path(root) / "Programs" / "LibreOffice" / "program" / "soffice.exe")
+    candidates.append(Path("/Applications/LibreOffice.app/Contents/MacOS/soffice"))
+    return next((str(path) for path in candidates if path.is_file()), None)
+
+
 def normalise_document_upload(filename: str, content: bytes) -> NormalisedDocumentUpload:
     """Convert a supported upload to the PDF contract used by the extraction pipeline."""
 
@@ -182,15 +198,14 @@ def normalise_document_upload(filename: str, content: bytes) -> NormalisedDocume
         raise ValueError(f"The uploaded {suffix[1:].upper()} file signature is invalid.")
 
     stored_name = f"{Path(safe_name).stem}.pdf"
-    executable = shutil.which("soffice") or shutil.which("libreoffice")
+    executable = find_libreoffice()
 
     if suffix == ".doc":
         # Legacy binary .doc cannot be parsed by python-docx; LibreOffice is required.
         if not executable:
             raise ValueError(
                 "DOC (legacy) files require LibreOffice to convert. Install LibreOffice "
-                "on the backend host, or upload the document as PDF or DOCX -- DOCX "
-                "uploads work without LibreOffice."
+                "on the backend host, or save the document as PDF in Word and upload the PDF."
             )
         pdf_content = _convert_with_libreoffice(executable, suffix, content)
         return NormalisedDocumentUpload(pdf_content, stored_name, "doc")
@@ -204,7 +219,11 @@ def normalise_document_upload(filename: str, content: bytes) -> NormalisedDocume
         pdf_content = docx_to_pdf_bytes(content)
     except Exception as python_exc:
         if not executable:
-            raise ValueError(f"DOCX document could not be read: {python_exc}") from python_exc
+            raise ValueError(
+                f"DOCX document could not be read: {python_exc} "
+                "This file has not reached AI extraction. Install LibreOffice on the "
+                "backend computer, or save this document as PDF in Word and upload the PDF."
+            ) from python_exc
         try:
             pdf_content = _convert_with_libreoffice(executable, suffix, content)
         except ValueError as libreoffice_exc:
@@ -704,6 +723,10 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
                 ocr_enabled=settings.document_ocr_provider in {"auto", "tesseract"},
                 vision_max_batches=settings.llm_vision_max_batches,
                 text_max_batches=settings.llm_text_max_batches,
+                assessment_document=bool(
+                    document_metadata.get("document_kind_hint") == "engineer_assessment"
+                    or document_metadata.get("paired_document_id")
+                ),
             ),
             cloud_ocr=cloud_ocr,
             vision_extractor=vision_extractor,
