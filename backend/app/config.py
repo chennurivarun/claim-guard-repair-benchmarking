@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     storage_dir: Path = BACKEND_DIR / "data" / "storage"
     max_upload_bytes: int = Field(default=50 * 1024 * 1024, gt=0)
     max_pdf_pages: int = Field(default=100, gt=0, le=1000)
+    libreoffice_path: str | None = None
     sqlite_timeout_seconds: float = Field(default=30.0, gt=0)
     sqlite_busy_timeout_ms: int = Field(default=30_000, gt=0)
     auto_create_schema: bool = True

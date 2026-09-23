@@ -85,6 +85,18 @@ uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 `claimguard-setup` imports the reference library — ontology seed, historical invoice history and the UK external price benchmarks — and opens a single empty case (`CG-CLIENT-001` by default, `--case-reference` to choose another, `--no-case` for the reference library alone). It creates no demo case and ingests no demo invoice. The bundled demo case is still available for the sample-data walkthrough via `uv run claimguard-bootstrap`; do not run it on a machine that is about to take real client documents.
 
+**Automatic Word conversion:** before starting the backend on Windows, run this once from `backend/`:
+
+```powershell
+uv run claimguard-converter --install
+```
+
+This detects LibreOffice, installs it through WinGet if missing, and checks actual conversion of a synthetic Word document with an image, header and nested table. Follow any installer/IT approval prompts. If WinGet is unavailable or installation is blocked, IT must install LibreOffice on the backend computer. For macOS/Linux, install LibreOffice through your normal installer or package manager, then run `uv run claimguard-converter` to verify it. The check without `--install` never installs software.
+
+After the check prints `PASS`, restart the backend and upload previously rejected Word files again. Complex DOCX and legacy DOC files automatically convert to PDF before extraction; uploaded originals are retained unchanged. Simple text/table DOCX files use the existing table-preserving converter. No manual Save As PDF is needed for files the installed converter supports. Uploading never installs software or sends files to an external conversion service. Image-only pages still need working OCR or image extraction; this conversion check does not certify AI accuracy or matching.
+
+For a custom installation, set `CLAIM_GUARD_LIBREOFFICE_PATH` in `backend/.env` to the full executable path (for example `C:/Program Files/LibreOffice/program/soffice.com`). Standard Windows installation folders are detected even when LibreOffice is absent from PATH. Windows uses the console launcher when available, as described in [LibreOffice's command-line documentation](https://help.libreoffice.org/latest/en-GB/text/shared/guide/start_parameters.html). The setup uses the exact package ID from [Microsoft's WinGet repository](https://github.com/microsoft/winget-pkgs/tree/master/manifests/t/TheDocumentFoundation/LibreOffice).
+
 Keep that terminal open. Open a second terminal in the same `claim-guard` folder and run:
 
 ```bash

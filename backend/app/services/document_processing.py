@@ -159,8 +159,23 @@ class NormalisedDocumentUpload:
 
 def find_libreoffice() -> str | None:
     """Find Office installs that Windows/macOS installers don't add to PATH."""
+    if configured := settings.libreoffice_path:
+        path = Path(configured).expanduser()
+        if not path.is_absolute() or not path.is_file():
+            raise ValueError(
+                "CLAIM_GUARD_LIBREOFFICE_PATH must point to an existing absolute "
+                "LibreOffice executable path. Correct it in backend/.env and restart the API."
+            )
+        return str(path)
+    # The Windows console launcher waits for headless conversion and reports errors.
+    console = shutil.which("soffice.com") if os.name == "nt" else None
+    if console:
+        return console
     executable = shutil.which("soffice") or shutil.which("libreoffice")
     if executable:
+        console_path = Path(executable).with_suffix(".com")
+        if Path(executable).suffix.lower() == ".exe" and console_path.is_file():
+            return str(console_path)
         return executable
     candidates = [
         Path(root) / "LibreOffice" / "program" / "soffice.exe"
@@ -169,6 +184,7 @@ def find_libreoffice() -> str | None:
     ]
     if root := os.environ.get("LOCALAPPDATA"):
         candidates.append(Path(root) / "Programs" / "LibreOffice" / "program" / "soffice.exe")
+    candidates = [candidate for path in candidates for candidate in (path.with_suffix(".com"), path)]
     candidates.append(Path("/Applications/LibreOffice.app/Contents/MacOS/soffice"))
     return next((str(path) for path in candidates if path.is_file()), None)
 
@@ -198,14 +214,15 @@ def normalise_document_upload(filename: str, content: bytes) -> NormalisedDocume
         raise ValueError(f"The uploaded {suffix[1:].upper()} file signature is invalid.")
 
     stored_name = f"{Path(safe_name).stem}.pdf"
-    executable = find_libreoffice()
-
     if suffix == ".doc":
         # Legacy binary .doc cannot be parsed by python-docx; LibreOffice is required.
+        executable = find_libreoffice()
         if not executable:
             raise ValueError(
-                "DOC (legacy) files require LibreOffice to convert. Install LibreOffice "
-                "on the backend host, or save the document as PDF in Word and upload the PDF."
+                "DOC (legacy) files require LibreOffice to convert. Run "
+                "uv run claimguard-converter --install from backend/ on Windows, "
+                "or install LibreOffice on the backend host. Then upload this file again. "
+                "You can also save the document as PDF in Word and upload the PDF."
             )
         pdf_content = _convert_with_libreoffice(executable, suffix, content)
         return NormalisedDocumentUpload(pdf_content, stored_name, "doc")
@@ -218,16 +235,22 @@ def normalise_document_upload(filename: str, content: bytes) -> NormalisedDocume
     try:
         pdf_content = docx_to_pdf_bytes(content)
     except Exception as python_exc:
+        executable = find_libreoffice()
         if not executable:
             raise ValueError(
                 f"DOCX document could not be read: {python_exc} "
-                "This file has not reached AI extraction. Install LibreOffice on the "
-                "backend computer, or save this document as PDF in Word and upload the PDF."
+                "This file has not reached AI extraction. On Windows, run "
+                "uv run claimguard-converter --install from backend/ to set up automatic "
+                "conversion, then upload this file again. Alternatively install LibreOffice "
+                "on the backend computer, or save this document as PDF in Word and upload the PDF."
             ) from python_exc
         try:
             pdf_content = _convert_with_libreoffice(executable, suffix, content)
         except ValueError as libreoffice_exc:
-            raise ValueError(f"DOCX document could not be read: {python_exc}") from libreoffice_exc
+            raise ValueError(
+                f"DOCX automatic conversion failed: {libreoffice_exc} "
+                "Run uv run claimguard-converter from backend/ to check the converter."
+            ) from libreoffice_exc
         return NormalisedDocumentUpload(pdf_content, stored_name, "docx-libreoffice")
     if len(pdf_content) > settings.max_upload_bytes:
         raise ValueError(

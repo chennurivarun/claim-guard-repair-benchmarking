@@ -140,3 +140,39 @@ def test_pdf_upload_is_not_rewritten() -> None:
     assert normalised.content == content
     assert normalised.stored_filename == "repair.pdf"
     assert normalised.source_format == "pdf"
+
+
+def test_windows_console_launcher_is_preferred(tmp_path, monkeypatch):
+    program = tmp_path / "LibreOffice" / "program"
+    program.mkdir(parents=True)
+    (program / "soffice.exe").touch()
+    (program / "soffice.com").touch()
+    monkeypatch.setenv("ProgramFiles", str(tmp_path))
+    monkeypatch.setattr(document_processing.shutil, "which", lambda _: None)
+    assert document_processing.find_libreoffice() == str(program / "soffice.com")
+
+
+def test_custom_converter_path_and_invalid_override(tmp_path, monkeypatch):
+    executable = tmp_path / "Custom Office" / "soffice.com"
+    executable.parent.mkdir()
+    executable.touch()
+    monkeypatch.setattr(document_processing.settings, "libreoffice_path", str(executable))
+    assert document_processing.find_libreoffice() == str(executable)
+    monkeypatch.setattr(document_processing.settings, "libreoffice_path", str(tmp_path / "missing"))
+    with pytest.raises(ValueError, match="CLAIM_GUARD_LIBREOFFICE_PATH"):
+        document_processing.find_libreoffice()
+    # Native PDF and text-only Word uploads do not require the Office fallback.
+    assert document_processing.normalise_document_upload("plain.docx", _build_invoice_docx()).source_format == "docx-python"
+
+
+def test_office_conversion_failure_keeps_actual_reason(monkeypatch):
+    from app.converter_setup import build_conversion_probe
+
+    monkeypatch.setattr(document_processing, "find_libreoffice", lambda: "/office/soffice")
+
+    def fail(*args):
+        raise ValueError("Word document conversion timed out after 60 seconds.")
+
+    monkeypatch.setattr(document_processing, "_convert_with_libreoffice", fail)
+    with pytest.raises(ValueError, match="automatic conversion failed:.*timed out"):
+        document_processing.normalise_document_upload("visual.docx", build_conversion_probe())

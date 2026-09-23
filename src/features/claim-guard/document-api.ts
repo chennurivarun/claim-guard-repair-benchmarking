@@ -171,7 +171,8 @@ export function uploadCurrentDocument(
   return requestJson<UploadedDocument>(
     `/api/v1/claims/${encodeURIComponent(caseReference)}/documents`,
     { method: "POST", body: form },
-    60_000
+    // Allow upload time in addition to the backend's 60-second Word conversion limit.
+    90_000
   )
 }
 

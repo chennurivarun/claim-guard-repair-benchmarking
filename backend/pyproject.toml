@@ -46,6 +46,7 @@ claimguard-reset = "app.reset:main"
 claimguard-import-vehicle-lookup = "app.vehicle_lookup_import:main"
 claimguard-import-external-benchmarks = "app.external_benchmark_import:main"
 claimguard-probe = "app.llm.selftest:main"
+claimguard-converter = "app.converter_setup:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
