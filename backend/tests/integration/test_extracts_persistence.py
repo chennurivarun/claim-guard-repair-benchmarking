@@ -33,6 +33,7 @@ from app.enums import (
     RunStatus,
     Severity,
 )
+from app.extraction.pdf_pipeline import PDFPipeline
 from app.init_db import initialize_database
 from app.main import app
 from app.models import (
@@ -131,6 +132,69 @@ def _process_pair(client: TestClient, pair_id: int) -> dict[str, dict]:
 
 def _session(client: TestClient) -> Session:
     return Session(client.engine, expire_on_commit=False)
+
+
+def test_repeated_extracted_line_numbers_are_persisted_without_losing_rows(
+    extracts_client, monkeypatch
+) -> None:
+    original_analyse = PDFPipeline.analyse
+
+    def repeated_line_number(self, *args, **kwargs):
+        analysis = original_analyse(self, *args, **kwargs)
+        if not analysis.invoices:
+            return analysis
+        lines = analysis.invoices[0].line_items
+        assert len(lines) > 1
+        lines[1].sequence_no = lines[0].sequence_no
+        return analysis
+
+    monkeypatch.setattr(PDFPipeline, "analyse", repeated_line_number)
+    _process_pair(extracts_client, 1)
+    with _session(extracts_client) as session:
+        invoice = session.scalars(select(Invoice)).one()
+        lines = _lines(session, invoice)
+        assert len(lines) == len(invoice.extraction_payload_json["line_items"])
+        assert all(line.sequence_no >= 1 for line in lines)
+        assert len({line.sequence_no for line in lines}) == len(lines)
+        raw_lines = invoice.extraction_payload_json["line_items"]
+        assert raw_lines[0]["sequence_no"] == raw_lines[1]["sequence_no"]
+
+
+def test_database_flush_failure_marks_document_failed_and_retryable(
+    extracts_client, monkeypatch
+) -> None:
+    original_analyse = PDFPipeline.analyse
+
+    def invalid_confidence(self, *args, **kwargs):
+        analysis = original_analyse(self, *args, **kwargs)
+        analysis.invoices[0].line_items[0].source.confidence = 1.5
+        return analysis
+
+    monkeypatch.setattr(PDFPipeline, "analyse", invalid_confidence)
+    reference = "EXTRACTS-BAD-FLUSH"
+    created = extracts_client.post(
+        "/api/v1/claims",
+        json={"case_reference": reference, "claim_number": reference, "created_by": "pytest"},
+    )
+    assert created.status_code == 201, created.text
+    filename = PAIRS[1][1]
+    uploaded = extracts_client.post(
+        f"/api/v1/claims/{reference}/documents",
+        files={"file": (filename, (FIXTURES / filename).read_bytes(), DOCX_MIME)},
+        data={"role": "current"},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    document_id = uploaded.json()["id"]
+    processed = extracts_client.post(f"/api/v1/documents/{document_id}/process")
+    assert processed.status_code == 422, processed.text
+    receipt = extracts_client.get(f"/api/v1/claims/{reference}/documents").json()
+    row = next(item for item in receipt if item["id"] == document_id)
+    assert row["status"] == "failed"
+    assert row["can_retry_extraction"] is True
+    assert row["processing_error"]
+    with _session(extracts_client) as session:
+        assert session.get(Document, document_id).upload_status.value == "failed"
+        assert session.scalars(select(Invoice).where(Invoice.document_id == document_id)).all() == []
 
 
 def _money(value: str | None) -> Decimal | None:

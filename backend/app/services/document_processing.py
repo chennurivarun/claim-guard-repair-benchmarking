@@ -678,6 +678,10 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
     case = session.get(Case, document.case_id)
     if case is None:
         raise ValueError("Document case does not exist.")
+    # A failed flush expires ORM attributes. Keep the identities before any
+    # persistence work so the error handler can roll back without loading them.
+    document_id = document.id
+    case_id = case.id
     previous_run_id = case.current_processing_run_id
     previous_case_status = case.status
     run = _new_run(session, case)
@@ -1036,12 +1040,18 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
             )
 
             line_rows: dict[int, InvoiceLineItem] = {}
+            next_sequence = 1
             for line in extracted.line_items:
+                # Extractors can repeat or omit printed row numbers. The raw
+                # extract remains in extraction_payload_json; database row
+                # ordering needs a distinct positive number for every line.
+                sequence_no = max(line.sequence_no, next_sequence)
+                next_sequence = sequence_no + 1
                 source_page = page_rows.get(line.source.page_number)
                 bbox = line.source.bbox
                 line_row = InvoiceLineItem(
                     invoice_id=invoice.id,
-                    sequence_no=line.sequence_no,
+                    sequence_no=sequence_no,
                     raw_description=line.raw_description,
                     normalised_description=line.normalised_description,
                     item_kind=_enum_or(LineItemKind, line.item_kind, LineItemKind.UNKNOWN),
@@ -1230,8 +1240,6 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
         if engineer_pages and assessment_fields is not None:
             run.metrics_json["engineer_assessments"] = 1
     except Exception as exc:
-        document_id = document.id
-        case_id = case.id
         session.rollback()
         failed_document = session.get(Document, document_id)
         failed_case = session.get(Case, case_id)
