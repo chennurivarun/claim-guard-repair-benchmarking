@@ -856,3 +856,33 @@ def test_empty_extraction_with_saved_pages_can_be_retried(mapping_client, monkey
         document = session.get(Document, document_id)
         assert len(document.pages) == document.page_count
         assert len({page.page_number for page in document.pages}) == document.page_count
+
+
+def test_extraction_setup_failure_is_visible_and_retryable(mapping_client, monkeypatch):
+    from app.services import document_processing
+
+    client = mapping_client
+    client.post("/api/v1/claims", json={
+        "case_reference": REFERENCE, "claim_number": "SETUP-FAIL-1", "created_by": HANDLER,
+    })
+    uploaded = client.post(
+        f"/api/v1/claims/{REFERENCE}/documents",
+        files={"file": (INVOICE_A, (FIXTURES / INVOICE_A).read_bytes(), DOCX_MIME)},
+        data={"role": "current", "intake_group": "historical_claim"},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    document_id = uploaded.json()["id"]
+    with monkeypatch.context() as patch:
+        def invalid_configuration(*args, **kwargs):
+            raise ValueError("Azure OCR configuration is incomplete. Set both required values.")
+        patch.setattr(document_processing, "_build_cloud_ocr", invalid_configuration)
+        result = client.post(f"/api/v1/documents/{document_id}/process")
+        assert result.status_code == 422, result.text
+    row = next(row for row in client.get(f"/api/v1/claims/{REFERENCE}/documents").json()
+               if row["id"] == document_id)
+    assert row["status"] == "failed"
+    assert "Azure OCR configuration is incomplete" in row["processing_error"]
+    assert row["can_retry_extraction"] is True
+    recovered = client.post(f"/api/v1/documents/{document_id}/process?retry_empty=true")
+    assert recovered.status_code == 200, recovered.text
+    assert recovered.json()["document"]["invoice_units"] == 1

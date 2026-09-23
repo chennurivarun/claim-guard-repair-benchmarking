@@ -689,22 +689,22 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
     # (one per upload source) share a hash but never a directory.  For every
     # document stored before per-source directories this is the same path.
     output_dir = Path(document.storage_path).parent / "pages"
-    cloud_ocr = _build_cloud_ocr(settings)
-    vision_extractor = build_invoice_vision_extractor(settings)
-    text_extractor = build_invoice_text_extractor(settings)
-    briefing_generator = build_document_briefing_generator(settings)
-    pipeline = PDFPipeline(
-        PipelineConfig(
-            max_pages=settings.max_pdf_pages,
-            ocr_enabled=settings.document_ocr_provider in {"auto", "tesseract"},
-            vision_max_batches=settings.llm_vision_max_batches,
-            text_max_batches=settings.llm_text_max_batches,
-        ),
-        cloud_ocr=cloud_ocr,
-        vision_extractor=vision_extractor,
-        text_extractor=text_extractor,
-    )
     try:
+        cloud_ocr = _build_cloud_ocr(settings)
+        vision_extractor = build_invoice_vision_extractor(settings)
+        text_extractor = build_invoice_text_extractor(settings)
+        briefing_generator = build_document_briefing_generator(settings)
+        pipeline = PDFPipeline(
+            PipelineConfig(
+                max_pages=settings.max_pdf_pages,
+                ocr_enabled=settings.document_ocr_provider in {"auto", "tesseract"},
+                vision_max_batches=settings.llm_vision_max_batches,
+                text_max_batches=settings.llm_text_max_batches,
+            ),
+            cloud_ocr=cloud_ocr,
+            vision_extractor=vision_extractor,
+            text_extractor=text_extractor,
+        )
         analysis = pipeline.analyse(document.storage_path, output_dir)
         document.page_count = analysis.page_count
         page_rows: dict[int, DocumentPage] = {}
@@ -1240,7 +1240,9 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
             failed_document.metadata_json = {
                 **(failed_document.metadata_json or {}),
                 "processing_error": (
-                    "Extraction failed. The uploaded file is retained. Retry processing; "
+                    str(exc) if isinstance(exc, ValueError)
+                    and ("Azure OCR configuration" in str(exc) or "Azure OCR is selected" in str(exc))
+                    else "Extraction failed. The uploaded file is retained. Retry processing; "
                     "if it fails again, review the document format and OCR configuration."
                 ),
             }

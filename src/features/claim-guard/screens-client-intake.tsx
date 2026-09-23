@@ -507,6 +507,17 @@ export function ClientIntakeScreen({
                 }{" "}
                 documents processed
               </p>
+              {documents.some((d) => d.intake_group === group && (d.invoice_units ?? 0) > 0) &&
+               !documents.some((d) => d.intake_group === group && (d.assessment_units ?? 0) > 0) && (
+                <Alert>
+                  <AlertTitle>No engineer assessments in this source</AlertTitle>
+                  <AlertDescription>
+                    Invoices cannot pair until assessment files are uploaded and extracted here.
+                    Select the assessment files in the Engineer assessments picker above, then upload.
+                    Files marked stored can be processed from the receipt below.
+                  </AlertDescription>
+                </Alert>
+              )}
             </CardContent>
           </Card>
         ))}
@@ -541,7 +552,7 @@ export function ClientIntakeScreen({
                   )}</TableCell>
                   <TableCell className="space-x-2">
                     {document.original_url && <a className="underline" href={document.original_url} target="_blank" rel="noreferrer">Original</a>}
-                    {document.can_retry_extraction && <Button size="sm" variant="outline" disabled={busy || finalised} onClick={() => void retryExtraction(document.id)}>Retry extraction</Button>}
+                    {document.can_retry_extraction && <Button size="sm" variant="outline" disabled={busy || finalised} onClick={() => void retryExtraction(document.id)}>{document.status === "stored" ? "Process stored file" : "Retry extraction"}</Button>}
                     {document.manual_review && <Button size="sm" variant="outline" onClick={() => onOpenManualReview(document.id)}>Review</Button>}
                   </TableCell>
                 </TableRow>
