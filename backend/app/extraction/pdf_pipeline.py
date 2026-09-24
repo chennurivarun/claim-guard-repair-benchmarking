@@ -10,6 +10,7 @@ from pathlib import Path
 import fitz
 from PIL import Image
 
+from app.extraction.assessment_merge import merge_assessment_extractions, needs_assessment_details
 from app.extraction.azure_document_intelligence import (
     AzureDocumentIntelligenceOCR,
     CloudOCRPage,
@@ -773,10 +774,12 @@ class PDFPipeline:
                             merged_assessment.extraction_confidence,
                         )
 
-        # Engineer assessments get the same universal reader fallback: only attempted
-        # when nothing above (deterministic parsing happens later in document_processing,
-        # vision above) has already produced an assessment.
-        if self.text_extractor is not None and not analysis.engineer_assessments:
+        # Identity/totals alone are not a successful detail extraction. Let the
+        # text reader recover missing sections even after a header-only vision result.
+        if self.text_extractor is not None and (
+            not analysis.engineer_assessments
+            or any(needs_assessment_details(item) for item in analysis.engineer_assessments)
+        ):
             extract_assessment_text = getattr(
                 self.text_extractor, "extract_assessment_from_text", None
             )
@@ -801,7 +804,12 @@ class PDFPipeline:
                         text_assessment_batches.append(extracted_assessment)
                 merged_text_assessment = _merge_assessment_batches(text_assessment_batches)
                 if merged_text_assessment is not None:
-                    analysis.engineer_assessments.append(merged_text_assessment)
+                    if analysis.engineer_assessments:
+                        analysis.engineer_assessments[0] = merge_assessment_extractions(
+                            analysis.engineer_assessments[0], merged_text_assessment
+                        )
+                    else:
+                        analysis.engineer_assessments.append(merged_text_assessment)
                     assessment_numbers = set(merged_text_assessment.page_numbers)
                     for page in pages:
                         if page.page_number in assessment_numbers:

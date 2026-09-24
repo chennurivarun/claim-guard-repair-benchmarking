@@ -62,6 +62,7 @@ DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.docu
 PAIRS: dict[int, tuple[str, str]] = {
     1: ("DL_Auda_format_1_assessment.docx", "DL_Repair_Invoice_format_1.docx"),
     2: ("DL_Auda_format_2_assessment.docx", "DL_Invoice_2_request_for_payment.docx"),
+    4: ("DL_Auda_format_4_assessment.docx", "DL_Invoice_4_request_for_payment.docx"),
     7: ("DL_Auda_format_7_assessment.docx", "DL_Repair_Invoice_format_7.docx"),
 }
 
@@ -132,6 +133,79 @@ def _process_pair(client: TestClient, pair_id: int) -> dict[str, dict]:
 
 def _session(client: TestClient) -> Session:
     return Session(client.engine, expire_on_commit=False)
+
+
+def _legacy_assessment_without_rows(client):
+    documents = _process_pair(client, 4)
+    document_id = documents[PAIRS[4][0]]["id"]
+    with _session(client) as session:
+        assessment = session.scalar(select(EngineerAssessment).where(
+            EngineerAssessment.document_id == document_id
+        ))
+        expected_count = len(assessment.operations)
+        assert expected_count > 0
+        for row in list(assessment.operations):
+            session.delete(row)
+        assessment.authorisation_status = "handler-checked"
+        snapshot = (assessment.id, assessment.paired_invoice_id,
+                    assessment.parts_net, assessment.review_status)
+        session.commit()
+    return document_id, snapshot, expected_count
+
+
+def test_retry_assessment_details_preserves_pair_and_supplies_total_parts_breakdown(extracts_client):
+    from app.services.engineer_assessment import section_breakdown_for_invoice
+
+    document_id, snapshot, expected_count = _legacy_assessment_without_rows(extracts_client)
+    recovered = extracts_client.post(f"/api/v1/documents/{document_id}/assessment-details")
+    assert recovered.status_code == 200, recovered.text
+    assert recovered.json()["operation_count"] == expected_count
+    assert recovered.json()["document"]["assessment_operation_count"] == expected_count
+    assert recovered.json()["document"]["can_retry_assessment_details"] is False
+    with _session(extracts_client) as session:
+        assessment = session.get(EngineerAssessment, snapshot[0])
+        assert (assessment.id, assessment.paired_invoice_id,
+                assessment.parts_net, assessment.review_status) == snapshot
+        assert assessment.authorisation_status == "handler-checked"
+        invoice = session.get(Invoice, assessment.paired_invoice_id)
+        parts = next(item for item in section_breakdown_for_invoice(session, invoice)
+                     if item["line_item_type"] == "parts")
+        assert parts["breakdown_available"] is True
+        assert len(parts["rows"]) > 0
+        assert all(row["category"] == "parts" for row in parts["rows"])
+    again = extracts_client.post(f"/api/v1/documents/{document_id}/assessment-details")
+    assert again.status_code == 409  # never duplicates or replaces extracted rows
+
+
+def test_failed_detail_recovery_keeps_existing_assessment(extracts_client, monkeypatch):
+    from app.enums import UploadStatus
+
+    document_id, snapshot, _ = _legacy_assessment_without_rows(extracts_client)
+
+    def unavailable(*args, **kwargs):
+        raise RuntimeError("reader unavailable")
+
+    monkeypatch.setattr(PDFPipeline, "analyse", unavailable)
+    response = extracts_client.post(f"/api/v1/documents/{document_id}/assessment-details")
+    assert response.status_code == 422
+    with _session(extracts_client) as session:
+        assessment = session.get(EngineerAssessment, snapshot[0])
+        assert (assessment.id, assessment.paired_invoice_id,
+                assessment.parts_net, assessment.review_status) == snapshot
+        assert not assessment.operations
+        assert session.get(Document, document_id).upload_status == UploadStatus.READY
+
+
+def test_finalised_case_cannot_retry_assessment_details(extracts_client):
+    from app.enums import CaseStatus
+
+    document_id, snapshot, _ = _legacy_assessment_without_rows(extracts_client)
+    with _session(extracts_client) as session:
+        assessment = session.get(EngineerAssessment, snapshot[0])
+        session.get(Case, assessment.case_id).status = CaseStatus.FINALISED
+        session.commit()
+    response = extracts_client.post(f"/api/v1/documents/{document_id}/assessment-details")
+    assert response.status_code == 409
 
 
 def test_repeated_extracted_line_numbers_are_persisted_without_losing_rows(

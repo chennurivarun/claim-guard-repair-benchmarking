@@ -395,11 +395,11 @@ describe("the three empty-breakdown cases each say something different", () => {
     expect(html).toContain("could not build a split")
   })
 
-  it("says the assessment prints a total only, and that nothing failed", () => {
+  it("reports missing extracted rows without asserting the original has no detail", () => {
     const html = renderBreakdown(totalOnly)
-    expect(html).toContain("The engineer assessment prints this section as a total only")
+    expect(html).toContain("Engineer assessment total found, but no detailed rows extracted")
     expect(html).toContain(
-      "The document does not itemise it — the extraction did not fail."
+      "If it lists parts or operations, these details were missed"
     )
   })
 
@@ -408,7 +408,7 @@ describe("the three empty-breakdown cases each say something different", () => {
     for (const phrase of [
       "No engineer assessment is paired to this invoice",
       "This section resolves to no engineer assessment category",
-      "The engineer assessment prints this section as a total only",
+      "Engineer assessment total found, but no detailed rows extracted",
     ]) {
       expect(rendered.filter((html) => html.includes(phrase))).toHaveLength(1)
     }
@@ -479,9 +479,9 @@ describe("the fourth empty-breakdown case: resolvable, but the assessment prints
       createElement(SectionBreakdownDetail, { breakdown: noSectionTotal })
     )
     expect(html).toContain(
-      "The paired engineer assessment prints no total for this section"
+      "No engineer assessment total was extracted for this section"
     )
-    expect(html).toContain("the extraction did not fail")
+    expect(html).not.toContain("the extraction did not fail")
     expect(html).not.toContain("This section resolves to no engineer assessment category")
   })
 
@@ -491,7 +491,7 @@ describe("the fourth empty-breakdown case: resolvable, but the assessment prints
     )
     expect(html).toContain("This section resolves to no engineer assessment category")
     expect(html).not.toContain(
-      "The paired engineer assessment prints no total for this section"
+      "No engineer assessment total was extracted for this section"
     )
   })
 
@@ -503,7 +503,7 @@ describe("the fourth empty-breakdown case: resolvable, but the assessment prints
         })
       )
       expect(html).toContain(
-        "The paired engineer assessment prints no total for this section"
+        "No engineer assessment total was extracted for this section"
       )
     }
   })

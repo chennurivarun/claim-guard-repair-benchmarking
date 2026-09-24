@@ -20,6 +20,7 @@ from app.enums import DocumentRole, UploadStatus
 from app.extraction.pdf_pipeline import PDFPipeline, PipelineConfig
 from app.extraction.schemas import (
     EngineerAssessmentFields,
+    ExtractedAssessmentOperation,
     ExtractedEngineerAssessment,
     ExtractedInvoice,
     ExtractedLine,
@@ -414,6 +415,89 @@ def test_assessment_picker_routes_unfamiliar_report_to_text_reader(tmp_path, mon
             assert doc.engineer_assessment is not None
             assert doc.engineer_assessment.assessment_number == "AUTH-302"
             assert doc.engineer_assessment.paired_invoice_id == invoice_doc.invoices[0].id
+            assert not doc.invoices
+    finally:
+        engine.dispose()
+
+
+def _assessment_with_details(*, details=True):
+    return ExtractedEngineerAssessment(
+        fields=EngineerAssessmentFields(
+            assessment_number="AUTH-302", registration="AB12XYZ", parts_net="80.00"
+        ),
+        operations=[ExtractedAssessmentOperation(
+            sequence_no=8, category="Parts", description="Front door", quantity="1",
+            unit_price="80.00", total="80.00", page_number=1, part_number="DOOR-1",
+        )] if details else [],
+        page_numbers=[1], extraction_method="llm_text", extraction_confidence=0.85,
+    )
+
+
+def test_header_only_vision_does_not_block_assessment_text_details(tmp_path):
+    pdf_path = _native_pdf(tmp_path, "assessment.pdf",
+        "Engineer assessment report\nAssessment number: AUTH-302\nRegistration: AB12XYZ\n"
+        "Parts total: 80.00\nReplacement component Front door / DOOR-1 / 1 / 80.00\n")
+
+    class VisionReader:
+        max_pages = 8
+
+        def extract_assessment(self, pages):
+            return _assessment_with_details(details=False)
+
+    class TextReader:
+        max_pages = 8
+        calls = 0
+
+        def extract_assessment_from_text(self, pages):
+            self.calls += 1
+            return _assessment_with_details()
+
+    reader = TextReader()
+    analysis = PDFPipeline(
+        PipelineConfig(ocr_enabled=False, assessment_document=True),
+        vision_extractor=VisionReader(), text_extractor=reader,
+    ).analyse(pdf_path, tmp_path / "pages")
+    assert reader.calls == 1
+    assert len(analysis.engineer_assessments) == 1
+    assert analysis.engineer_assessments[0].operations[0].part_number == "DOOR-1"
+
+
+def test_header_only_parser_does_not_discard_ai_assessment_details(tmp_path, monkeypatch):
+    pdf_path = _native_pdf(tmp_path, "assessment.pdf",
+        "Engineer assessment report\nAssessment number: AUTH-302\nRegistration: AB12XYZ\n"
+        "Parts total: 80.00\nReplacement component Front door / DOOR-1 / 1 / 80.00\n")
+
+    class Reader:
+        max_pages = 8
+
+        def extract_assessment_from_text(self, pages):
+            return _assessment_with_details()
+
+    monkeypatch.setattr(document_processing.settings, "storage_dir", tmp_path / "storage")
+    monkeypatch.setattr(document_processing.settings, "document_ocr_provider", "disabled")
+    monkeypatch.setattr(document_processing, "_build_cloud_ocr", lambda _: None)
+    monkeypatch.setattr(document_processing, "build_invoice_vision_extractor", lambda _: None)
+    monkeypatch.setattr(document_processing, "build_invoice_text_extractor", lambda _: Reader())
+    monkeypatch.setattr(document_processing, "build_document_briefing_generator", lambda _: None)
+    engine = create_engine(f"sqlite:///{tmp_path / 'details.db'}")
+    initialize_database(engine, seed_defaults=True)
+    try:
+        with Session(engine) as session:
+            case = Case(case_reference="DETAILS-302", created_by="pytest")
+            session.add(case)
+            session.flush()
+            doc = document_processing.store_pdf(
+                session, case=case, filename=pdf_path.name, content=pdf_path.read_bytes(),
+                intake_group="historical_claim", document_kind_hint="engineer_assessment",
+            )
+            document_processing.process_document(session, doc)
+            session.commit()
+            assessment = doc.engineer_assessment
+            assert assessment.assessment_number == "AUTH-302"
+            assert len(assessment.operations) == 1
+            assert assessment.operations[0].part_number == "DOOR-1"
+            assert assessment.operations[0].category == "parts"
+            assert Decimal(assessment.operations[0].total_net) == Decimal("80.00")
             assert not doc.invoices
     finally:
         engine.dispose()

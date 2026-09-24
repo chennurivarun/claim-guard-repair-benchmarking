@@ -157,12 +157,12 @@ const BREAKDOWN_GAP_MESSAGES: Record<
     body: "An engineer assessment is paired, but the tool could not match this invoice section to any section the engineer assessment prints, so it could not build a split.",
   },
   "no-section-total": {
-    title: "The paired engineer assessment prints no total for this section",
-    body: "This section does map to one the engineer assessment can print, but the paired document leaves it blank — it assessed nothing under this heading. There is no figure to split against; the extraction did not fail.",
+    title: "No engineer assessment total was extracted for this section",
+    body: "The extracted engineer assessment has no total for this heading. Check the original engineer assessment to see whether the figure is absent or was missed during extraction.",
   },
   "total-only": {
-    title: "The engineer assessment prints this section as a total only",
-    body: "The paired engineer assessment carries the section total but no line detail behind it. The document does not itemise it — the extraction did not fail.",
+    title: "Engineer assessment total found, but no detailed rows extracted",
+    body: "The engineer assessment is paired and its section total was read, but no detailed rows were extracted for this section. Check the original engineer assessment. If it lists parts or operations, these details were missed; use Retry engineer assessment details on Upload documents when the engineer assessment has no detail rows.",
   },
 }
 

@@ -67,6 +67,8 @@ export interface UploadedDocument {
   invoice_units?: number
   extracted_invoice_units?: number
   assessment_units?: number
+  assessment_operation_count?: number | null
+  can_retry_assessment_details?: boolean
   processing_error?: string | null
   can_retry_extraction?: boolean
   reprocess_required: boolean
@@ -188,6 +190,14 @@ export function processUploadedDocument(documentId: string, force = false) {
 export function retryEmptyDocument(documentId: string) {
   return requestJson<DocumentProcessingResult>(
     `/api/v1/documents/${encodeURIComponent(documentId)}/process?retry_empty=true`,
+    { method: "POST" },
+    180_000
+  )
+}
+
+export function retryAssessmentDetails(documentId: string) {
+  return requestJson<{ document: UploadedDocument; operation_count: number; status: string }>(
+    `/api/v1/documents/${encodeURIComponent(documentId)}/assessment-details`,
     { method: "POST" },
     180_000
   )

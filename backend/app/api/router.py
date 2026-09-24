@@ -123,6 +123,7 @@ from app.services.document_mapping import (
 from app.services.document_processing import (
     normalise_document_upload,
     process_document,
+    retry_assessment_details,
     serialise_document,
     store_pdf,
 )
@@ -1146,6 +1147,45 @@ def list_case_documents(
         .order_by(Document.created_at.desc())
     ).all()
     return [serialise_document(document) for document in documents]
+
+
+@router.post("/documents/{document_id}/assessment-details", tags=["documents"])
+def recover_assessment_details(document_id: str, db: DatabaseSession) -> dict[str, Any]:
+    document = db.get(Document, document_id)
+    if document is None:
+        raise _not_found("Document not found")
+    case = db.get(Case, document.case_id)
+    if case is not None and case.status == CaseStatus.FINALISED:
+        raise HTTPException(status_code=409, detail={
+            "code": "CASE_ALREADY_FINALISED",
+            "message": "Create a new case revision before extracting assessment details.",
+        })
+    if document.upload_status != UploadStatus.READY:
+        raise HTTPException(status_code=409, detail={
+            "code": "DOCUMENT_NOT_READY", "message": "Wait for document processing to finish.",
+        })
+    if document.engineer_assessment is None or document.engineer_assessment.operations:
+        raise HTTPException(status_code=409, detail={
+            "code": "ASSESSMENT_DETAILS_NOT_EMPTY",
+            "message": "Detail recovery is available only for assessments with no extracted operations.",
+        })
+    try:
+        count = retry_assessment_details(db, document)
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail={
+            "code": "ASSESSMENT_DETAIL_RECOVERY_FAILED", "message": str(exc),
+        }) from exc
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Assessment detail recovery failed for document %s", document_id)
+        raise HTTPException(status_code=422, detail={
+            "code": "ASSESSMENT_DETAIL_RECOVERY_FAILED",
+            "message": "Assessment details could not be read. The existing assessment and pairing have been kept.",
+        }) from exc
+    return {"document": serialise_document(document), "operation_count": count,
+            "status": "details_extracted" if count else "no_details_extracted"}
 
 
 @router.post("/documents/{document_id}/process", tags=["documents"])

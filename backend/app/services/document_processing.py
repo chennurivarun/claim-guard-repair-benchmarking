@@ -32,7 +32,7 @@ import os
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -70,14 +70,22 @@ from app.enums import (
     Severity,
     UploadStatus,
 )
+from app.extraction.assessment_merge import merge_assessment_extractions
 from app.extraction.azure_document_intelligence import AzureDocumentIntelligenceOCR
 from app.extraction.calculation_validator import validate_invoice
 from app.extraction.docx_ingest import docx_to_pdf_bytes
 from app.extraction.engineer_assessment_parser import (
     ParsedEngineerAssessment,
+    ParsedOperation,
     parse_engineer_assessment,
 )
 from app.extraction.pdf_pipeline import PDFPipeline, PipelineConfig
+from app.extraction.schemas import (
+    EngineerAssessmentFields,
+    ExtractedAssessmentOperation,
+    ExtractedEngineerAssessment,
+    PageAnalysis,
+)
 from app.llm.document_briefing import (
     DocumentBriefingPage,
     build_document_briefing,
@@ -714,6 +722,143 @@ def _persist_assessment_arithmetic_findings(
         )
 
 
+def _read_assessment(
+    engineer_pages: list[PageAnalysis], ai_assessments: list[ExtractedEngineerAssessment],
+):
+    """Keep deterministic figures and recover sections only another reader found."""
+    try:
+        parsed = parse_engineer_assessment(engineer_pages)
+    except ValueError:
+        parsed = None
+    if parsed is not None:
+        deterministic_operations = list(parsed.operations)
+        ai_details = None
+        if ai_assessments:
+            primary = ExtractedEngineerAssessment(
+                fields=EngineerAssessmentFields(**parsed.fields),
+                operations=[ExtractedAssessmentOperation(**asdict(row)) for row in parsed.operations],
+                page_numbers=[page.page_number for page in engineer_pages],
+                extraction_method="deterministic", extraction_confidence=parsed.confidence,
+            )
+            combined = merge_assessment_extractions(primary, ai_assessments[0])
+            added = combined.operations[len(parsed.operations):]
+            if added:
+                parsed.operations.extend(ParsedOperation(**row.model_dump()) for row in added)
+                parsed.fields = combined.fields.model_dump()
+                parsed.confidence = combined.extraction_confidence
+                for row in added:
+                    for bucket, value in ((parsed.row_totals, row.total),
+                                          (parsed.row_work_units, row.work_units)):
+                        if value is not None:
+                            bucket[row.line_item_type] = bucket.get(row.line_item_type, Decimal("0")) + value
+                ai_details = {
+                    "extraction_method": ai_assessments[0].extraction_method,
+                    "operations": [row.model_dump(mode="json") for row in added],
+                }
+        assessment_fields = dict(parsed.fields)
+        assessment_operations = parsed.operations
+        assessment_confidence = parsed.confidence
+        assessment_disagreements = _printed_row_disagreements(parsed)
+        assessment_payload = {
+            "fields": {
+                key: value.isoformat() if hasattr(value, "isoformat") else str(value)
+                for key, value in parsed.fields.items()
+            },
+            "operation_count": len(parsed.operations),
+            "supplemental_ai_details": ai_details,
+            # Printed figures and row sums are kept side by side and
+            # never reconciled: `assessment_operations` has no column
+            # for either, and the disagreement between them is the
+            # finding, not a value to correct.
+            "printed_work_units": _json_amounts(parsed.printed_work_units),
+            "printed_totals": _json_amounts(parsed.printed_totals),
+            "row_work_units": {
+                code: str(amount) for code, amount in parsed.row_work_units.items()
+            },
+            "row_totals": {
+                code: str(amount) for code, amount in parsed.row_totals.items()
+            },
+            "printed_row_disagreements": assessment_disagreements,
+            # Per-operation detail with no column of its own. Namespaced
+            # because the LLM tier's payload has an "operations" key of
+            # its own with an entirely different shape.
+            "deterministic_operations": [
+                {
+                    "sequence_no": operation.sequence_no,
+                    "line_item_type": operation.line_item_type,
+                    "raw_category": operation.raw_category,
+                    "price_derived": operation.price_derived,
+                    "part_number_raw": operation.part_number_raw,
+                }
+                for operation in deterministic_operations
+            ],
+        }
+    elif ai_assessments:
+        extracted_assessment = ai_assessments[0]
+        assessment_fields = extracted_assessment.fields.model_dump()
+        assessment_operations = extracted_assessment.operations
+        assessment_confidence = extracted_assessment.extraction_confidence
+        # The LLM tiers report no printed section figures, so there is
+        # nothing to disagree with. The keys are still written, as
+        # nulls, so a reader never has to know which tier produced the
+        # payload to know whether printed figures were found.
+        assessment_disagreements = []
+        assessment_payload = {
+            **extracted_assessment.model_dump(mode="json"),
+            "printed_work_units": None,
+            "printed_totals": None,
+            "row_work_units": None,
+            "row_totals": None,
+            "printed_row_disagreements": [],
+            "deterministic_operations": None,
+        }
+    else:
+        # Deterministic parsing, vision, and the text-only LLM tier all failed to
+        # produce usable repair operations. This must never dead-end the document:
+        # fall through to manual review instead of failing the whole upload.
+        assessment_fields = None
+        assessment_operations = []
+        assessment_confidence = None
+        assessment_payload = None
+        assessment_disagreements = []
+    return (assessment_fields, assessment_operations, assessment_confidence,
+            assessment_payload, assessment_disagreements)
+
+
+def _store_assessment_operations(session, assessment, assessment_operations, page_rows, assessment_confidence):
+    for operation in assessment_operations:
+        page_row = page_rows.get(operation.page_number)
+        # `category` is the canonical section code; the heading as
+        # printed is kept beside it. The LLM tiers report their
+        # section in `category` and leave `line_item_type` unset,
+        # so whichever one carries the heading is normalised.
+        section = getattr(operation, "line_item_type", None)
+        if not section or section == UNKNOWN_LINE_ITEM_TYPE:
+            section = operation.category
+        raw_category = (
+            getattr(operation, "raw_category", None) or operation.category
+        )
+        session.add(
+            AssessmentOperation(
+                assessment_id=assessment.id,
+                sequence_no=operation.sequence_no,
+                category=ensure_line_item_type(section),
+                raw_category=raw_category[:160] if raw_category else None,
+                operation_code=operation.code,
+                part_number=getattr(operation, "part_number", None),
+                raw_description=operation.description,
+                normalised_description=normalise_operation(operation.description),
+                work_units=operation.work_units,
+                hours=operation.hours,
+                quantity=operation.quantity,
+                unit_price_net=operation.unit_price,
+                total_net=operation.total,
+                source_page_id=page_row.id if page_row else None,
+                extraction_confidence=assessment_confidence,
+            )
+        )
+
+
 def process_document(session: Session, document: Document) -> ProcessingRun:
     """Run native-first PDF analysis and persist pages, invoices, lines and checks."""
 
@@ -828,76 +973,10 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
             # pages: the kind stays ENGINEER_ASSESSMENT while every extracted
             # invoice unit below is persisted exactly as for invoice documents.
             document.document_kind = DocumentKind.ENGINEER_ASSESSMENT
-            try:
-                parsed = parse_engineer_assessment(engineer_pages)
-            except ValueError:
-                parsed = None
-            if parsed is not None:
-                assessment_fields = dict(parsed.fields)
-                assessment_operations = parsed.operations
-                assessment_confidence = parsed.confidence
-                assessment_disagreements = _printed_row_disagreements(parsed)
-                assessment_payload = {
-                    "fields": {
-                        key: value.isoformat() if hasattr(value, "isoformat") else str(value)
-                        for key, value in parsed.fields.items()
-                    },
-                    "operation_count": len(parsed.operations),
-                    # Printed figures and row sums are kept side by side and
-                    # never reconciled: `assessment_operations` has no column
-                    # for either, and the disagreement between them is the
-                    # finding, not a value to correct.
-                    "printed_work_units": _json_amounts(parsed.printed_work_units),
-                    "printed_totals": _json_amounts(parsed.printed_totals),
-                    "row_work_units": {
-                        code: str(amount) for code, amount in parsed.row_work_units.items()
-                    },
-                    "row_totals": {
-                        code: str(amount) for code, amount in parsed.row_totals.items()
-                    },
-                    "printed_row_disagreements": assessment_disagreements,
-                    # Per-operation detail with no column of its own. Namespaced
-                    # because the LLM tier's payload has an "operations" key of
-                    # its own with an entirely different shape.
-                    "deterministic_operations": [
-                        {
-                            "sequence_no": operation.sequence_no,
-                            "line_item_type": operation.line_item_type,
-                            "raw_category": operation.raw_category,
-                            "price_derived": operation.price_derived,
-                            "part_number_raw": operation.part_number_raw,
-                        }
-                        for operation in parsed.operations
-                    ],
-                }
-            elif analysis.engineer_assessments:
-                extracted_assessment = analysis.engineer_assessments[0]
-                assessment_fields = extracted_assessment.fields.model_dump()
-                assessment_operations = extracted_assessment.operations
-                assessment_confidence = extracted_assessment.extraction_confidence
-                # The LLM tiers report no printed section figures, so there is
-                # nothing to disagree with. The keys are still written, as
-                # nulls, so a reader never has to know which tier produced the
-                # payload to know whether printed figures were found.
-                assessment_disagreements = []
-                assessment_payload = {
-                    **extracted_assessment.model_dump(mode="json"),
-                    "printed_work_units": None,
-                    "printed_totals": None,
-                    "row_work_units": None,
-                    "row_totals": None,
-                    "printed_row_disagreements": [],
-                    "deterministic_operations": None,
-                }
-            else:
-                # Deterministic parsing, vision, and the text-only LLM tier all failed to
-                # produce usable repair operations. This must never dead-end the document:
-                # fall through to manual review instead of failing the whole upload.
-                assessment_fields = None
-                assessment_operations = []
-                assessment_confidence = None
-                assessment_payload = None
-                assessment_disagreements = []
+            (assessment_fields, assessment_operations, assessment_confidence,
+             assessment_payload, assessment_disagreements) = _read_assessment(
+                engineer_pages, analysis.engineer_assessments
+            )
 
             if assessment_fields is not None:
                 assessment_fields["damage_areas_json"] = assessment_fields.pop(
@@ -917,37 +996,9 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
                 )
                 session.add(assessment)
                 session.flush()
-                for operation in assessment_operations:
-                    page_row = page_rows.get(operation.page_number)
-                    # `category` is the canonical section code; the heading as
-                    # printed is kept beside it. The LLM tiers report their
-                    # section in `category` and leave `line_item_type` unset,
-                    # so whichever one carries the heading is normalised.
-                    section = getattr(operation, "line_item_type", None)
-                    if not section or section == UNKNOWN_LINE_ITEM_TYPE:
-                        section = operation.category
-                    raw_category = (
-                        getattr(operation, "raw_category", None) or operation.category
-                    )
-                    session.add(
-                        AssessmentOperation(
-                            assessment_id=assessment.id,
-                            sequence_no=operation.sequence_no,
-                            category=ensure_line_item_type(section),
-                            raw_category=raw_category[:160] if raw_category else None,
-                            operation_code=operation.code,
-                            part_number=getattr(operation, "part_number", None),
-                            raw_description=operation.description,
-                            normalised_description=normalise_operation(operation.description),
-                            work_units=operation.work_units,
-                            hours=operation.hours,
-                            quantity=operation.quantity,
-                            unit_price_net=operation.unit_price,
-                            total_net=operation.total,
-                            source_page_id=page_row.id if page_row else None,
-                            extraction_confidence=assessment_confidence,
-                        )
-                    )
+                _store_assessment_operations(
+                    session, assessment, assessment_operations, page_rows, assessment_confidence
+                )
                 _persist_assessment_arithmetic_findings(
                     session,
                     case=case,
@@ -1320,6 +1371,78 @@ def process_document(session: Session, document: Document) -> ProcessingRun:
     return run
 
 
+def retry_assessment_details(session: Session, document: Document) -> int:
+    """Read an existing header-only assessment without replacing it or its pair."""
+    assessment = document.engineer_assessment
+    if assessment is None or assessment.operations:
+        raise ValueError("Detail recovery requires an assessment with no extracted operations.")
+    previous_status = document.upload_status
+    document.upload_status = UploadStatus.PROCESSING
+    session.flush()
+    # Recheck after acquiring the document's write lock: a concurrent recovery
+    # may have completed while this request was waiting to write.
+    session.expire(assessment, ["operations"])
+    if assessment.operations:
+        raise ValueError("Assessment details were already recovered. Refresh the page.")
+    pipeline = PDFPipeline(
+        PipelineConfig(
+            max_pages=settings.max_pdf_pages,
+            ocr_enabled=settings.document_ocr_provider in {"auto", "tesseract"},
+            vision_max_batches=settings.llm_vision_max_batches,
+            text_max_batches=settings.llm_text_max_batches,
+            assessment_document=True,
+        ),
+        cloud_ocr=_build_cloud_ocr(settings),
+        vision_extractor=build_invoice_vision_extractor(settings),
+        text_extractor=build_invoice_text_extractor(settings),
+    )
+    analysis = pipeline.analyse(
+        document.storage_path, Path(document.storage_path).parent / "detail-recovery-pages"
+    )
+    fields, operations, confidence, payload, disagreements = _read_assessment(
+        analysis.pages, analysis.engineer_assessments
+    )
+    if fields:
+        for name in ("assessment_number", "registration", "claim_reference", "vin"):
+            old, new = getattr(assessment, name), fields.get(name)
+            if old and new and re.sub(r"\W", "", old).upper() != re.sub(r"\W", "", new).upper():
+                raise ValueError("The new extraction disagrees with this assessment's identity. Review the original document.")
+    _store_assessment_operations(
+        session, assessment, operations,
+        {page.page_number: page for page in document.pages}, confidence,
+    )
+    old_payload = dict(assessment.extraction_payload_json or {})
+    # Recovery adds evidence only. Header fields, totals, approval and pairing
+    # are retained, including any corrections a handler already made.
+    old_payload["detail_recovery"] = {
+        "at": datetime.now(UTC).isoformat(), "extraction": payload,
+        "llm_failures": analysis.llm_failures, "operation_count": len(operations),
+    }
+    if operations and payload:
+        for key in ("operations", "deterministic_operations", "supplemental_ai_details",
+                    "row_totals", "row_work_units", "printed_row_disagreements"):
+            if key in payload:
+                old_payload[key] = payload[key]
+        old_payload["operation_count"] = len(operations)
+    assessment.extraction_payload_json = old_payload
+    session.add(AuditEvent(
+        case_id=document.case_id, actor_type=AuditActorType.SYSTEM,
+        actor_id="assessment_detail_recovery", event_type="assessment.details_retried",
+        entity_type="engineer_assessment", entity_id=assessment.id,
+        event_payload_json={"document_id": document.id, "operation_count": len(operations),
+                            "llm_failures": analysis.llm_failures},
+    ))
+    case = session.get(Case, document.case_id)
+    if case is not None and operations:
+        _persist_assessment_arithmetic_findings(
+            session, case=case, assessment=assessment, disagreements=disagreements
+        )
+    document.upload_status = previous_status
+    session.flush()
+    session.expire(assessment, ["operations"])
+    return len(operations)
+
+
 def serialise_document(document: Document) -> dict[str, Any]:
     metadata = document.metadata_json or {}
     invoice_units = len(document.invoices)
@@ -1356,6 +1479,13 @@ def serialise_document(document: Document) -> dict[str, Any]:
             for invoice in document.invoices
         ),
         "assessment_units": int(document.engineer_assessment is not None),
+        "assessment_operation_count": (
+            len(document.engineer_assessment.operations) if document.engineer_assessment else None
+        ),
+        "can_retry_assessment_details": bool(
+            document.engineer_assessment and not document.engineer_assessment.operations
+            and document.upload_status == UploadStatus.READY
+        ),
         "processing_error": metadata.get("processing_error") or (
             "Extraction failed. Review this file's processing configuration or retry extraction."
             if document.upload_status == UploadStatus.FAILED else None

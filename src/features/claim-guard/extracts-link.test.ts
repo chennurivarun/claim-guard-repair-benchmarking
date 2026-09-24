@@ -395,7 +395,7 @@ describe("a section that cannot be followed says so where the reader clicked", (
     expect(state.link).toBeNull()
     expect(state.scroll).toBeNull()
     expect(invoiceTable(state)).toContain(
-      "The engineer assessment prints this section as a total only"
+      "Engineer assessment total found, but no detailed rows extracted"
     )
   })
 
@@ -407,7 +407,7 @@ describe("a section that cannot be followed says so where the reader clicked", (
     const state = followSectionTotal(NO_LINK, blank, "invoice-a", "a-paint")
     expect(state.link).toBeNull()
     expect(invoiceTable(state, blank)).toContain(
-      "The paired engineer assessment prints no total for this section"
+      "No engineer assessment total was extracted for this section"
     )
   })
 
@@ -428,7 +428,7 @@ describe("a section that cannot be followed says so where the reader clicked", (
     const html = invoiceTable(
       followSectionTotal(NO_LINK, extracts, "invoice-a", "a-paint")
     )
-    const notice = html.indexOf("prints this section as a total only")
+    const notice = html.indexOf("Engineer assessment total found, but no detailed rows extracted")
     expect(notice).toBeGreaterThan(html.indexOf("Total Paint & Materials"))
     expect(notice).toBeLessThan(html.indexOf("Additional charges"))
   })

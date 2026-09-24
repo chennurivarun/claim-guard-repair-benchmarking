@@ -28,6 +28,7 @@ import {
   fetchCaseDocuments,
   processUploadedDocument,
   retryEmptyDocument,
+  retryAssessmentDetails,
   runCaseLinkSweep,
   uploadCurrentDocument,
   type IntakeGroup,
@@ -150,12 +151,19 @@ export function ClientIntakeScreen({
     setReceiptVersion((version) => version + 1)
     await loadExtracts()
   }
-  async function retryExtraction(documentId: string) {
+  async function retryExtraction(documentId: string, assessmentDetails = false) {
     if (busy || finalised) return
     setBusy(true)
     setError(null)
     try {
-      await retryEmptyDocument(documentId)
+      if (assessmentDetails) {
+        const result = await retryAssessmentDetails(documentId)
+        if (!result.operation_count) {
+          setError("No assessment details were extracted. Check that the PDF includes the pages listing parts and labour; if it does, the extraction still needs review.")
+        }
+      } else {
+        await retryEmptyDocument(documentId)
+      }
       await runCaseLinkSweep(caseReference)
       await onProcessed(documentId)
     } catch (e) {
@@ -528,8 +536,8 @@ export function ClientIntakeScreen({
             <CardTitle>Stored documents and extraction status</CardTitle>
             <CardDescription>
               This receipt stays available after refresh. Files in other sources
-              are listed too, so a missing assessment can be located. Retry is
-              available only when a file has no extracted records.
+              are listed too, so a missing assessment can be located. Assessments
+              with no detailed rows can be retried while keeping their existing pairing.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -544,8 +552,10 @@ export function ClientIntakeScreen({
                   <TableCell>{document.filename}</TableCell>
                   <TableCell>{document.intake_group ? labels[document.intake_group] : "Unassigned source"}</TableCell>
                   <TableCell>{document.status}</TableCell>
-                  <TableCell>{document.extracted_invoice_units ?? document.invoice_units ?? 0} invoices · {document.assessment_units ?? 0} assessments</TableCell>
-                  <TableCell>{document.processing_error || document.manual_review_reason || (
+                  <TableCell>{document.extracted_invoice_units ?? document.invoice_units ?? 0} invoices · {document.assessment_units ?? 0} assessments{document.assessment_operation_count != null && ` · ${document.assessment_operation_count} detail rows`}</TableCell>
+                  <TableCell>{document.processing_error || (document.assessment_operation_count === 0
+                    ? "Assessment details missing; no parts or labour rows extracted"
+                    : document.manual_review_reason) || (
                     document.kind === "engineer_assessment"
                       ? document.paired ? "Assessment matched" : "Assessment extracted; no confirmed match"
                       : document.status === "ready" ? "Extraction complete" : "Awaiting extraction"
@@ -553,6 +563,7 @@ export function ClientIntakeScreen({
                   <TableCell className="space-x-2">
                     {document.original_url && <a className="underline" href={document.original_url} target="_blank" rel="noreferrer">Original</a>}
                     {document.can_retry_extraction && <Button size="sm" variant="outline" disabled={busy || finalised} onClick={() => void retryExtraction(document.id)}>{document.status === "stored" ? "Process stored file" : "Retry extraction"}</Button>}
+                    {document.can_retry_assessment_details && <Button size="sm" variant="outline" disabled={busy || finalised} onClick={() => void retryExtraction(document.id, true)}>Retry engineer assessment details</Button>}
                     {document.manual_review && <Button size="sm" variant="outline" onClick={() => onOpenManualReview(document.id)}>Review</Button>}
                   </TableCell>
                 </TableRow>
