@@ -9,7 +9,7 @@ import pytest
 
 import app.services.document_processing as document_processing
 from app.extraction.engineer_assessment_parser import parse_engineer_assessment
-from app.extraction.pdf_pipeline import PDFPipeline, PipelineConfig
+from app.extraction.pdf_pipeline import PDFPipeline, PipelineConfig, _native_words
 from app.extraction.schemas import PageAnalysis, PageType
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -32,6 +32,57 @@ def _page(text: str, page_number: int = 1) -> PageAnalysis:
         page_type=PageType.ENGINEER_ASSESSMENT,
         classification_confidence=0.95,
     )
+
+
+@pytest.mark.parametrize("format_number", range(1, 8))
+def test_pdf_table_cells_recover_same_operations_as_spaced_rows(
+    assessment_cells_pdf, monkeypatch, format_number,
+) -> None:
+    expected = parse_engineer_assessment(_fixture_pages(
+        monkeypatch, f"DL_Auda_format_{format_number}_assessment.docx"
+    ))
+    with fitz.open(stream=assessment_cells_pdf(format_number), filetype="pdf") as pdf:
+        pages = [
+            _page(page.get_text(), index + 1).model_copy(update={"words": _native_words(page)})
+            for index, page in enumerate(pdf)
+        ]
+    actual = parse_engineer_assessment(pages)
+    # Compare the evidence, not just the row count. Page breaks differ between
+    # exports; amounts, sections, codes and descriptions must remain identical.
+    def evidence(parsed):
+        from dataclasses import asdict
+        return [{k: v for k, v in asdict(row).items() if k not in {"page_number", "sequence_no"}}
+                for row in parsed.operations]
+    assert evidence(actual) == evidence(expected)
+    assert actual.fields["assessment_number"] == expected.fields["assessment_number"]
+    assert actual.fields.get("gross_total") == expected.fields.get("gross_total")
+
+
+def test_pdf_drawing_order_does_not_determine_operation_rows(assessment_cells_pdf):
+    results = []
+    for reverse in (False, True):
+        with fitz.open(stream=assessment_cells_pdf(1, reverse_draw_order=reverse), filetype="pdf") as pdf:
+            pages = [_page(page.get_text(), i + 1).model_copy(update={"words": _native_words(page)})
+                     for i, page in enumerate(pdf)]
+        results.append(parse_engineer_assessment(pages))
+    assert len(results[0].operations) == 60
+    assert results[0].operations == results[1].operations
+
+
+def test_positioned_reading_does_not_attach_amount_from_another_row():
+    with fitz.open() as pdf:
+        page = pdf.new_page()
+        for x, y, text in [
+            (30, 30, "Assessment Number: D123456"),
+            (30, 60, "PARTS"),
+            (30, 80, "Guide"), (110, 80, "Description"), (350, 80, "Price"),
+            (30, 105, "1740"), (110, 105, "DOOR MIRROR"),
+            # Below the row with no description/code of its own.
+            (350, 125, "123.45"),
+        ]:
+            page.insert_text((x, y), text, fontsize=10)
+        analysis = _page(page.get_text()).model_copy(update={"words": _native_words(page)})
+    assert parse_engineer_assessment([analysis]).operations == []
 
 
 def _fixture_pages(monkeypatch: pytest.MonkeyPatch, filename: str) -> list[PageAnalysis]:

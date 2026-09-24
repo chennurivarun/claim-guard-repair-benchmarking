@@ -196,6 +196,73 @@ def test_failed_detail_recovery_keeps_existing_assessment(extracts_client, monke
         assert session.get(Document, document_id).upload_status == UploadStatus.READY
 
 
+@pytest.mark.parametrize("format_number, expected_count, parts_count", [(1, 60, 7), (4, 73, 11)])
+@pytest.mark.parametrize("recover_existing", [False, True])
+def test_exported_pdf_cells_survive_upload_pairing_and_existing_assessment_retry(
+    extracts_client, assessment_cells_pdf, monkeypatch, format_number, expected_count, parts_count,
+    recover_existing,
+):
+    import app.services.document_processing as processing
+    from app.extraction.engineer_assessment_parser import parse_engineer_assessment
+    from app.services.engineer_assessment import section_breakdown_for_invoice
+
+    reference = f"CELL-PDF-{format_number}"
+    created = extracts_client.post("/api/v1/claims", json={
+        "case_reference": reference, "claim_number": reference, "created_by": "pytest",
+    })
+    assert created.status_code == 201
+    invoice_filename = PAIRS[format_number][1]
+    invoice_upload = extracts_client.post(f"/api/v1/claims/{reference}/documents",
+        files={"file": (invoice_filename, (FIXTURES / invoice_filename).read_bytes(), DOCX_MIME)},
+        data={"role": "current"})
+    assert invoice_upload.status_code == 200, invoice_upload.text
+    invoice_result = extracts_client.post(f"/api/v1/documents/{invoice_upload.json()['id']}/process")
+    assert invoice_result.status_code == 200, invoice_result.text
+    upload = extracts_client.post(f"/api/v1/claims/{reference}/documents",
+        files={"file": ("assessment.pdf", assessment_cells_pdf(format_number), "application/pdf")},
+        data={"role": "current", "document_kind": "engineer_assessment"})
+    assert upload.status_code == 200, upload.text
+    document_id = upload.json()["id"]
+    # Reproduce the earlier release: cells arrive without layout reconstruction.
+    with monkeypatch.context() as old:
+        if recover_existing:
+            old.setattr(processing, "parse_engineer_assessment", lambda pages:
+                parse_engineer_assessment([page.model_copy(update={"words": []}) for page in pages]))
+        result = extracts_client.post(f"/api/v1/documents/{document_id}/process")
+    assert result.status_code == 200, result.text
+    with _session(extracts_client) as session:
+        assessment = session.scalar(select(EngineerAssessment).where(EngineerAssessment.document_id == document_id))
+        # Format 4 may retain a single extras row from inline text, so the
+        # empty historical case is modelled after verifying the detail loss.
+        if recover_existing:
+            assert len(assessment.operations) < expected_count
+            for row in list(assessment.operations):
+                session.delete(row)
+        else:
+            assert len(assessment.operations) == expected_count
+        snapshot = (assessment.id, assessment.paired_invoice_id, assessment.parts_net)
+        assert snapshot[1] is not None
+        session.commit()
+    if recover_existing:
+        recovered = extracts_client.post(f"/api/v1/documents/{document_id}/assessment-details")
+        assert recovered.status_code == 200, recovered.text
+        assert recovered.json()["operation_count"] == expected_count
+    with _session(extracts_client) as session:
+        assessment = session.get(EngineerAssessment, snapshot[0])
+        assert (assessment.id, assessment.paired_invoice_id, assessment.parts_net) == snapshot
+        invoice = session.get(Invoice, assessment.paired_invoice_id)
+        assert sum(row.category == "parts" for row in assessment.operations) == parts_count
+        section = "parts" if format_number == 4 else "labour"
+        breakdown = next(row for row in section_breakdown_for_invoice(session, invoice)
+                         if row["line_item_type"] == section)
+        assert breakdown["breakdown_available"] is True
+        # Invoice labour covers panel/mechanical and paintwork labour.
+        assert len(breakdown["rows"]) == (parts_count if format_number == 4 else 41)
+        assert {row["category"] for row in breakdown["rows"]} == (
+            {"parts"} if format_number == 4 else {"labour", "paint"}
+        )
+
+
 def test_finalised_case_cannot_retry_assessment_details(extracts_client):
     from app.enums import CaseStatus
 

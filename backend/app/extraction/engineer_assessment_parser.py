@@ -20,6 +20,7 @@ Two governing rules:
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -34,7 +35,7 @@ from app.extraction.label_grid import (
 from app.extraction.label_grid import (
     _normalise_label as normalise_label,  # one spelling of "is this a label?"
 )
-from app.extraction.schemas import PageAnalysis
+from app.extraction.schemas import OCRWord, PageAnalysis
 
 
 @dataclass(frozen=True)
@@ -548,9 +549,77 @@ def _accumulate(bucket: dict[str, Decimal], key: str, value: Decimal) -> None:
     bucket[key] = bucket.get(key, Decimal("0")) + value
 
 
+def _positioned_text(page: PageAnalysis) -> str:
+    """Reassemble visual rows when PDF text runs separate every table cell.
+
+    Preserve actual horizontal gaps as column separators. Adjacent lines and
+    different pages never share a row; no numbers or missing cells are inferred.
+    """
+    rows: list[list[OCRWord]] = []
+    for word in sorted(page.words, key=lambda item: (item.bbox.y0, item.bbox.x0)):
+        if not word.text.strip():
+            continue
+        centre = (word.bbox.y0 + word.bbox.y1) / 2
+        height = max(word.bbox.y1 - word.bbox.y0, 1)
+        target = next((row for row in reversed(rows[-4:]) if abs(
+            centre - (row[0].bbox.y0 + row[0].bbox.y1) / 2
+        ) <= min(height, max(row[0].bbox.y1 - row[0].bbox.y0, 1)) * 0.3), None)
+        if target is None:
+            rows.append([word])
+        else:
+            target.append(word)
+    lines = []
+    for row in rows:
+        row.sort(key=lambda word: word.bbox.x0)
+        text = row[0].text
+        for previous, word in zip(row, row[1:], strict=False):
+            height = min(previous.bbox.y1 - previous.bbox.y0, word.bbox.y1 - word.bbox.y0)
+            separator = "   " if word.bbox.x0 - previous.bbox.x1 > max(6, height * 0.6) else " "
+            text += separator + word.text
+        lines.append(text)
+    return "\n".join(lines)
+
+
 def parse_engineer_assessment(pages: list[PageAnalysis]) -> ParsedEngineerAssessment:
+    if not any(page.words for page in pages):
+        return _parse_engineer_assessment(pages)
+    layout_pages = [
+        page.model_copy(update={"text": _positioned_text(page)}) if page.words else page
+        for page in pages
+    ]
+    try:
+        parsed = _parse_engineer_assessment(pages)
+    except ValueError:
+        return _parse_engineer_assessment(layout_pages)
+    try:
+        positioned = _parse_engineer_assessment(layout_pages, fields=parsed.fields)
+    except ValueError:
+        return parsed
+    # A second reading may add rows, but must not lose/change any row already
+    # read. A multiset protects repeated operations; counts alone are unsafe.
+    def evidence(row: ParsedOperation) -> tuple:
+        return (row.page_number, row.category, row.code, " ".join(row.description.split()),
+                row.part_number, row.work_units, row.hours, row.quantity, row.unit_price, row.total)
+
+    original = Counter(evidence(row) for row in parsed.operations)
+    recovered = Counter(evidence(row) for row in positioned.operations)
+    if len(positioned.operations) <= len(parsed.operations) or original - recovered:
+        return parsed
+    # Printed figures remain evidence even when they disagree with row sums.
+    for name in ("printed_totals", "printed_work_units"):
+        target = getattr(positioned, name)
+        for section, figures in getattr(parsed, name).items():
+            target.setdefault(section, {}).update(figures)
+    return positioned
+
+
+def _parse_engineer_assessment(
+    pages: list[PageAnalysis], *, fields: dict[str, object] | None = None,
+) -> ParsedEngineerAssessment:
     combined = "\n".join(page.text for page in pages)
     parsed = ParsedEngineerAssessment(fields=_read_fields(combined))
+    if fields:
+        parsed.fields.update({name: value for name, value in fields.items() if value is not None})
 
     if parsed.fields.get("gross_total") is None:
         subtotal = parsed.fields.get("subtotal_net")
