@@ -39,6 +39,7 @@ import { cn } from "@/lib/utils"
 
 import {
   benchmarkCellState,
+  challengePriceTotal,
   challengeSummary,
   documentOrder,
   generatedByLabel,
@@ -137,11 +138,6 @@ function ChallengeAmountCell({ line }: { line: AnalysisLine }) {
         <span className="font-semibold text-destructive">
           {money(line.challenge.challenge_amount)}
         </span>
-        {line.challenge.justified_amount ? (
-          <span className="block text-xs text-muted-foreground">
-            justified {money(line.challenge.justified_amount)}
-          </span>
-        ) : null}
       </TableCell>
     )
   if (line.challenge.level === "low") {
@@ -294,11 +290,16 @@ export function BenchmarkAnalysisView({
       </Card>
 
       <Card>
-        <CardContent className="grid gap-4 sm:grid-cols-3">
+        <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <Metric
+            label="P90 challenge price total"
+            value={money(challengePriceTotal(analysis.lines))}
+            hint="Sum of proposed prices for this invoice's High and Medium lines only; excludes unchanged lines."
+          />
           <Metric
             label="Total challenge amount"
             value={money(summary.total)}
-            hint="High and Medium lines only. Low lines are shown, never counted."
+            hint="Reduction requested on High and Medium lines only. Low lines are shown, never counted."
             emphasis={summary.total > 0}
           />
           <div className="min-w-0 px-1 py-1">
@@ -336,6 +337,9 @@ export function BenchmarkAnalysisView({
               <CardDescription>
                 Red where a benchmark is violated, amber for a Low line. Select
                 the challenges to pursue, then draft the email.
+                {" "}Challenge price is the proposed line amount at P90; challenge
+                amount is the reduction from the billed amount. Where both
+                benchmarks are violated, the higher P90 is used.
               </CardDescription>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -399,6 +403,7 @@ export function BenchmarkAnalysisView({
                   </TableHead>
                   <TableHead className="text-right">Aviva DLG P90 (n)</TableHead>
                   <TableHead>Challenge level</TableHead>
+                  <TableHead className="text-right">Challenge price (P90)</TableHead>
                   <TableHead className="text-right">Challenge amount</TableHead>
                   <TableHead className="w-12">Select</TableHead>
                 </TableRow>
@@ -454,6 +459,9 @@ export function BenchmarkAnalysisView({
                         <TableCell>
                           <LevelBadge level={line.challenge.level} />
                         </TableCell>
+                        <TableCell data-challenge-price className="text-right font-medium tabular-nums">
+                          {money(isChallenge(line) ? line.challenge.justified_amount : null)}
+                        </TableCell>
                         <ChallengeAmountCell line={line} />
                         <TableCell>
                           {isChallenge(line) ? (
@@ -469,7 +477,7 @@ export function BenchmarkAnalysisView({
                       </TableRow>
                       {open ? (
                         <TableRow id={detailId}>
-                          <TableCell colSpan={8} className="bg-muted/30 p-3">
+                          <TableCell colSpan={9} className="bg-muted/30 p-3">
                             <p className="mb-3 text-sm">{line.challenge.reason}</p>
                             <div className="grid gap-4 xl:grid-cols-2">
                               {SOURCES.map((source) => (

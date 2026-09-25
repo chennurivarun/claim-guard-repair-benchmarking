@@ -10,6 +10,7 @@ import {
 } from "./benchmark-fixtures"
 import {
   benchmarkCellState,
+  challengePriceTotal,
   challengeSummary,
   documentOrder,
   generatedByLabel,
@@ -213,6 +214,45 @@ describe("the total challenge amount counts High and Medium only", () => {
 
     expect(lowRow).toContain("£47.73 above P90")
     expect(lowRow).toContain("not counted")
+  })
+})
+
+describe("P90 challenge prices", () => {
+  it("shows the server's proposed price separately from the reduction", () => {
+    const html = render()
+    const row = (id: string) => {
+      const start = html.indexOf(`data-line-id="${id}"`)
+      return html.slice(start, html.indexOf("</tr>", start))
+    }
+    const price = (id: string) => row(id).match(/data-challenge-price="true"[^>]*>(.*?)<\/td>/)?.[1]
+
+    expect(html).toContain("Challenge price (P90)")
+    expect(price("inv-high")).toBe("£450.00") // higher violated P90, not £412.50
+    expect(row("inv-high")).toContain("£150.00") // reduction still unchanged
+    expect(price("inv-medium")).toBe("£200.00") // only the violated source
+    expect(price("ea-medium")).toBe("£197.60") // assessment detail included
+    expect(price("inv-low")).toBe("—")
+    expect(price("ea-none")).toBe("—")
+  })
+
+  it("adds proposed prices for challenged lines without changing the reduction total", () => {
+    expect(challengePriceTotal(analysisLines)).toBe(847.6)
+    expect(challengeSummary(analysisLines).total).toBe(312.4)
+    const html = render()
+    const summary = html.slice(0, html.indexOf('data-testid="analysis-table"'))
+    expect(summary).toContain("P90 challenge price total")
+    expect(summary).toContain("£847.60")
+    expect(summary).toContain("excludes unchanged lines")
+    expect(summary).toContain("£312.40")
+  })
+
+  it("does not invent a price or show a partial total when a proposed price is missing", () => {
+    const lines = analysisLines.map((line) => line.line_id === "inv-high"
+      ? { ...line, challenge: { ...line.challenge, justified_amount: null } }
+      : line)
+    expect(challengePriceTotal(lines)).toBeNull()
+    expect(challengePriceTotal([])).toBeNull()
+    expect(challengePriceTotal(analysisLines.filter((line) => line.challenge.level === "low"))).toBeNull()
   })
 })
 

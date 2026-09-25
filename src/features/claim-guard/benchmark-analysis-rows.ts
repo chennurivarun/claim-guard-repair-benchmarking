@@ -111,6 +111,16 @@ export function isChallenge(line: AnalysisLine) {
   return line.challenge.level === "high" || line.challenge.level === "medium"
 }
 
+/** Sum the server's proposed P90 prices for challenged lines, not the
+ * reductions. An incomplete set of prices must not look like a full total. */
+export function challengePriceTotal(lines: AnalysisLine[]): number | null {
+  const prices = lines.filter(isChallenge).map((line) =>
+    toNumber(line.challenge.justified_amount)
+  )
+  if (!prices.length || prices.some((price) => price == null)) return null
+  return prices.reduce<number>((total, price) => total + Math.round(price! * 100), 0) / 100
+}
+
 export interface ChallengeSummary {
   total: number
   counts: Record<ChallengeLevel, number>
