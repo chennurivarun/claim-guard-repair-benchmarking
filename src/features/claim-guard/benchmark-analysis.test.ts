@@ -86,8 +86,8 @@ describe("sort by challenge level", () => {
   it("orders high, medium, low, none, then by challenge amount", () => {
     expect(sortByChallengeLevel(analysisLines).map((line) => line.line_id)).toEqual([
       "inv-high",
-      "inv-medium", // medium, £100.00
-      "ea-medium", // medium, £62.40
+      "inv-medium", // medium, £40.00
+      "ea-medium", // medium, £26.20
       "inv-low",
       "ea-1", // none: document order within the level
       "ea-none",
@@ -114,8 +114,8 @@ describe("red where a benchmark is violated, amber for Low", () => {
     expect(benchmarkCellState(high.benchmarks.aviva_dlg)).toBe("violated")
     expect(benchmarkCellState(medium.benchmarks.aviva_dlg)).toBe("within")
     expect(benchmarkCellState(low.benchmarks.third_party)).toBe("above")
-    expect(benchmarkCellState(low.benchmarks.aviva_dlg)).toBe("no-data")
-    expect(benchmarkCellState(eaMedium.benchmarks.third_party)).toBe("no-data")
+    expect(benchmarkCellState(low.benchmarks.aviva_dlg)).toBe("above")
+    expect(benchmarkCellState(eaMedium.benchmarks.third_party)).toBe("within")
     expect(benchmarkCellState(ea1.benchmarks.third_party)).toBe("within")
   })
 
@@ -123,7 +123,7 @@ describe("red where a benchmark is violated, amber for Low", () => {
     const html = render()
     const red = [...html.matchAll(/<td[^>]*data-benchmark-state="violated"[^>]*>/g)]
 
-    // high: both; medium: third party; ea-medium: Aviva DLG.
+    // high: both; medium: third party; ea-medium: In-house.
     expect(red).toHaveLength(4)
     for (const match of red) expect(match[0]).toContain("text-destructive")
     const notRed = [
@@ -150,7 +150,7 @@ describe("an unavailable benchmark reads No data, never £0.00", () => {
     ]
 
     // inv-low Aviva, ea-medium third party, ea-none both.
-    expect(noData).toHaveLength(4)
+    expect(noData).toHaveLength(2)
     for (const match of noData) {
       expect(match[1]).toContain("No data")
       expect(match[1]).not.toContain("£0.00")
@@ -165,7 +165,7 @@ describe("an unavailable benchmark reads No data, never £0.00", () => {
       ),
     ]
 
-    expect(cells.length).toBe(8)
+    expect(cells.length).toBe(10)
     for (const match of cells) expect(match[2]).toMatch(/n = \d+/)
   })
 })
@@ -174,7 +174,7 @@ describe("the total challenge amount counts High and Medium only", () => {
   it("sums the challenge amounts of high and medium lines, never low", () => {
     const summary = challengeSummary(analysisLines)
 
-    expect(summary.total).toBeCloseTo(312.4, 2)
+    expect(summary.total).toBeCloseTo(234.95, 2)
     expect(summary.counts).toEqual({ high: 1, medium: 2, low: 1 })
     expect(summary.challengeCount).toBe(3)
   })
@@ -188,13 +188,13 @@ describe("the total challenge amount counts High and Medium only", () => {
         : line
     )
 
-    expect(challengeSummary(lines).total).toBeCloseTo(312.4, 2)
+    expect(challengeSummary(lines).total).toBeCloseTo(234.95, 2)
   })
 
   it("puts the total and the count per level at the top of the screen", () => {
     const html = render()
     const table = html.indexOf('data-testid="analysis-table"')
-    const total = html.indexOf("£312.40")
+    const total = html.indexOf("£234.95")
 
     expect(total).toBeGreaterThan(-1)
     expect(total).toBeLessThan(table)
@@ -226,24 +226,24 @@ describe("P90 challenge prices", () => {
     }
     const price = (id: string) => row(id).match(/data-challenge-price="true"[^>]*>(.*?)<\/td>/)?.[1]
 
-    expect(html).toContain("Challenge price (P90)")
-    expect(price("inv-high")).toBe("£450.00") // higher violated P90, not £412.50
-    expect(row("inv-high")).toContain("£150.00") // reduction still unchanged
-    expect(price("inv-medium")).toBe("£200.00") // only the violated source
-    expect(price("ea-medium")).toBe("£197.60") // assessment detail included
+    expect(html).toContain("Challenge price (50/50 P90)")
+    expect(price("inv-high")).toBe("£431.25") // equal average of both source P90s
+    expect(row("inv-high")).toContain("£168.75") // reduction still unchanged
+    expect(price("inv-medium")).toBe("£260.00") // both sources, including the source within the rule
+    expect(price("ea-medium")).toBe("£233.80") // assessment detail included
     expect(price("inv-low")).toBe("—")
     expect(price("ea-none")).toBe("—")
   })
 
   it("adds proposed prices for challenged lines without changing the reduction total", () => {
-    expect(challengePriceTotal(analysisLines)).toBe(847.6)
-    expect(challengeSummary(analysisLines).total).toBe(312.4)
+    expect(challengePriceTotal(analysisLines)).toBe(925.05)
+    expect(challengeSummary(analysisLines).total).toBe(234.95)
     const html = render()
     const summary = html.slice(0, html.indexOf('data-testid="analysis-table"'))
-    expect(summary).toContain("P90 challenge price total")
-    expect(summary).toContain("£847.60")
+    expect(summary).toContain("50/50 challenge price total")
+    expect(summary).toContain("£925.05")
     expect(summary).toContain("excludes unchanged lines")
-    expect(summary).toContain("£312.40")
+    expect(summary).toContain("£234.95")
   })
 
   it("does not invent a price or show a partial total when a proposed price is missing", () => {
@@ -337,8 +337,8 @@ describe("show evidence per line, for both benchmarks", () => {
   it("lists the contributing rows under each benchmark when open", () => {
     const html = render(benchmarkAnalysis, { initialEvidenceOpen: ["inv-high"] })
 
-    expect(html).toContain("Third party insured invoices evidence")
-    expect(html).toContain("Aviva DLG invoices evidence")
+    expect(html).toContain("Insurer Third Party invoices evidence")
+    expect(html).toContain("EXL/ In house Benchmark invoices evidence")
     expect(html).toContain("TP-1001")
   })
 })
@@ -357,7 +357,7 @@ describe("the email draft says it is a draft, and never that it was sent", () =>
     const html = renderDraft()
 
     expect(html).toContain("Invoice LIVE-77: 2 line items challenged")
-    expect(html).toContain("FRONT BUMPER: billed £600.00, justified £450.00.")
+    expect(html).toContain("FRONT BUMPER: billed £600.00, justified £431.25.")
   })
 
   it("says plainly that nothing has been sent", () => {
@@ -408,4 +408,12 @@ describe("the rolled-up totals' breakdown is here now", () => {
     expect(html).not.toContain("Engineer assessment breakdown")
     expect(html).toContain("prints no rolled-up totals")
   })
+})
+
+
+it("explains why no challenge rows exist and orders both P90s before the new price", () => {
+  const html = render({ ...benchmarkAnalysis, lines: [] })
+  expect(html).toContain("No item prices are available to compare")
+  expect(html.indexOf("Third-party P90 (n)")).toBeLessThan(html.indexOf("In-house P90 (n)"))
+  expect(html.indexOf("In-house P90 (n)")).toBeLessThan(html.indexOf("New invoice item price"))
 })

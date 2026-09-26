@@ -1,0 +1,27 @@
+SYNTHETIC DEMO - DO NOT SEND
+
+Subject: Repair invoice DEMO-NEW-002: 3 items challenged, £78.00
+
+Dear Demo repairer,
+
+Re: repair invoice DEMO-NEW-002, vehicle HYUNDAI i30, registration DM32XYZ
+
+We have reviewed this invoice line by line against our repair-cost benchmarks for Hatchback vehicles: the 90th percentile (P90) of the same repair item on insurer third party invoices and EXL/in-house invoices. Both sources are required. The proposed price is 50% of each source's P90, rounded to the nearest penny. A line is challenged where it exceeds this combined price by more than 10% and by at least £5.00.
+
+We challenge the following items:
+
+1. L/R DOOR (L/r door, from the invoice): invoiced £160.00; justified figure £108.00; challenged £52.00.
+   50/50 average of the third-party P90 (£118.00, n=3) and the In-house P90 (£98.00, n=3) = £108.00. The invoiced £160.00 exceeds this combined price by 48.15%, beyond the 10% threshold and the £5.00 minimum. Challenge £52.00.
+
+2. L/SILL PANEL COVER (L/sill panel cover, from the invoice): invoiced £64.00; justified figure £43.20; challenged £20.80.
+   50/50 average of the third-party P90 (£47.20, n=3) and the In-house P90 (£39.20, n=3) = £43.20. The invoiced £64.00 exceeds this combined price by 48.15%, beyond the 10% threshold and the £5.00 minimum. Challenge £20.80.
+
+3. Door Fitting Kit (Door fitting kit, from the invoice): invoiced £16.00; justified figure £10.80; challenged £5.20.
+   50/50 average of the third-party P90 (£11.80, n=3) and the In-house P90 (£9.80, n=3) = £10.80. The invoiced £16.00 exceeds this combined price by 48.15%, beyond the 10% threshold and the £5.00 minimum. Challenge £5.20.
+
+Total challenged: £78.00.
+
+Please review these items and confirm the revised amount, or send supporting evidence for the invoiced figures.
+
+Kind regards,
+Claims handler

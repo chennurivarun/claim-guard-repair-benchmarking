@@ -1,0 +1,205 @@
+{
+  "source": "third_party",
+  "intake_group": "historical_claim",
+  "label": "Insurer Third Party invoices",
+  "invoice_count": 3,
+  "threshold_pct": "10",
+  "vehicle_categories": [
+    {
+      "category": "Hatchback",
+      "invoice_count": 3,
+      "source": "lookup"
+    }
+  ],
+  "rows": [
+    {
+      "vehicle_category": "Hatchback",
+      "repair_item": "Door fitting kit",
+      "repair_item_key": "door-fitting-kit",
+      "line_item_type": "parts",
+      "observations": 3,
+      "p90": "11.80",
+      "median": "11.00",
+      "min": "10.00",
+      "max": "12.00",
+      "evidence": [
+        {
+          "invoice_id": "3bb5d8b0-cedd-4d90-9349-fdbc8050485e",
+          "invoice_number": "DEMO-TP-001",
+          "document_filename": "DEMO-TP-001-invoice.pdf",
+          "vehicle_make": "HYUNDAI",
+          "vehicle_model": "i30",
+          "registration": "DM11XYZ",
+          "description": "Door Fitting Kit",
+          "amount": "10.00",
+          "origin": "invoice",
+          "source_line_id": "816428e5-eb7b-415e-9a6f-b46adce3efab",
+          "assessment_number": null
+        },
+        {
+          "invoice_id": "e94318a6-0ad6-4f07-ab70-154885abcc0b",
+          "invoice_number": "DEMO-TP-002",
+          "document_filename": "DEMO-TP-002-invoice.pdf",
+          "vehicle_make": "HYUNDAI",
+          "vehicle_model": "i30",
+          "registration": "DM12XYZ",
+          "description": "Door Fitting Kit",
+          "amount": "11.00",
+          "origin": "invoice",
+          "source_line_id": "ca1386c7-789e-4756-b252-cd2cb2a652b5",
+          "assessment_number": null
+        },
+        {
+          "invoice_id": "97dd07e2-e8ba-4ab5-80b8-7f5099deeb66",
+          "invoice_number": "DEMO-TP-003",
+          "document_filename": "DEMO-TP-003-invoice.pdf",
+          "vehicle_make": "HYUNDAI",
+          "vehicle_model": "i30",
+          "registration": "DM13XYZ",
+          "description": "Door Fitting Kit",
+          "amount": "12.00",
+          "origin": "invoice",
+          "source_line_id": "2b592992-30c3-4e2e-8881-e3d50b306e30",
+          "assessment_number": null
+        }
+      ]
+    },
+    {
+      "vehicle_category": "Hatchback",
+      "repair_item": "L/r door",
+      "repair_item_key": "l-r-door",
+      "line_item_type": "parts",
+      "observations": 3,
+      "p90": "118.00",
+      "median": "110.00",
+      "min": "100.00",
+      "max": "120.00",
+      "evidence": [
+        {
+          "invoice_id": "3bb5d8b0-cedd-4d90-9349-fdbc8050485e",
+          "invoice_number": "DEMO-TP-001",
+          "document_filename": "DEMO-TP-001-invoice.pdf",
+          "vehicle_make": "HYUNDAI",
+          "vehicle_model": "i30",
+          "registration": "DM11XYZ",
+          "description": "L/R DOOR",
+          "amount": "100.00",
+          "origin": "invoice",
+          "source_line_id": "89c75e15-c491-4d62-ba51-6a1819b0158f",
+          "assessment_number": null
+        },
+        {
+          "invoice_id": "e94318a6-0ad6-4f07-ab70-154885abcc0b",
+          "invoice_number": "DEMO-TP-002",
+          "document_filename": "DEMO-TP-002-invoice.pdf",
+          "vehicle_make": "HYUNDAI",
+          "vehicle_model": "i30",
+          "registration": "DM12XYZ",
+          "description": "L/R DOOR",
+          "amount": "110.00",
+          "origin": "invoice",
+          "source_line_id": "b2cb89c4-a09d-409a-83a9-b238249c165b",
+          "assessment_number": null
+        },
+        {
+          "invoice_id": "97dd07e2-e8ba-4ab5-80b8-7f5099deeb66",
+          "invoice_number": "DEMO-TP-003",
+          "document_filename": "DEMO-TP-003-invoice.pdf",
+          "vehicle_make": "HYUNDAI",
+          "vehicle_model": "i30",
+          "registration": "DM13XYZ",
+          "description": "L/R DOOR",
+          "amount": "120.00",
+          "origin": "invoice",
+          "source_line_id": "a5383a2b-a0e9-4170-a16b-76201ecba26f",
+          "assessment_number": null
+        }
+      ]
+    },
+    {
+      "vehicle_category": "Hatchback",
+      "repair_item": "L/sill panel cover",
+      "repair_item_key": "l-sill-panel-cover",
+      "line_item_type": "parts",
+      "observations": 3,
+      "p90": "47.20",
+      "median": "44.00",
+      "min": "40.00",
+      "max": "48.00",
+      "evidence": [
+        {
+          "invoice_id": "3bb5d8b0-cedd-4d90-9349-fdbc8050485e",
+          "invoice_number": "DEMO-TP-001",
+          "document_filename": "DEMO-TP-001-invoice.pdf",
+          "vehicle_make": "HYUNDAI",
+          "vehicle_model": "i30",
+          "registration": "DM11XYZ",
+          "description": "L/SILL PANEL COVER",
+          "amount": "40.00",
+          "origin": "invoice",
+          "source_line_id": "bf4ce233-9651-4236-8fa4-71129544f6d1",
+          "assessment_number": null
+        },
+        {
+          "invoice_id": "e94318a6-0ad6-4f07-ab70-154885abcc0b",
+          "invoice_number": "DEMO-TP-002",
+          "document_filename": "DEMO-TP-002-invoice.pdf",
+          "vehicle_make": "HYUNDAI",
+          "vehicle_model": "i30",
+          "registration": "DM12XYZ",
+          "description": "L/SILL PANEL COVER",
+          "amount": "44.00",
+          "origin": "invoice",
+          "source_line_id": "a42b2b7c-1d52-4f39-8074-f3a6fb2fd205",
+          "assessment_number": null
+        },
+        {
+          "invoice_id": "97dd07e2-e8ba-4ab5-80b8-7f5099deeb66",
+          "invoice_number": "DEMO-TP-003",
+          "document_filename": "DEMO-TP-003-invoice.pdf",
+          "vehicle_make": "HYUNDAI",
+          "vehicle_model": "i30",
+          "registration": "DM13XYZ",
+          "description": "L/SILL PANEL COVER",
+          "amount": "48.00",
+          "origin": "invoice",
+          "source_line_id": "73dccebd-019e-4a2b-8c0e-268f2534dcf7",
+          "assessment_number": null
+        }
+      ]
+    }
+  ],
+  "invoices": [
+    {
+      "invoice_id": "3bb5d8b0-cedd-4d90-9349-fdbc8050485e",
+      "invoice_number": "DEMO-TP-001",
+      "document_filename": "DEMO-TP-001-invoice.pdf",
+      "vehicle_make": "HYUNDAI",
+      "vehicle_model": "i30",
+      "registration": "DM11XYZ",
+      "vehicle_category": "Hatchback",
+      "vehicle_category_source": "lookup"
+    },
+    {
+      "invoice_id": "e94318a6-0ad6-4f07-ab70-154885abcc0b",
+      "invoice_number": "DEMO-TP-002",
+      "document_filename": "DEMO-TP-002-invoice.pdf",
+      "vehicle_make": "HYUNDAI",
+      "vehicle_model": "i30",
+      "registration": "DM12XYZ",
+      "vehicle_category": "Hatchback",
+      "vehicle_category_source": "lookup"
+    },
+    {
+      "invoice_id": "97dd07e2-e8ba-4ab5-80b8-7f5099deeb66",
+      "invoice_number": "DEMO-TP-003",
+      "document_filename": "DEMO-TP-003-invoice.pdf",
+      "vehicle_make": "HYUNDAI",
+      "vehicle_model": "i30",
+      "registration": "DM13XYZ",
+      "vehicle_category": "Hatchback",
+      "vehicle_category_source": "lookup"
+    }
+  ],
+  "mapping_approved": true
+}

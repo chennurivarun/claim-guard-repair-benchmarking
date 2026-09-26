@@ -10,7 +10,7 @@ import {
 import { approveCaseMapping, fetchCaseMapping } from "./document-api"
 
 // Per-source scoping is only real if the right `intake_group` / `source`
-// reaches the server: a screen headed "Aviva DLG invoices" that fetched
+// reaches the server: a screen headed "EXL/ In house Benchmark invoices" that fetched
 // unscoped would show third-party rows under an Aviva heading, and nothing
 // on the page could tell. So the requests themselves are asserted.
 
@@ -40,13 +40,13 @@ afterEach(() => {
 })
 
 describe("the two benchmark sources are the two existing upload buckets (D1)", () => {
-  it("maps third party to historical_claim and Aviva DLG to in_house", () => {
+  it("maps third party to historical_claim and In-house to in_house", () => {
     expect(BENCHMARK_SOURCES.third_party.intakeGroup).toBe("historical_claim")
     expect(BENCHMARK_SOURCES.aviva_dlg.intakeGroup).toBe("in_house")
     expect(BENCHMARK_SOURCES.third_party.label).toBe(
-      "Third party insured invoices"
+      "Insurer Third Party invoices"
     )
-    expect(BENCHMARK_SOURCES.aviva_dlg.label).toBe("Aviva DLG invoices")
+    expect(BENCHMARK_SOURCES.aviva_dlg.label).toBe("EXL/ In house Benchmark invoices")
   })
 })
 
@@ -123,7 +123,7 @@ describe("mapping and extracts are scoped by intake group", () => {
     expect(requested[0].url).toMatch(/\/document-mapping$/)
   })
 
-  it("approves one group, so approving third party does not approve Aviva DLG", async () => {
+  it("approves one group, so approving third party does not approve In-house", async () => {
     await approveCaseMapping("CG-2026-0048", "pilot.handler", "historical_claim")
 
     expect(JSON.parse(requested[0].body ?? "{}")).toEqual({

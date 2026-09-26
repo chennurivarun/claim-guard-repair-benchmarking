@@ -346,7 +346,7 @@ export interface CaseMappingPayload {
 export type MappingOverrideDecision = "link" | "unlink" | "reset"
 
 /** With `intakeGroup`, the mapping of one source only (third party is
- * `historical_claim`, Aviva DLG is `in_house`, the new invoice is `live`).
+ * `historical_claim`, In-house is `in_house`, the new invoice is `live`).
  * Without it, the whole claim, as before. */
 export function fetchCaseMapping(
   caseReference: string,
@@ -393,7 +393,7 @@ export function overrideAssessmentMapping(
  * against the pairs they confirmed rather than on a standing button.
  *
  * Approval is recorded per intake group: approving third party does not
- * approve Aviva DLG. The group is only sent when there is one, so the
+ * approve In-house. The group is only sent when there is one, so the
  * whole-claim screen under Advanced tools posts exactly what it did before. */
 export function approveCaseMapping(
   caseReference: string,

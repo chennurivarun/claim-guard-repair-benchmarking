@@ -883,21 +883,12 @@ export function App() {
           finalised={caseFinalised}
           onProcessed={async (preferredDocumentId) => {
             await refreshAfterSourceChange(preferredDocumentId)
-            // Keep the mapping and extracts on the upload page. The page now
-            // expands its source intelligence section after the handover, so
-            // the user can verify matching without opening Advanced tools.
+            // Refresh the upload receipt; mapping and extracts have their own screen.
           }}
           onContinue={() =>
             navigate(sourceScreen(scope.intakeGroup, "intelligence"))
           }
-          onOpenBenchmarks={() =>
-            navigate(
-              sourceScreen(
-                scope.intakeGroup,
-                scope.intakeGroup === "live" ? "analysis" : "benchmarks"
-              )
-            )
-          }
+
         />
       )
     } else if (scope.step === "intelligence") {
@@ -1280,7 +1271,7 @@ export function App() {
               </AlertTitle>
               <AlertDescription>
                 Nothing has been extracted for this claim yet. Start under
-                Third party insured invoices or Aviva DLG invoices to build the
+                Insurer Third Party invoices or EXL/ In house Benchmark invoices to build the
                 benchmarks, or under Upload new invoice to analyse one. The
                 other screens open once the first invoice has been read.
               </AlertDescription>

@@ -226,8 +226,9 @@ export function BenchmarkAnalysisView({
               </CardTitle>
               <CardDescription>
                 Every line of this invoice, then every line of its engineer
-                assessment, against the third-party P90 and the Aviva DLG P90
-                for its vehicle category -- side by side, never blended.
+                assessment, against the third-party P90 and the In-house P90
+                for its vehicle category. The two reference P90s stay separate;
+                their 50/50 average supplies the challenge price.
               </CardDescription>
             </div>
             {analysis.live_invoices.length > 1 ? (
@@ -281,7 +282,7 @@ export function BenchmarkAnalysisView({
             <div>
               <dt className="text-xs text-muted-foreground">Valuation rule</dt>
               <dd className="text-muted-foreground">
-                Violated when over a P90 by more than {analysis.threshold_pct}%
+                Challenge when over the 50/50 price by more than {analysis.threshold_pct}%
                 and by at least {money(analysis.minimum_challenge_amount)}.
               </dd>
             </div>
@@ -292,7 +293,7 @@ export function BenchmarkAnalysisView({
       <Card>
         <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <Metric
-            label="P90 challenge price total"
+            label="50/50 challenge price total"
             value={money(challengePriceTotal(analysis.lines))}
             hint="Sum of proposed prices for this invoice's High and Medium lines only; excludes unchanged lines."
           />
@@ -317,8 +318,8 @@ export function BenchmarkAnalysisView({
               </Badge>
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
-              High: both benchmarks violated. Medium: one. Low: above a P90 but
-              inside the rule.
+              High: both benchmarks violated. Medium: one. Both require the invoice
+              price to exceed the 50/50 price by the valuation rule. Low: not challenged.
             </p>
           </div>
           <Metric
@@ -337,9 +338,9 @@ export function BenchmarkAnalysisView({
               <CardDescription>
                 Red where a benchmark is violated, amber for a Low line. Select
                 the challenges to pursue, then draft the email.
-                {" "}Challenge price is the proposed line amount at P90; challenge
-                amount is the reduction from the billed amount. Where both
-                benchmarks are violated, the higher P90 is used.
+                {" "}Challenge price is 50% Third-party P90 + 50% In-house P90. Both
+                benchmarks are required. Challenge amount is the reduction from
+                the new invoice item price, subject to the valuation rule.
               </CardDescription>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -390,25 +391,32 @@ export function BenchmarkAnalysisView({
         </CardHeader>
         <CardContent>
           <div data-testid="analysis-table" className="rounded-lg border">
-            <Table>
+            <Table className="min-w-[760px] table-fixed [&_th]:h-auto [&_th]:py-3 [&_th]:whitespace-normal">
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-8">
                     <span className="sr-only">Evidence</span>
                   </TableHead>
-                  <TableHead>Description</TableHead>
-                  <TableHead className="text-right">Amount</TableHead>
+                  <TableHead className="w-1/5">Description</TableHead>
                   <TableHead className="text-right">
                     Third-party P90 (n)
                   </TableHead>
-                  <TableHead className="text-right">Aviva DLG P90 (n)</TableHead>
+                  <TableHead className="text-right">In-house P90 (n)</TableHead>
+                  <TableHead className="text-right">New invoice item price</TableHead>
                   <TableHead>Challenge level</TableHead>
-                  <TableHead className="text-right">Challenge price (P90)</TableHead>
+                  <TableHead className="text-right">Challenge price (50/50 P90)</TableHead>
                   <TableHead className="text-right">Challenge amount</TableHead>
                   <TableHead className="w-12">Select</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
+                {lines.length === 0 && (
+                  <TableRow><TableCell colSpan={9} className="whitespace-normal py-8 text-center text-muted-foreground">
+                    No item prices are available to compare. Review this invoice in Document intelligence.
+                    If it contains section totals, pair its engineer assessment and check that detailed rows
+                    were extracted and the section totals agree.
+                  </TableCell></TableRow>
+                )}
                 {lines.map((line) => {
                   const open = evidenceOpen.has(line.line_id)
                   const detailId = `analysis-evidence-${line.line_id}`
@@ -440,7 +448,7 @@ export function BenchmarkAnalysisView({
                             )}
                           </button>
                         </TableCell>
-                        <TableCell>
+                        <TableCell className="whitespace-normal [overflow-wrap:anywhere]">
                           <span className="font-medium">{line.description}</span>
                           <span className="mt-1 flex flex-wrap items-center gap-1.5">
                             <OriginBadge origin={line.origin} />
@@ -451,11 +459,9 @@ export function BenchmarkAnalysisView({
                             ) : null}
                           </span>
                         </TableCell>
-                        <TableCell className="text-right tabular-nums">
-                          {money(line.amount)}
-                        </TableCell>
                         <BenchmarkCell benchmark={line.benchmarks.third_party} />
                         <BenchmarkCell benchmark={line.benchmarks.aviva_dlg} />
+                        <TableCell className="text-right tabular-nums">{money(line.amount)}</TableCell>
                         <TableCell>
                           <LevelBadge level={line.challenge.level} />
                         </TableCell>
@@ -570,7 +576,7 @@ export function ChallengeEmailDraftView({
       </label>
       <label className="flex flex-col gap-1.5 text-sm font-medium">
         Body
-        <Textarea readOnly value={draft.body} className="min-h-64 font-mono text-xs" />
+        <Textarea readOnly value={draft.body} className="h-64 min-h-40 resize-y [field-sizing:fixed] font-mono text-xs" />
       </label>
       <div className="flex flex-wrap justify-end gap-2">
         <Button variant="outline" onClick={() => onCopy(text)}>
@@ -655,7 +661,7 @@ export function BenchmarkAnalysisScreen({
     <>
       <ScreenHeading
         title="Benchmark analysis"
-        description="Every line item of the new invoice -- from the invoice first, then from its engineer assessment -- against the third-party and the Aviva DLG P90 for its vehicle category. Red where a benchmark is violated."
+        description="Every line item of the new invoice -- from the invoice first, then from its engineer assessment -- against the third-party and the In-house P90 for its vehicle category. Red where a benchmark is violated."
       />
       {error ? (
         <Alert variant="destructive">
@@ -691,7 +697,7 @@ export function BenchmarkAnalysisScreen({
           if (!open) setDraft(null)
         }}
       >
-        <DialogContent className="sm:max-w-2xl">
+        <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>Challenge email draft</DialogTitle>
             <DialogDescription>

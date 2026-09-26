@@ -65,7 +65,7 @@ def test_threshold_is_strict_and_minimum_is_inclusive() -> None:
     assert _compare("30.00", "25.00")["violated"] is True
 
 
-def test_high_when_both_benchmarks_are_violated_and_justified_is_the_higher_p90() -> None:
+def test_high_uses_equal_average_of_both_p90s() -> None:
     comparisons = {
         "third_party": _compare("1000.00", "878.84"),
         "aviva_dlg": _compare("1000.00", "827.46"),
@@ -75,35 +75,37 @@ def test_high_when_both_benchmarks_are_violated_and_justified_is_the_higher_p90(
 
     assert challenge["level"] == "high"
     assert challenge["is_challenge"] is True
-    assert challenge["justified_amount"] == "878.84"
-    assert challenge["challenge_amount"] == "121.16"
+    assert challenge["justified_amount"] == "853.15"
+    assert challenge["challenge_amount"] == "146.85"
     assert "878.84" in challenge["reason"] and "827.46" in challenge["reason"]
 
 
 def test_medium_when_only_one_benchmark_is_violated() -> None:
     comparisons = {
-        "third_party": _compare("345.00", "328.93"),
-        "aviva_dlg": _compare("345.00", "309.55"),
+        "third_party": _compare("355.00", "328.93"),
+        "aviva_dlg": _compare("355.00", "309.55"),
     }
 
-    challenge = challenge_for_line(Decimal("345.00"), comparisons, threshold_pct=TEN)
+    challenge = challenge_for_line(Decimal("355.00"), comparisons, threshold_pct=TEN)
 
     assert challenge["level"] == "medium"
     assert challenge["is_challenge"] is True
-    assert challenge["justified_amount"] == "309.55"
-    assert challenge["challenge_amount"] == "35.45"
+    assert challenge["justified_amount"] == "319.24"
+    assert challenge["challenge_amount"] == "35.76"
 
 
-def test_medium_when_the_only_available_benchmark_is_violated() -> None:
+def test_waits_when_only_one_benchmark_is_available() -> None:
     comparisons = {
         "third_party": _compare("345.00", None, 0),
         "aviva_dlg": _compare("345.00", "200.00"),
     }
 
-    challenge = challenge_for_line(Decimal("345.00"), comparisons, threshold_pct=TEN)
+    challenge = challenge_for_line(Decimal("355.00"), comparisons, threshold_pct=TEN)
 
-    assert challenge["level"] == "medium"
-    assert challenge["justified_amount"] == "200.00"
+    assert challenge["level"] is None
+    assert challenge["justified_amount"] is None
+    assert challenge["is_challenge"] is False
+    assert "Waiting for both" in challenge["reason"]
 
 
 def test_low_is_above_a_p90_but_within_the_rule_and_never_counts() -> None:
@@ -118,7 +120,7 @@ def test_low_is_above_a_p90_but_within_the_rule_and_never_counts() -> None:
     assert challenge["is_challenge"] is False
     assert challenge["justified_amount"] is None
     assert challenge["challenge_amount"] == "0.00"
-    assert "within the 10% threshold" in challenge["reason"]
+    assert "Within the 10% threshold" in challenge["reason"]
 
 
 def test_none_at_or_below_every_p90_and_when_nothing_is_available() -> None:
@@ -136,3 +138,25 @@ def test_none_at_or_below_every_p90_and_when_nothing_is_available() -> None:
     assert below["level"] is None and below["is_challenge"] is False
     assert unavailable["level"] is None
     assert "no observations" in unavailable["reason"].lower()
+
+
+def test_does_not_challenge_when_only_the_lower_source_exceeds_the_rule():
+    comparisons = {"third_party": _compare("345", "328.93"),
+                   "aviva_dlg": _compare("345", "309.55")}
+    result = challenge_for_line(Decimal("345"), comparisons, threshold_pct=TEN)
+    assert result["is_challenge"] is False
+    assert result["level"] == "low"
+    assert result["challenge_amount"] == "0.00"
+
+
+def test_rounding_and_no_price_increase():
+    comparisons = {"third_party": _compare("200", "100.00"),
+                   "aviva_dlg": _compare("200", "100.01")}
+    result = challenge_for_line(Decimal("200"), comparisons, threshold_pct=TEN)
+    assert result["justified_amount"] == "100.01"
+    assert result["challenge_amount"] == "99.99"
+    comparisons = {"third_party": _compare("150", "100"),
+                   "aviva_dlg": _compare("150", "300")}
+    result = challenge_for_line(Decimal("150"), comparisons, threshold_pct=TEN)
+    assert not result["is_challenge"]
+    assert result["challenge_amount"] == "0.00"

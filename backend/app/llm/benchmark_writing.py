@@ -25,7 +25,7 @@ from app.llm.base import LLMProviderError, StructuredLLMClient
 from app.llm.factory import _build_client, llm_configuration_status
 
 VEHICLE_CATEGORY_PROMPT_VERSION = "vehicle-category-v1"
-CHALLENGE_EMAIL_PROMPT_VERSION = "challenge-email-v1"
+CHALLENGE_EMAIL_PROMPT_VERSION = "challenge-email-v2-50-50"
 
 
 class _VehicleCategoryAnswer(BaseModel):
@@ -101,7 +101,10 @@ class ChallengeEmailWriter:
         "handler to a repairer or insurer, challenging specific repair-invoice "
         "line items that exceed repair-cost benchmarks. You are given the "
         "challenged lines with their invoiced amount, the benchmark P90 values, "
-        "the justified figure and the challenge amount. Write only: a subject, "
+        "the justified figure and the challenge amount. The proposed price uses "
+        "50% Third-party P90 plus 50% In-house P90, with both sources required. "
+        "The percentage and minimum thresholds apply to that combined price. "
+        "Write only: a subject, "
         "an opening paragraph, a closing paragraph, and optionally one short "
         "rationale per line_id. The list of figures is inserted by the system, "
         "so do not restate it. Never state any money amount that is not in the "

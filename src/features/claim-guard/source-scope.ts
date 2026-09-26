@@ -48,8 +48,8 @@ export function sourceScreen(
 /** The bucket names she uses. D1: the two existing upload buckets relabelled,
  * not duplicated. */
 export const INTAKE_GROUP_LABELS: Record<IntakeGroup, string> = {
-  historical_claim: "Insurer TP invoices",
-  in_house: "Insurer TP invoices – Model training",
+  historical_claim: "Insurer Third Party invoices",
+  in_house: "EXL/ In house Benchmark invoices",
   live: "Upload new invoice – Compare benchmark",
 }
 

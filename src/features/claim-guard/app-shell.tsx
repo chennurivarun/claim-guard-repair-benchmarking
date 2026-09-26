@@ -72,17 +72,17 @@ function AppSidebar({
           <SidebarMenuItem>
             <SidebarMenuButton
               size="lg"
-              className="h-14 px-2"
+              className="h-auto min-h-14 px-2 py-2 [&>span:last-child]:whitespace-normal"
               onClick={() => navigate("tp-upload")}
             >
-              <span className="flex size-10 items-center justify-center rounded-lg bg-[#F15A24] text-base font-bold text-white">
+              <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-[#F15A24] text-base font-bold text-white">
                 TP
               </span>
               <span className="grid min-w-0 flex-1 text-left leading-tight">
-                <span className="truncate text-base font-semibold text-[#F15A24]">
+                <span className="whitespace-normal text-base font-semibold text-[#F15A24]">
                   {PRODUCT_NAME}
                 </span>
-                <span className="truncate text-xs text-muted-foreground">
+                <span className="whitespace-normal text-xs text-muted-foreground">
                   Motor claims price benchmarking
                 </span>
               </span>
@@ -94,7 +94,7 @@ function AppSidebar({
       <SidebarContent className="px-2">
         {navigationSections.map((section) => (
           <SidebarGroup key={section.id}>
-            <SidebarGroupLabel className="text-sm font-bold text-[#F15A24]">
+            <SidebarGroupLabel className="h-auto min-h-8 whitespace-normal py-2 text-sm font-bold leading-snug text-[#F15A24]">
               {section.label}
             </SidebarGroupLabel>
             <SidebarGroupContent>
@@ -104,7 +104,7 @@ function AppSidebar({
                   return (
                     <SidebarMenuItem key={item.id}>
                       <SidebarMenuButton
-                        className="h-9 rounded-lg"
+                        className="h-auto min-h-9 rounded-lg py-2 [&>span:last-child]:whitespace-normal"
                         isActive={activeEntry === item.id}
                         onClick={() => navigate(item.id)}
                         // The same three sub-screen names recur under every
@@ -148,6 +148,7 @@ function AppSidebar({
                         <SidebarMenuButton
                           isActive={activeEntry === item.id}
                           onClick={() => navigate(item.id)}
+                          className="h-auto min-h-9 py-2 [&>span:last-child]:whitespace-normal"
                           tooltip={item.label}
                         >
                           <Icon aria-hidden />

@@ -34,7 +34,7 @@ export function evidenceRow(
 export const thirdPartyBenchmarks: SourceBenchmarksPayload = {
   source: "third_party",
   intake_group: "historical_claim",
-  label: "Third party insured invoices",
+  label: "Insurer Third Party invoices",
   invoice_count: 3,
   threshold_pct: "10",
   vehicle_categories: [
@@ -98,7 +98,7 @@ export const thirdPartyBenchmarks: SourceBenchmarksPayload = {
 export const emptyAvivaBenchmarks: SourceBenchmarksPayload = {
   source: "aviva_dlg",
   intake_group: "in_house",
-  label: "Aviva DLG invoices",
+  label: "EXL/ In house Benchmark invoices",
   invoice_count: 0,
   threshold_pct: "10",
   vehicle_categories: [],
@@ -166,7 +166,7 @@ export const analysisLines: AnalysisLine[] = [
         difference: "47.73",
         difference_pct: "5.97",
       }),
-      aviva_dlg: NO_BENCHMARK,
+      aviva_dlg: benchmark({ p90: "820.00", above_p90: true, difference: "27.73", difference_pct: "3.38" }),
     },
     challenge: {
       is_challenge: false,
@@ -196,9 +196,9 @@ export const analysisLines: AnalysisLine[] = [
     challenge: {
       is_challenge: true,
       level: "medium",
-      justified_amount: "200.00",
-      challenge_amount: "100.00",
-      reason: "Above the third-party P90 by 50.00%.",
+      justified_amount: "260.00",
+      challenge_amount: "40.00",
+      reason: "50/50 of £200.00 and £320.00 gives £260.00; reduction £40.00.",
     },
   },
   {
@@ -228,9 +228,9 @@ export const analysisLines: AnalysisLine[] = [
     challenge: {
       is_challenge: true,
       level: "high",
-      justified_amount: "450.00",
-      challenge_amount: "150.00",
-      reason: "Above both P90s; justified at the higher, £450.00.",
+      justified_amount: "431.25",
+      challenge_amount: "168.75",
+      reason: "Above both P90s; 50/50 challenge price £431.25.",
     },
   },
   {
@@ -241,7 +241,7 @@ export const analysisLines: AnalysisLine[] = [
     repair_item: "Headlamp",
     amount: "260.00",
     benchmarks: {
-      third_party: NO_BENCHMARK,
+      third_party: benchmark({ p90: "270.00" }),
       aviva_dlg: benchmark({
         p90: "197.60",
         above_p90: true,
@@ -253,9 +253,9 @@ export const analysisLines: AnalysisLine[] = [
     challenge: {
       is_challenge: true,
       level: "medium",
-      justified_amount: "197.60",
-      challenge_amount: "62.40",
-      reason: "Above the Aviva DLG P90 by 31.58%.",
+      justified_amount: "233.80",
+      challenge_amount: "26.20",
+      reason: "50/50 of £270.00 and £197.60 gives £233.80; reduction £26.20.",
     },
   },
   {
@@ -336,14 +336,14 @@ export const benchmarkAnalysis: BenchmarkAnalysisPayload = {
     line_count: 6,
     challenge_count: 3,
     by_level: { high: 1, medium: 2, low: 1 },
-    total_challenge_amount: "312.40",
+    total_challenge_amount: "234.95",
   },
 }
 
 export const templateDraft: ChallengeEmailDraft = {
   subject: "Invoice LIVE-77: 2 line items challenged",
-  body: "Dear repairer,\n\nFRONT BUMPER: billed £600.00, justified £450.00.\n",
+  body: "Dear repairer,\n\nFRONT BUMPER: billed £600.00, justified £431.25.\n",
   generated_by: "template",
   lines: [analysisLines[3], analysisLines[2]],
-  total_challenge_amount: "250.00",
+  total_challenge_amount: "208.75",
 }

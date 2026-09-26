@@ -1,0 +1,101 @@
+[
+  {
+    "invoice": "DEMO-NEW-001",
+    "total_challenge_amount": "58.80",
+    "lines": [
+      {
+        "description": "L/R DOOR",
+        "invoice_price": "150.00",
+        "third_party_p90": "118.00",
+        "in_house_p90": "98.00",
+        "challenge_price": "108.00",
+        "challenge_amount": "42.00",
+        "level": "high"
+      },
+      {
+        "description": "L/SILL PANEL COVER",
+        "invoice_price": "60.00",
+        "third_party_p90": "47.20",
+        "in_house_p90": "39.20",
+        "challenge_price": "43.20",
+        "challenge_amount": "16.80",
+        "level": "high"
+      },
+      {
+        "description": "Door Fitting Kit",
+        "invoice_price": "15.00",
+        "third_party_p90": "11.80",
+        "in_house_p90": "9.80",
+        "challenge_price": null,
+        "challenge_amount": "0.00",
+        "level": "low"
+      }
+    ]
+  },
+  {
+    "invoice": "DEMO-NEW-002",
+    "total_challenge_amount": "78.00",
+    "lines": [
+      {
+        "description": "L/R DOOR",
+        "invoice_price": "160.00",
+        "third_party_p90": "118.00",
+        "in_house_p90": "98.00",
+        "challenge_price": "108.00",
+        "challenge_amount": "52.00",
+        "level": "high"
+      },
+      {
+        "description": "L/SILL PANEL COVER",
+        "invoice_price": "64.00",
+        "third_party_p90": "47.20",
+        "in_house_p90": "39.20",
+        "challenge_price": "43.20",
+        "challenge_amount": "20.80",
+        "level": "high"
+      },
+      {
+        "description": "Door Fitting Kit",
+        "invoice_price": "16.00",
+        "third_party_p90": "11.80",
+        "in_house_p90": "9.80",
+        "challenge_price": "10.80",
+        "challenge_amount": "5.20",
+        "level": "medium"
+      }
+    ]
+  },
+  {
+    "invoice": "DEMO-NEW-003",
+    "total_challenge_amount": "93.00",
+    "lines": [
+      {
+        "description": "L/R DOOR",
+        "invoice_price": "170.00",
+        "third_party_p90": "118.00",
+        "in_house_p90": "98.00",
+        "challenge_price": "108.00",
+        "challenge_amount": "62.00",
+        "level": "high"
+      },
+      {
+        "description": "L/SILL PANEL COVER",
+        "invoice_price": "68.00",
+        "third_party_p90": "47.20",
+        "in_house_p90": "39.20",
+        "challenge_price": "43.20",
+        "challenge_amount": "24.80",
+        "level": "high"
+      },
+      {
+        "description": "Door Fitting Kit",
+        "invoice_price": "17.00",
+        "third_party_p90": "11.80",
+        "in_house_p90": "9.80",
+        "challenge_price": "10.80",
+        "challenge_amount": "6.20",
+        "level": "high"
+      }
+    ]
+  }
+]

@@ -23,7 +23,7 @@ describe("each sub-screen knows which source it serves", () => {
     })
   })
 
-  it("scopes the Aviva DLG screens to in_house", () => {
+  it("scopes the In-house screens to in_house", () => {
     expect(screenScope("dlg-upload")?.intakeGroup).toBe("in_house")
     expect(screenScope("dlg-intelligence")?.intakeGroup).toBe("in_house")
     expect(screenScope("dlg-benchmarks")?.intakeGroup).toBe("in_house")
@@ -84,10 +84,10 @@ describe("the upload screen offers exactly one bucket when scoped", () => {
 
   it("names the buckets the way she does", () => {
     expect(INTAKE_GROUP_LABELS.historical_claim).toBe(
-      "Insurer TP invoices"
+      "Insurer Third Party invoices"
     )
     expect(INTAKE_GROUP_LABELS.in_house).toBe(
-      "Insurer TP invoices – Model training"
+      "EXL/ In house Benchmark invoices"
     )
   })
 })

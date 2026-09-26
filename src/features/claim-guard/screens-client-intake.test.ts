@@ -170,3 +170,13 @@ describe("the screen calls it an engineer assessment", () => {
     )
   })
 })
+
+
+it.each(["historical_claim", "in_house", "live"] as const)("keeps mapping and extracts off the %s upload page", (scope) => {
+  const html = renderToStaticMarkup(createElement(TooltipProvider, null,
+    createElement(ClientIntakeScreen, { caseReference: "TEST", setup: false, scope, finalised: false,
+      onProcessed: async () => {}, onContinue: () => {}, onOpenManualReview: () => {} })))
+  expect(html).toContain("Go to Document intelligence")
+  expect(html).not.toContain("Mapping review")
+  expect(html).not.toContain("Invoice and engineer assessment extracts")
+})

@@ -27,7 +27,7 @@ export interface NavigationItem {
 }
 
 /** The left navigation Neha dictated on the 17 Sep walkthrough: "two major
- * headings. Third party insured invoices and Aviva DLG invoices. Under every
+ * headings. Insurer Third Party invoices and EXL/ In house Benchmark invoices. Under every
  * heading … upload documents … document intelligence … benchmark
  * computation", then a third heading, "upload new invoice", whose last step
  * is benchmark analysis. */
@@ -38,7 +38,7 @@ export const navigationSections: Array<{
 }> = [
   {
     id: "third-party",
-    label: "Insurer TP invoices",
+    label: "Insurer Third Party invoices",
     items: [
       { id: "tp-upload", label: "Upload documents", icon: UploadIcon },
       { id: "tp-intelligence", label: "Document intelligence", icon: FileTextIcon },
@@ -47,7 +47,7 @@ export const navigationSections: Array<{
   },
   {
     id: "aviva-dlg",
-    label: "Insurer TP invoices – Model training",
+    label: "EXL/ In house Benchmark invoices",
     items: [
       { id: "dlg-upload", label: "Upload documents", icon: UploadIcon },
       { id: "dlg-intelligence", label: "Document intelligence", icon: FileTextIcon },

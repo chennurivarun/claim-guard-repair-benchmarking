@@ -12,7 +12,7 @@ import type { ScreenId } from "./types"
 // flat list (Benchmark data setup, Document Intelligence, Mapping review, …).
 // The benchmarks-and-challenges sprint replaces that on purpose with the
 // structure Neha dictated on the 17 Sep walkthrough -- "two major headings.
-// Third party insured invoices and Aviva DLG invoices. Under every heading
+// Insurer Third Party invoices and EXL/ In house Benchmark invoices. Under every heading
 // … upload documents … document intelligence … benchmark computation", then
 // a third heading, "upload new invoice". Everything that was primary before
 // and is not part of her structure now sits under Advanced tools.
@@ -55,7 +55,7 @@ describe("the left navigation Neha described", () => {
       }))
     ).toEqual([
       {
-        label: "Insurer TP invoices",
+        label: "Insurer Third Party invoices",
         items: [
           ["tp-upload", "Upload documents"],
           ["tp-intelligence", "Document intelligence"],
@@ -63,7 +63,7 @@ describe("the left navigation Neha described", () => {
         ],
       },
       {
-        label: "Insurer TP invoices – Model training",
+        label: "EXL/ In house Benchmark invoices",
         items: [
           ["dlg-upload", "Upload documents"],
           ["dlg-intelligence", "Document intelligence"],
@@ -83,8 +83,8 @@ describe("the left navigation Neha described", () => {
 
   it("renders the three headings in that order", () => {
     const html = renderShell("tp-upload")
-    const thirdParty = html.indexOf("Insurer TP invoices")
-    const aviva = html.indexOf("Insurer TP invoices – Model training")
+    const thirdParty = html.indexOf("Insurer Third Party invoices")
+    const aviva = html.indexOf("EXL/ In house Benchmark invoices")
     const newInvoice = html.indexOf("Upload new invoice – Compare benchmark")
 
     expect(thirdParty).toBeGreaterThan(-1)
@@ -96,7 +96,7 @@ describe("the left navigation Neha described", () => {
 
   it("marks the sub-screen under the right heading active, not its namesake under the other", () => {
     const html = renderShell("dlg-intelligence")
-    const aviva = html.indexOf("Insurer TP invoices – Model training")
+    const aviva = html.indexOf("EXL/ In house Benchmark invoices")
 
     // The first "Document intelligence" is the third-party one.
     expect(isMarkedActiveNear(html, "Document intelligence")).toBe(false)

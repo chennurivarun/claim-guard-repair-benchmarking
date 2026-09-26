@@ -217,7 +217,7 @@ describe("how the documents are named", () => {
 
 // Per-source mapping review. The server is asked for one intake group, but
 // the override endpoint answers with the mapping it has, and approving
-// third party must never show -- or count -- an Aviva DLG row. So the screen
+// third party must never show -- or count -- an In-house row. So the screen
 // keeps only its own group's rows and recounts from what is left.
 describe("a mapping scoped to one source", () => {
   const payload: CaseMappingPayload = {

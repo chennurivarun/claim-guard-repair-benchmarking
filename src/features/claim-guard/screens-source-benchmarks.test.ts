@@ -132,7 +132,7 @@ describe("a source with no documents yet", () => {
   it("says so, and offers the upload, instead of an empty table", () => {
     const html = render(emptyAvivaBenchmarks)
 
-    expect(html).toContain("No Aviva DLG invoices uploaded yet")
+    expect(html).toContain("No EXL/ In house Benchmark invoices uploaded yet")
     expect(html).toContain("Upload documents")
     expect(html).not.toContain('data-testid="p90-cell"')
   })

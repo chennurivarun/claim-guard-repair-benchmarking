@@ -89,7 +89,7 @@ export function pairEvidence(row: MappingAssessmentRow): string {
  *
  * The screen asks the server for one intake group, but the per-assessment
  * override endpoint answers with the mapping it holds, and a third-party
- * screen must never show -- or count -- an Aviva DLG row. So the rows are
+ * screen must never show -- or count -- an In-house row. So the rows are
  * filtered here as well. A row with no `intake_group` is kept: the server
  * was asked for this group, so an untagged row is its answer. */
 export function scopeMapping(

@@ -25,11 +25,12 @@ kind), where price kind keeps a part's price apart from the labour to fit it
 AI, cached -> Unknown).  Only invoices in a category feed that category's P90;
 one observation is a valid P90 and ``n`` is always shown beside it.
 
-**Challenge rule** (spec D3) is the existing valuation rule, read from the
+**Challenge rule** uses the 50/50 average of both source P90s. Both sources
+are required. The percentage and minimum thresholds are read from the
 frozen ``price_decision.DEFAULT_POLICY``: a benchmark is violated when the
-line exceeds its P90 by more than the threshold *and* by at least the minimum
-challenge amount.  High = both violated, Medium = one, Low = above a P90 but
-inside the rule.  ``price_decision.py`` itself is not used or changed: this is
+line exceeds the combined price by more than the threshold *and* by at least the minimum
+challenge amount.  High = both source P90s violated, Medium = one, provided the blended rule
+also qualifies; Low = above a source P90 without an actionable blended challenge.  ``price_decision.py`` itself is not used or changed: this is
 a separate analysis, and the 50/30/20 blend is not involved.
 """
 
@@ -83,9 +84,9 @@ class BenchmarkSource:
 
 SOURCES: dict[str, BenchmarkSource] = {
     "third_party": BenchmarkSource(
-        "third_party", "historical_claim", "Third party insured invoices", "third-party"
+        "third_party", "historical_claim", "Insurer Third Party invoices", "third-party"
     ),
-    "aviva_dlg": BenchmarkSource("aviva_dlg", "in_house", "Aviva DLG invoices", "Aviva DLG"),
+    "aviva_dlg": BenchmarkSource("aviva_dlg", "in_house", "EXL/ In house Benchmark invoices", "In-house"),
 }
 LIVE_GROUP = "live"
 ORIGIN_INVOICE = "invoice"
@@ -218,89 +219,58 @@ def challenge_for_line(
     threshold_pct: Decimal,
     minimum: Decimal = DEFAULT_POLICY.minimum_challenge_amount,
 ) -> dict[str, Any]:
-    """Level, justified figure, challenge amount and reason for one line.
+    """Challenge at an equal blend of the two independent source P90s.
 
-    Justified figure = the *higher* P90 among the benchmarks the line
-    violates (the conservative, defensible number).  Low lines show how far
-    they sit above P90 but carry no challenge amount.
+    Both sources are required. Apply the existing percentage/minimum rule to
+    the rounded blended price; never propose an increase to the billed price.
+    Individual source violations still determine High versus Medium.
     """
+    result = {
+        "is_challenge": False, "level": None, "justified_amount": None,
+        "challenge_amount": "0.00", "reason": "",
+    }
+    required = ("third_party", "aviva_dlg")
+    missing = [key for key in required if not comparisons.get(key, {}).get("available")
+               or comparisons[key].get("p90") is None]
+    if missing:
+        result["reason"] = (
+            "Waiting for both benchmarks: no observations for this repair item in "
+            + " and ".join(_source_phrase(key) for key in missing)
+            + ". A 50/50 challenge price requires both source P90s."
+        )
+        return result
+    if amount is None:
+        result["reason"] = "The line carries no amount to compare."
+        return result
 
-    threshold_text = f"{threshold_pct.normalize():f}%"
-    violated = [key for key, row in comparisons.items() if row["violated"]]
-    above = [key for key, row in comparisons.items() if row["above_p90"]]
-    available = [key for key, row in comparisons.items() if row["available"]]
-    missing = [key for key in comparisons if key not in available]
-    missing_note = "".join(
-        f"; no {_source_phrase(key)} observations for this repair item" for key in missing
-    )
-
-    if violated and amount is not None:
-        justified = max(Decimal(comparisons[key]["p90"]) for key in violated)
+    justified = _money(sum((Decimal(comparisons[key]["p90"]) for key in required),
+                          Decimal("0")) / Decimal("2"))
+    combined = compare_to_benchmark(amount, justified, 1,
+                                    threshold_pct=threshold_pct, minimum=minimum)
+    citation = " and ".join(_cited(key, comparisons[key]) for key in required)
+    basis = f"50/50 average of {citation} = {_gbp(justified)}. "
+    if combined["violated"]:
+        violated = [key for key in required if comparisons[key]["violated"]]
         challenge = _money(amount - justified)
-        level = "high" if len(violated) == len(comparisons) and len(violated) > 1 else "medium"
-        exceeded = " and ".join(
-            f"{_cited(key, comparisons[key])} by {comparisons[key]['difference_pct']}%"
-            for key in violated
-        )
-        within = [key for key in available if key not in violated]
-        within_note = "".join(
-            f"; within the rule against {_cited(key, comparisons[key])}" for key in within
-        )
-        reason = (
-            f"Exceeds {exceeded}, beyond the {threshold_text} threshold and the "
-            f"{_gbp(minimum)} minimum{within_note}{missing_note}. "
-            f"Justified at {'the higher P90, ' if len(violated) > 1 else ''}"
-            f"{_gbp(justified)}; challenge {_gbp(challenge)}."
-        )
         return {
             "is_challenge": True,
-            "level": level,
+            "level": "high" if len(violated) == 2 else "medium",
             "justified_amount": _text(justified),
             "challenge_amount": _text(challenge),
-            "reason": reason,
+            "reason": basis + (
+                f"The invoiced {_gbp(amount)} exceeds this combined price by "
+                f"{combined['difference_pct']}%, beyond the {threshold_pct.normalize():f}% "
+                f"threshold and the {_gbp(minimum)} minimum. Challenge {_gbp(challenge)}."
+            ),
         }
-
-    if above:
-        by = " and ".join(
-            f"{_cited(key, comparisons[key])} by {comparisons[key]['difference_pct']}% "
-            f"({_gbp(comparisons[key]['difference'])})"
-            for key in above
-        )
-        within_threshold = all(
-            Decimal(comparisons[key]["difference_pct"]) <= threshold_pct for key in above
-        )
-        under_minimum = all(Decimal(comparisons[key]["difference"]) < minimum for key in above)
-        if within_threshold:
-            rule = f"within the {threshold_text} threshold"
-        elif under_minimum:
-            rule = f"under the {_gbp(minimum)} minimum challenge"
-        else:
-            rule = f"within the {threshold_text} threshold or under the {_gbp(minimum)} minimum"
-        return {
-            "is_challenge": False,
-            "level": "low",
-            "justified_amount": None,
-            "challenge_amount": "0.00",
-            "reason": f"Above {by}, {rule}; not challenged{missing_note}.",
-        }
-
-    if not available:
-        reason = "No observations for this repair item in either source."
-    elif amount is None:
-        reason = "The line carries no amount to compare."
-    else:
-        reason = (
-            "At or below "
-            + " and ".join(_cited(key, comparisons[key]) for key in available)
-            + f"{missing_note}."
-        )
-    return {
-        "is_challenge": False,
-        "level": None,
-        "justified_amount": None,
-        "challenge_amount": "0.00",
-        "reason": reason,
-    }
+    above = any(comparisons[key]["above_p90"] for key in required)
+    result["level"] = "low" if above else None
+    result["reason"] = basis + (
+        f"Within the {threshold_pct.normalize():f}% threshold or under the {_gbp(minimum)} "
+        "minimum against the combined price; not challenged."
+        if amount > justified else "At or below the combined price; not challenged."
+    )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -926,11 +896,12 @@ def _template(
             (
                 "We have reviewed this invoice line by line against our repair-cost "
                 f"benchmarks for {invoice.get('vehicle_category') or 'Unknown'} vehicles: "
-                "the 90th percentile (P90) of the same repair item on third party insured "
-                "invoices and on Aviva DLG invoices. A line is challenged where it exceeds "
-                f"a P90 by more than {analysis['threshold_pct']}% and by at least "
-                f"{_gbp(analysis['minimum_challenge_amount'])}. The justified figure is the "
-                "higher P90 among the benchmarks the line exceeds."
+                "the 90th percentile (P90) of the same repair item on insurer third party "
+                "invoices and EXL/in-house invoices. Both sources are required. The proposed "
+                "price is 50% of each source's P90, rounded to the nearest penny. "
+                f"A line is challenged where it exceeds this combined price by more than "
+                f"{analysis['threshold_pct']}% and by at least "
+                f"{_gbp(analysis['minimum_challenge_amount'])}."
             ),
             "We challenge the following items:",
             _figures_list(lines, {}),
@@ -973,6 +944,7 @@ def compose_challenge_email(
         payload = {
             "invoice": analysis["invoice"],
             "recipient": recipient,
+            "pricing_method": "50% Third-party P90 + 50% In-house P90; both required",
             "threshold_pct": analysis["threshold_pct"],
             "minimum_challenge_amount": analysis["minimum_challenge_amount"],
             "total_challenge_amount": _text(total),

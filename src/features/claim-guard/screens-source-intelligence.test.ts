@@ -49,8 +49,8 @@ describe("Upload documents, per source", () => {
   it("offers one bucket, named for the source", () => {
     const html = renderUpload("in_house")
 
-    expect(html).toContain("Insurer TP invoices – Model training")
-    expect(html).not.toContain("Insurer TP invoices</")
+    expect(html).toContain("EXL/ In house Benchmark invoices")
+    expect(html).not.toContain("Insurer Third Party invoices</")
     expect(html).not.toContain("Upload new invoice – Compare benchmark")
   })
 
@@ -80,7 +80,7 @@ describe("Document intelligence, per source", () => {
   it("leads with the mapping review for that source", () => {
     const html = renderIntelligence("historical_claim")
 
-    expect(html).toContain("Insurer TP invoices")
+    expect(html).toContain("Insurer Third Party invoices")
     expect(html).toContain("Mapping review")
     expect(html).toContain("Approve mapping")
     expect(html).toContain("Mapping not approved yet")

@@ -20,13 +20,13 @@ export const BENCHMARK_SOURCES: Record<
 > = {
   third_party: {
     intakeGroup: "historical_claim",
-    label: "Third party insured invoices",
+    label: "Insurer Third Party invoices",
     shortLabel: "Third party",
   },
   aviva_dlg: {
     intakeGroup: "in_house",
-    label: "Aviva DLG invoices",
-    shortLabel: "Aviva DLG",
+    label: "EXL/ In house Benchmark invoices",
+    shortLabel: "In-house",
   },
 }
 

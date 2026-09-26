@@ -5,8 +5,8 @@ own documents loaded under each source, each source's mapping approved, a new
 invoice uploaded, and that invoice judged line by line against both
 benchmarks.
 
-* Third party insured invoices (``historical_claim``): formats 1, 3 and 6.
-* Aviva DLG invoices (``in_house``): formats 5, 4 and 7.
+* Insurer Third Party invoices (``historical_claim``): formats 1, 3 and 6.
+* EXL/ In house Benchmark invoices (``in_house``): formats 5, 4 and 7.
 * New invoice (``live``): the format 2 pair, through the real upload API.
 
 The client's formats do not happen to produce a line of every challenge level
@@ -390,9 +390,9 @@ def test_two_sources_benchmark_analysis_and_challenge_email(bench_client):
     assert (third_party["source"], third_party["intake_group"]) == (
         "third_party", "historical_claim",
     )
-    assert third_party["label"] == "Third party insured invoices"
+    assert third_party["label"] == "Insurer Third Party invoices"
     assert (aviva["source"], aviva["intake_group"], aviva["label"]) == (
-        "aviva_dlg", "in_house", "Aviva DLG invoices",
+        "aviva_dlg", "in_house", "EXL/ In house Benchmark invoices",
     )
     assert third_party["invoice_count"] == 3 and aviva["invoice_count"] == 3
     assert third_party["threshold_pct"] == "10"
@@ -466,12 +466,12 @@ def test_two_sources_benchmark_analysis_and_challenge_email(bench_client):
     assert door_line["benchmarks"]["aviva_dlg"]["p90"] == "827.46"
     assert door_line["benchmarks"]["third_party"]["evidence"]
     assert door_line["challenge"]["level"] == "high"
-    assert door_line["challenge"]["justified_amount"] == "878.84"
-    assert door_line["challenge"]["challenge_amount"] == "121.16"
+    assert door_line["challenge"]["justified_amount"] == "853.15"
+    assert door_line["challenge"]["challenge_amount"] == "146.85"
 
     sill = by_description["L/SILL PANEL COVER"]["challenge"]
     assert (sill["level"], sill["justified_amount"], sill["challenge_amount"]) == (
-        "medium", "309.55", "35.45",
+        "low", None, "0.00",
     )
     low = by_description["Car Sanitisation"]
     assert low["challenge"]["level"] == "low"
@@ -501,9 +501,9 @@ def test_two_sources_benchmark_analysis_and_challenge_email(bench_client):
 
     assert analysis["totals"] == {
         "line_count": 7,
-        "challenge_count": 3,
-        "by_level": {"high": 2, "medium": 1, "low": 1},
-        "total_challenge_amount": "179.41",
+        "challenge_count": 2,
+        "by_level": {"high": 2, "medium": 0, "low": 2},
+        "total_challenge_amount": "169.65",
     }
 
     # ---- the real format 2 live invoice: rolled up, never benchmarked ----
@@ -540,11 +540,11 @@ def test_two_sources_benchmark_analysis_and_challenge_email(bench_client):
     assert draft.status_code == 200, draft.text
     draft = draft.json()
     assert draft["generated_by"] == "template"
-    assert draft["total_challenge_amount"] == "179.41"
+    assert draft["total_challenge_amount"] == "169.65"
     assert {line["line_id"] for line in draft["lines"]} == set(challenged)
     figures = money_figures_in_text(draft["subject"] + "\n" + draft["body"])
     assert figures and figures <= analysis_money_figures(analysis)
-    assert Decimal("179.41") in figures
+    assert Decimal("169.65") in figures
     with Session(client.engine) as session:
         assert session.scalar(select(func.count(AuditEvent.id))) == audit_before + 1
         event_row = session.scalar(

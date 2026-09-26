@@ -36,7 +36,6 @@ import {
 } from "./document-api"
 import { ExtractsSection } from "./extracts-section"
 import { runIntakeBatch, type IntakeBatchEntry } from "./intake-batch"
-import { SourceIntelligenceScreen } from "./screens-source-intelligence"
 import { ScreenHeading, StatusBadge } from "./shared"
 import { INTAKE_GROUP_LABELS, intakeGroupsFor } from "./source-scope"
 
@@ -80,7 +79,6 @@ export function ClientIntakeScreen({
   finalised,
   onProcessed,
   onContinue,
-  onOpenBenchmarks,
   onOpenManualReview,
 }: {
   caseReference: string
@@ -89,7 +87,6 @@ export function ClientIntakeScreen({
   finalised: boolean
   onProcessed: (documentId?: string) => Promise<void>
   onContinue: () => void
-  onOpenBenchmarks?: () => void
   onOpenManualReview: (documentId: string) => void
 }) {
   const [documents, setDocuments] = useState<UploadedDocument[]>([])
@@ -110,7 +107,6 @@ export function ClientIntakeScreen({
   /** Bumped after every batch so the file inputs drop their DOM selection:
    * without it, re-picking the same folder fires no `change` event. */
   const [pickerKey, setPickerKey] = useState(0)
-  const [receiptVersion, setReceiptVersion] = useState(0)
   /** Only the unscoped live screen carries the extract tables; a scoped
    * upload leaves them to its own Document intelligence. */
   const showsExtracts = !setup && !scope
@@ -148,7 +144,6 @@ export function ClientIntakeScreen({
     ])
     setDocuments(docs)
     setInvoices(rows)
-    setReceiptVersion((version) => version + 1)
     await loadExtracts()
   }
   async function retryExtraction(documentId: string, assessmentDetails = false) {
@@ -297,12 +292,9 @@ export function ClientIntakeScreen({
   const visibleInvoices = invoices.filter((row) =>
     groups.includes(row.intake_group as IntakeGroup)
   )
-  const hasScopedDocuments =
-    scope != null &&
-    documents.some(
-      (document) =>
-        document.intake_group === scope && document.status === "ready"
-    )
+  const visibleDocuments = documents.filter((document) =>
+    groups.includes(document.intake_group as IntakeGroup)
+  )
   return (
     <>
       {scope ? (
@@ -310,8 +302,8 @@ export function ClientIntakeScreen({
           title={scope === "live" ? "Upload new invoice" : labels[scope]}
           description={
             scope === "live"
-              ? "Upload the new repair invoice and its engineer assessment. Review processing status, matching and extracts below, then continue to Benchmark analysis."
-              : "Upload this source's repair invoices and engineer assessments. Review processing status, matching and extracts below."
+              ? "Upload the new repair invoice and its engineer assessment. Review processing status here, then continue to Document intelligence for mapping and extracted items."
+              : "Upload this source's repair invoices and engineer assessments. Review processing status here, then continue to Document intelligence for mapping and extracted items."
           }
           action={
             <Button onClick={onContinue} disabled={busy}>
@@ -530,13 +522,12 @@ export function ClientIntakeScreen({
           </Card>
         ))}
       </div>
-      {documents.length > 0 && (
+      {visibleDocuments.length > 0 && (
         <Card>
           <CardHeader>
             <CardTitle>Stored documents and extraction status</CardTitle>
             <CardDescription>
-              This receipt stays available after refresh. Files in other sources
-              are listed too, so a missing assessment can be located. Assessments
+              This receipt stays available after refresh and shows only this source. Assessments
               with no detailed rows can be retried while keeping their existing pairing.
             </CardDescription>
           </CardHeader>
@@ -547,7 +538,7 @@ export function ClientIntakeScreen({
                 <TableHead>Status</TableHead><TableHead>Extracted records</TableHead>
                 <TableHead>Details</TableHead><TableHead>Action</TableHead>
               </TableRow></TableHeader>
-              <TableBody>{documents.map((document) => (
+              <TableBody>{visibleDocuments.map((document) => (
                 <TableRow key={document.id}>
                   <TableCell>{document.filename}</TableCell>
                   <TableCell>{document.intake_group ? labels[document.intake_group] : "Unassigned source"}</TableCell>
@@ -710,16 +701,6 @@ export function ClientIntakeScreen({
             Review {d.filename}
           </Button>
         ))}
-      {scope && hasScopedDocuments ? (
-        <SourceIntelligenceScreen
-          key={`${receiptVersion}:${documents.filter((d) => d.intake_group === scope).map((d) => `${d.id}:${d.status}`).join("|")}`}
-          caseReference={caseReference}
-          intakeGroup={scope}
-          finalised={finalised}
-          onApproved={refresh}
-          onOpenBenchmarks={onOpenBenchmarks ?? onContinue}
-        />
-      ) : null}
       {setup && (
         <Card>
           <CardHeader>

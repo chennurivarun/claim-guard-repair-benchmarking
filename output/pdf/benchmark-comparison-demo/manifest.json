@@ -1,0 +1,236 @@
+[
+  {
+    "file": "01-third-party/invoices/DEMO-TP-001-invoice.pdf",
+    "source": "historical_claim",
+    "kind": "invoice",
+    "reference": "DEMO-TP-001",
+    "registration": "DM11XYZ",
+    "amounts": [
+      "100.00",
+      "40.00",
+      "10.00"
+    ],
+    "rolled_up": false
+  },
+  {
+    "file": "01-third-party/assessments/DEMO-TP-001-assessment.pdf",
+    "source": "historical_claim",
+    "kind": "assessment",
+    "reference": "DEMO-TP-001",
+    "registration": "DM11XYZ",
+    "amounts": [
+      "100.00",
+      "40.00",
+      "10.00"
+    ],
+    "rolled_up": false
+  },
+  {
+    "file": "01-third-party/invoices/DEMO-TP-002-invoice.pdf",
+    "source": "historical_claim",
+    "kind": "invoice",
+    "reference": "DEMO-TP-002",
+    "registration": "DM12XYZ",
+    "amounts": [
+      "110.00",
+      "44.00",
+      "11.00"
+    ],
+    "rolled_up": false
+  },
+  {
+    "file": "01-third-party/assessments/DEMO-TP-002-assessment.pdf",
+    "source": "historical_claim",
+    "kind": "assessment",
+    "reference": "DEMO-TP-002",
+    "registration": "DM12XYZ",
+    "amounts": [
+      "110.00",
+      "44.00",
+      "11.00"
+    ],
+    "rolled_up": false
+  },
+  {
+    "file": "01-third-party/invoices/DEMO-TP-003-invoice.pdf",
+    "source": "historical_claim",
+    "kind": "invoice",
+    "reference": "DEMO-TP-003",
+    "registration": "DM13XYZ",
+    "amounts": [
+      "120.00",
+      "48.00",
+      "12.00"
+    ],
+    "rolled_up": false
+  },
+  {
+    "file": "01-third-party/assessments/DEMO-TP-003-assessment.pdf",
+    "source": "historical_claim",
+    "kind": "assessment",
+    "reference": "DEMO-TP-003",
+    "registration": "DM13XYZ",
+    "amounts": [
+      "120.00",
+      "48.00",
+      "12.00"
+    ],
+    "rolled_up": false
+  },
+  {
+    "file": "02-in-house/invoices/DEMO-IH-001-invoice.pdf",
+    "source": "in_house",
+    "kind": "invoice",
+    "reference": "DEMO-IH-001",
+    "registration": "DM21XYZ",
+    "amounts": [
+      "80.00",
+      "32.00",
+      "8.00"
+    ],
+    "rolled_up": false
+  },
+  {
+    "file": "02-in-house/assessments/DEMO-IH-001-assessment.pdf",
+    "source": "in_house",
+    "kind": "assessment",
+    "reference": "DEMO-IH-001",
+    "registration": "DM21XYZ",
+    "amounts": [
+      "80.00",
+      "32.00",
+      "8.00"
+    ],
+    "rolled_up": false
+  },
+  {
+    "file": "02-in-house/invoices/DEMO-IH-002-invoice.pdf",
+    "source": "in_house",
+    "kind": "invoice",
+    "reference": "DEMO-IH-002",
+    "registration": "DM22XYZ",
+    "amounts": [
+      "90.00",
+      "36.00",
+      "9.00"
+    ],
+    "rolled_up": false
+  },
+  {
+    "file": "02-in-house/assessments/DEMO-IH-002-assessment.pdf",
+    "source": "in_house",
+    "kind": "assessment",
+    "reference": "DEMO-IH-002",
+    "registration": "DM22XYZ",
+    "amounts": [
+      "90.00",
+      "36.00",
+      "9.00"
+    ],
+    "rolled_up": false
+  },
+  {
+    "file": "02-in-house/invoices/DEMO-IH-003-invoice.pdf",
+    "source": "in_house",
+    "kind": "invoice",
+    "reference": "DEMO-IH-003",
+    "registration": "DM23XYZ",
+    "amounts": [
+      "100.00",
+      "40.00",
+      "10.00"
+    ],
+    "rolled_up": false
+  },
+  {
+    "file": "02-in-house/assessments/DEMO-IH-003-assessment.pdf",
+    "source": "in_house",
+    "kind": "assessment",
+    "reference": "DEMO-IH-003",
+    "registration": "DM23XYZ",
+    "amounts": [
+      "100.00",
+      "40.00",
+      "10.00"
+    ],
+    "rolled_up": false
+  },
+  {
+    "file": "03-new-invoices/invoices/DEMO-NEW-001-invoice.pdf",
+    "source": "live",
+    "kind": "invoice",
+    "reference": "DEMO-NEW-001",
+    "registration": "DM31XYZ",
+    "amounts": [
+      "150.00",
+      "60.00",
+      "15.00"
+    ],
+    "rolled_up": false
+  },
+  {
+    "file": "03-new-invoices/assessments/DEMO-NEW-001-assessment.pdf",
+    "source": "live",
+    "kind": "assessment",
+    "reference": "DEMO-NEW-001",
+    "registration": "DM31XYZ",
+    "amounts": [
+      "150.00",
+      "60.00",
+      "15.00"
+    ],
+    "rolled_up": false
+  },
+  {
+    "file": "03-new-invoices/invoices/DEMO-NEW-002-invoice.pdf",
+    "source": "live",
+    "kind": "invoice",
+    "reference": "DEMO-NEW-002",
+    "registration": "DM32XYZ",
+    "amounts": [
+      "160.00",
+      "64.00",
+      "16.00"
+    ],
+    "rolled_up": false
+  },
+  {
+    "file": "03-new-invoices/assessments/DEMO-NEW-002-assessment.pdf",
+    "source": "live",
+    "kind": "assessment",
+    "reference": "DEMO-NEW-002",
+    "registration": "DM32XYZ",
+    "amounts": [
+      "160.00",
+      "64.00",
+      "16.00"
+    ],
+    "rolled_up": false
+  },
+  {
+    "file": "03-new-invoices/invoices/DEMO-NEW-003-invoice.pdf",
+    "source": "live",
+    "kind": "invoice",
+    "reference": "DEMO-NEW-003",
+    "registration": "DM33XYZ",
+    "amounts": [
+      "170.00",
+      "68.00",
+      "17.00"
+    ],
+    "rolled_up": false
+  },
+  {
+    "file": "03-new-invoices/assessments/DEMO-NEW-003-assessment.pdf",
+    "source": "live",
+    "kind": "assessment",
+    "reference": "DEMO-NEW-003",
+    "registration": "DM33XYZ",
+    "amounts": [
+      "170.00",
+      "68.00",
+      "17.00"
+    ],
+    "rolled_up": false
+  }
+]
